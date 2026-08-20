@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-server/
+.env
+data/
+backups/
+output/
+playwright-report/
+test-results/
+.playwright-cli/
+*.log
+.DS_Store
+Thumbs.db

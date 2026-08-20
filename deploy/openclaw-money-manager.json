@@ -1,0 +1,12 @@
+{
+  "url": "https://money.sutady.top/mcp",
+  "transport": "streamable-http",
+  "connectionTimeoutMs": 10000,
+  "requestTimeoutMs": 30000,
+  "supportsParallelToolCalls": false,
+  "headers": {
+    "Authorization": "Bearer ${MONEY_MANAGER_MCP_TOKEN}",
+    "CF-Access-Client-Id": "${MONEY_CF_ACCESS_CLIENT_ID}",
+    "CF-Access-Client-Secret": "${MONEY_CF_ACCESS_CLIENT_SECRET}"
+  }
+}

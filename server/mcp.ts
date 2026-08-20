@@ -1,0 +1,943 @@
+import type { Express, Request, Response } from "express";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { AppConfig } from "./config";
+import type { LedgerRepository } from "./repository";
+import type { AiService } from "./ai";
+import type { BackupService } from "./backup";
+import type { OpenClawControlService } from "./openclaw-control";
+import type { MattersRepository } from "./matters";
+import { createMcpAuth } from "./auth";
+import { categoryDispositionSchema, categoryInputSchema, categoryPatchSchema, transactionPatchSchema } from "../shared/schemas";
+
+function textResult(data: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+  };
+}
+
+function currentLocalDate(timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+export function amountToMinor(amount: number): number {
+  const minor = Math.round(amount * 100);
+  if (Math.abs(amount * 100 - minor) > 0.000001) throw new Error("金额最多保留两位小数");
+  return minor;
+}
+
+export function createLedgerMcpServer(
+  repository: LedgerRepository,
+  config: AppConfig,
+  services?: { ai: AiService; backup: BackupService; openclaw: OpenClawControlService; matters?: MattersRepository }
+): McpServer {
+  const server = new McpServer({ name: "sutady-money-manager", version: "1.0.0" });
+
+  server.registerTool("list_categories", {
+    description: "列出可用于记账的收入或支出分类。",
+    inputSchema: {
+      kind: z.enum(["expense", "income"]).optional().describe("expense=支出，income=收入"),
+      includeArchived: z.boolean().optional().default(false)
+    }
+  }, async ({ kind, includeArchived }) => {
+    const result = repository.listCategories(kind, includeArchived);
+    repository.audit("openclaw", "mcp.list_categories", "category", null, { count: result.length });
+    return textResult(result);
+  });
+
+  server.registerTool("get_category_deletion_impact", {
+    description: "永久删除分类前查看会被删除的正常账目、回收站账目及受影响关联，并取得最新版影响版本。只查询，不删除。",
+    inputSchema: { categoryId: z.string().uuid() }
+  }, async ({ categoryId }) => {
+    const result = repository.categoryDeletionImpact(categoryId);
+    repository.audit("openclaw", "mcp.category_deletion_impact", "category", categoryId, {
+      transactionCount: result.activeTransactionCount + result.trashedTransactionCount,
+      linkedMatterCount: result.linkedMatterCount,
+      pendingProposalCount: result.pendingProposalCount
+    });
+    return textResult(result);
+  });
+
+  server.registerTool("list_transactions", {
+    description: "按日期、分类或关键词查询账目。默认查询正常账目，也可查看 30 天回收站；默认最多返回最近 50 条。",
+    inputSchema: {
+      kind: z.enum(["expense", "income"]).optional(),
+      categoryId: z.string().uuid().optional(),
+      start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      search: z.string().max(80).optional(),
+      deleted: z.enum(["active", "trash", "all"]).optional().default("active"),
+      page: z.number().int().positive().optional().default(1),
+      pageSize: z.number().int().min(1).max(100).optional().default(50)
+    }
+  }, async (input) => {
+    const result = repository.listTransactions(input);
+    repository.audit("openclaw", "mcp.list_transactions", "transaction", null, { count: result.items.length });
+    return textResult(result);
+  });
+
+  server.registerTool("get_finance_summary", {
+    description: "获取某日、周、月或年的确定性收支汇总、趋势、分类排行和上一周期对比。",
+    inputSchema: {
+      grain: z.enum(["day", "week", "month", "year"]),
+      anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      kind: z.enum(["expense", "income"]).default("expense")
+    }
+  }, async ({ grain, anchor, kind }) => {
+    const result = repository.getFinanceReport(grain, anchor, kind);
+    repository.audit("openclaw", "mcp.get_finance_summary", "report", null, { grain, kind });
+    return textResult(result);
+  });
+
+  server.registerTool("propose_add_transaction", {
+    description: "仅当用户明确要求‘先让我确认’时提出一笔新账；direct 模式的普通记账请优先使用 direct_add_transaction。此工具只会进入待确认列表。",
+    inputSchema: {
+      kind: z.enum(["expense", "income"]),
+      amount: z.number().positive().max(1_000_000_000).describe("人民币元，最多两位小数"),
+      categoryId: z.string().uuid(),
+      localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).optional(),
+      reason: z.string().max(240).optional()
+    }
+  }, async (input) => {
+    const localDate = input.localDate ?? currentLocalDate(config.timezone);
+    const proposal = repository.createProposal({
+      action: "create",
+      payload: {
+        kind: input.kind,
+        amountMinor: amountToMinor(input.amount),
+        categoryId: input.categoryId,
+        localDate,
+        note: input.note ?? null
+      },
+      reason: input.reason ?? null
+    });
+    return textResult({ message: "已提交待确认，尚未写入正式账本。", proposal });
+  });
+
+  server.registerTool("propose_update_transaction", {
+    description: "仅当用户明确要求‘先让我确认’时提出修改请求；direct 模式请优先使用 direct_update_transaction。此工具只会进入待确认列表。",
+    inputSchema: {
+      transactionId: z.string().uuid(),
+      kind: z.enum(["expense", "income"]).optional(),
+      amount: z.number().positive().max(1_000_000_000).optional(),
+      categoryId: z.string().uuid().optional(),
+      localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).nullable().optional(),
+      reason: z.string().max(240).optional()
+    }
+  }, async ({ transactionId, amount, reason, ...changes }) => {
+    const payload: Record<string, unknown> = { ...changes };
+    if (amount !== undefined) payload.amountMinor = amountToMinor(amount);
+    const proposal = repository.createProposal({
+      action: "update",
+      targetTransactionId: transactionId,
+      payload,
+      reason: reason ?? null
+    });
+    return textResult({ message: "修改请求已提交待确认，原账目尚未改变。", proposal });
+  });
+
+  server.registerTool("propose_delete_transaction", {
+    description: "仅当用户明确要求‘先让我确认’时提出删除请求；direct 模式请优先使用 direct_delete_transaction。批准后账目会进入可恢复的回收站。",
+    inputSchema: {
+      transactionId: z.string().uuid(),
+      reason: z.string().max(240).optional()
+    }
+  }, async ({ transactionId, reason }) => {
+    const proposal = repository.createProposal({
+      action: "delete",
+      targetTransactionId: transactionId,
+      payload: {},
+      reason: reason ?? null
+    });
+    return textResult({ message: "删除请求已提交待确认，账目尚未删除。", proposal });
+  });
+
+  server.registerTool("revise_pending_proposal", {
+    description: "修订 OpenClaw 自己创建且仍在等待确认的新增或修改提案。只更新待确认内容，不会写入正式账本，也不能批准提案。",
+    inputSchema: {
+      proposalId: z.string().uuid(),
+      expectedRevision: z.number().int().positive().describe("先通过 list_pending_proposals 读取到的当前版本号"),
+      kind: z.enum(["expense", "income"]).optional(),
+      amount: z.number().positive().max(1_000_000_000).optional().describe("人民币元，最多两位小数"),
+      categoryId: z.string().uuid().optional(),
+      localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).nullable().optional()
+    }
+  }, async ({ proposalId, expectedRevision, amount, ...fields }) => {
+    const changes: Record<string, unknown> = {};
+    if (fields.kind !== undefined) changes.kind = fields.kind;
+    if (amount !== undefined) changes.amountMinor = amountToMinor(amount);
+    if (fields.categoryId !== undefined) changes.categoryId = fields.categoryId;
+    if (fields.localDate !== undefined) changes.localDate = fields.localDate;
+    if (fields.note !== undefined) changes.note = fields.note;
+    const proposal = repository.reviseProposal(proposalId, { expectedRevision, ...changes }, "openclaw");
+    return textResult({ message: "待确认内容已修订，尚未写入正式账本，仍需用户在网页中批准。", proposal });
+  });
+
+  server.registerTool("list_pending_proposals", {
+    description: "查看 OpenClaw 已提交但仍等待用户确认的操作。",
+    inputSchema: {}
+  }, async () => {
+    const result = repository.listProposals("pending");
+    repository.audit("openclaw", "mcp.list_pending_proposals", "proposal", null, { count: result.length });
+    return textResult(result);
+  });
+
+  if (services) {
+    registerDirectTools(server, repository, config, services);
+    if (services.matters) registerMatterTools(server, repository, config, services.openclaw, services.matters);
+  }
+
+  return server;
+}
+
+function registerDirectTools(
+  server: McpServer,
+  repository: LedgerRepository,
+  config: AppConfig,
+  services: { ai: AiService; backup: BackupService; openclaw: OpenClawControlService; matters?: MattersRepository }
+): void {
+  const { ai, backup, openclaw } = services;
+  const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
+
+  server.registerTool("get_openclaw_control_status", {
+    description: "查看寸金当前是需要网页确认还是允许 OpenClaw 直接操作。只返回能力和状态，永不返回密钥。",
+    inputSchema: {}
+  }, async () => textResult({ ...openclaw.settings(), deepseekConfigured: Boolean(config.deepseekApiKey), backupRemoteConfigured: Boolean(config.backupAgeRecipient && config.rcloneRemote) }));
+
+  server.registerTool("direct_add_transaction", {
+    description: "在 direct 模式下立即新增账目，不进入待确认。必须使用唯一 requestId，重复调用安全返回原结果。",
+    inputSchema: {
+      requestId,
+      kind: z.enum(["expense", "income"]),
+      amount: z.number().positive().max(1_000_000_000),
+      categoryId: z.string().uuid(),
+      localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).optional()
+    }
+  }, async (input) => {
+    const request = { ...input, localDate: input.localDate ?? currentLocalDate(config.timezone) };
+    const output = openclaw.execute({
+      requestId: input.requestId, action: "transaction.create", entityType: "transaction", summary: "OpenClaw 新增账目", request,
+      run: () => {
+        const transaction = repository.createTransaction({
+          kind: input.kind, amountMinor: amountToMinor(input.amount), categoryId: input.categoryId,
+          localDate: request.localDate, note: input.note ?? null
+        }, { source: "openclaw", actor: "openclaw", idempotencyKey: `openclaw:${input.requestId}` });
+        return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: null, after: openclaw.transactionSnapshot(transaction) }] };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_update_transaction", {
+    description: "立即修改账目。必须先查询并传入目标账目的 updatedAt；版本不一致时拒绝覆盖。",
+    inputSchema: {
+      requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().min(1),
+      kind: z.enum(["expense", "income"]).optional(), amount: z.number().positive().max(1_000_000_000).optional(),
+      categoryId: z.string().uuid().optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).nullable().optional()
+    }
+  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, amount, ...fields }) => {
+    const changes: Record<string, unknown> = { ...fields };
+    if (amount !== undefined) changes.amountMinor = amountToMinor(amount);
+    const output = openclaw.execute({
+      requestId: idempotency, action: "transaction.update", entityType: "transaction", summary: "OpenClaw 修改账目",
+      request: { transactionId, expectedUpdatedAt, ...changes },
+      run: () => {
+        const before = repository.getTransaction(transactionId, false);
+        if (before.updatedAt !== expectedUpdatedAt) throw new Error("账目已经变化，请重新查询后再修改");
+        const transaction = repository.updateTransaction(transactionId, transactionPatchSchema.parse(changes), "openclaw");
+        return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: openclaw.transactionSnapshot(before), after: openclaw.transactionSnapshot(transaction) }] };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_delete_transaction", {
+    description: "立即软删除账目并移入 30 天回收站。必须传入最近查询到的 updatedAt。",
+    inputSchema: { requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().min(1) }
+  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt }) => {
+    const output = openclaw.execute({
+      requestId: idempotency, action: "transaction.delete", entityType: "transaction", summary: "OpenClaw 删除账目",
+      request: { transactionId, expectedUpdatedAt },
+      run: () => {
+        const before = repository.getTransaction(transactionId, false);
+        if (before.updatedAt !== expectedUpdatedAt) throw new Error("账目已经变化，请重新查询后再删除");
+        const transaction = repository.softDeleteTransaction(transactionId, "openclaw");
+        return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: openclaw.transactionSnapshot(before), after: openclaw.transactionSnapshot(transaction) }] };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_permanently_delete_transaction", {
+    description: "不可撤销地永久删除回收站中的一笔账目。仅在用户明确要求永久删除时使用；普通删除必须继续使用 direct_delete_transaction。",
+    inputSchema: {
+      requestId,
+      transactionId: z.string().uuid(),
+      expectedUpdatedAt: z.string().min(1),
+      confirmation: z.literal("PERMANENT_DELETE")
+    }
+  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, confirmation }) => {
+    const output = openclaw.execute({
+      requestId: idempotency,
+      action: "transaction.purge",
+      entityType: "transaction",
+      summary: "OpenClaw 永久删除账目",
+      undoable: false,
+      request: { transactionId, expectedUpdatedAt, confirmation },
+      run: () => {
+        const result = repository.permanentlyDeleteTransaction(transactionId, expectedUpdatedAt, confirmation, "openclaw", true);
+        return { result, entityId: transactionId };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_restore_transaction", {
+    description: "立即从回收站恢复账目。必须传入已删除账目的 updatedAt。",
+    inputSchema: { requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().min(1) }
+  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt }) => {
+    const output = openclaw.execute({
+      requestId: idempotency, action: "transaction.restore", entityType: "transaction", summary: "OpenClaw 恢复账目",
+      request: { transactionId, expectedUpdatedAt },
+      run: () => {
+        const before = repository.getTransaction(transactionId, true);
+        if (!before.deletedAt || before.updatedAt !== expectedUpdatedAt) throw new Error("回收站账目已经变化，请重新查询");
+        const transaction = repository.restoreTransaction(transactionId, "openclaw");
+        return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: openclaw.transactionSnapshot(before), after: openclaw.transactionSnapshot(transaction) }] };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_create_category", {
+    description: "立即新增收支分类。",
+    inputSchema: { requestId, kind: z.enum(["expense", "income"]), name: z.string().min(1).max(16), icon: z.string().min(1).max(8), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }
+  }, async (input) => textResult(openclaw.execute({
+    requestId: input.requestId, action: "category.create", entityType: "category", summary: "OpenClaw 新增分类", request: input,
+    run: () => {
+      const category = repository.createCategory(categoryInputSchema.parse(input), "openclaw");
+      return { result: category, entityId: category.id, snapshots: [{ entityType: "category" as const, entityId: category.id, before: null, after: openclaw.categorySnapshot(category) }] };
+    }
+  })));
+
+  server.registerTool("direct_update_category", {
+    description: "立即修改分类名称、图标、颜色、排序或停用状态。必须传入最近查询到的 updatedAt。",
+    inputSchema: {
+      requestId, categoryId: z.string().uuid(), expectedUpdatedAt: z.string().min(1), name: z.string().min(1).max(16).optional(),
+      icon: z.string().min(1).max(8).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), sortOrder: z.number().int().min(0).max(999).optional(), isArchived: z.boolean().optional()
+    }
+  }, async ({ requestId: idempotency, categoryId, expectedUpdatedAt, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "category.update", entityType: "category", summary: "OpenClaw 修改分类", request: { categoryId, expectedUpdatedAt, ...changes },
+    run: () => {
+      const before = repository.getCategory(categoryId);
+      if (before.updatedAt !== expectedUpdatedAt) throw new Error("分类已经变化，请重新查询后再修改");
+      const category = repository.updateCategory(categoryId, categoryPatchSchema.parse(changes), "openclaw");
+      return { result: category, entityId: category.id, snapshots: [{ entityType: "category" as const, entityId: category.id, before: openclaw.categorySnapshot(before), after: openclaw.categorySnapshot(category) }] };
+    }
+  })));
+
+  server.registerTool("direct_manage_category", {
+    description: "立即停用、恢复、迁移或安全删除分类。迁移会整体记录并可撤销。",
+    inputSchema: { requestId, categoryId: z.string().uuid(), expectedUpdatedAt: z.string().min(1), action: z.enum(["archive", "restore", "delete", "migrate"]), targetCategoryId: z.string().uuid().optional() }
+  }, async ({ requestId: idempotency, categoryId, expectedUpdatedAt, action, targetCategoryId }) => {
+    const disposition = categoryDispositionSchema.parse(action === "migrate" ? { action, targetCategoryId } : { action });
+    const output = openclaw.execute({
+      requestId: idempotency, action: `category.${action}`, entityType: "category", summary: `OpenClaw ${action} 分类`, request: { categoryId, expectedUpdatedAt, action, targetCategoryId },
+      run: () => {
+        const beforeCategory = repository.getCategory(categoryId);
+        if (beforeCategory.updatedAt !== expectedUpdatedAt) throw new Error("分类已经变化，请重新查询");
+        const { transactions, proposals } = repository.categoryDependencies(categoryId);
+        const result = repository.manageCategory(categoryId, disposition, "openclaw", true);
+        const snapshots = [
+          ...transactions.map((before) => ({ entityType: "transaction" as const, entityId: before.id, before: openclaw.transactionSnapshot(before), after: openclaw.transactionSnapshot(repository.getTransaction(before.id, true)) })),
+          ...proposals.map((before) => ({ entityType: "proposal" as const, entityId: before.id, before: openclaw.proposalSnapshot(before), after: openclaw.proposalSnapshot(repository.getProposal(before.id)) })),
+          { entityType: "category" as const, entityId: categoryId, before: openclaw.categorySnapshot(beforeCategory), after: action === "archive" || action === "restore" ? openclaw.categorySnapshot(repository.getCategory(categoryId)) : null }
+        ];
+        return { result, entityId: categoryId, snapshots };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_permanently_delete_category", {
+    description: "不可撤销地永久删除分类及其全部正常/回收站账目。必须先调用 get_category_deletion_impact，并由用户明确说出要永久删除的分类。",
+    inputSchema: {
+      requestId,
+      categoryId: z.string().uuid(),
+      expectedRevision: z.string().regex(/^[0-9a-f]{64}$/),
+      confirmName: z.string().trim().min(1).max(16),
+      confirmation: z.literal("PERMANENT_DELETE")
+    }
+  }, async ({ requestId: idempotency, categoryId, expectedRevision, confirmName, confirmation }) => {
+    const output = openclaw.execute({
+      requestId: idempotency,
+      action: "category.purge",
+      entityType: "category",
+      summary: "OpenClaw 永久删除分类及账目",
+      undoable: false,
+      request: { categoryId, expectedRevision, confirmName, confirmation },
+      run: () => {
+        const result = repository.permanentlyDeleteCategory(categoryId, expectedRevision, confirmName, "openclaw", true);
+        return { result, entityId: categoryId };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_generate_ai_analysis", {
+    description: "立即使用 DeepSeek 生成分析。每小时最多 20 次；不会返回 API Key。",
+    inputSchema: { requestId, mode: z.enum(["overview", "growth", "saving", "structure", "custom"]), periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), question: z.string().max(500).optional() }
+  }, async ({ requestId: idempotency, ...input }) => textResult(await openclaw.executeExternal({
+    requestId: idempotency, action: "ai.analyze", entityType: "ai_report", summary: "OpenClaw 生成 AI 分析", request: input,
+    maxPerWindow: { count: 20, windowMs: 60 * 60 * 1000 }, run: () => ai.analyze(input, "openclaw")
+  })));
+
+  server.registerTool("list_ai_analyses", {
+    description: "读取最近的 AI 分析历史。",
+    inputSchema: { limit: z.number().int().min(1).max(20).optional().default(12) }
+  }, async ({ limit }) => textResult(ai.listRecent(limit)));
+
+  server.registerTool("direct_create_backup", {
+    description: "立即创建一致性备份。MCP 两次备份至少间隔 10 分钟，不返回凭据。",
+    inputSchema: { requestId }
+  }, async ({ requestId: idempotency }) => textResult(await openclaw.executeExternal({
+    requestId: idempotency, action: "backup.create", entityType: "database", summary: "OpenClaw 创建备份", request: {}, cooldownMs: 10 * 60 * 1000,
+    run: async () => {
+      const result = await backup.createBackup();
+      return { createdAt: result.createdAt, remoteUploaded: result.remoteUploaded, remoteMessage: result.remoteMessage };
+    }
+  })));
+
+  server.registerTool("get_app_status", {
+    description: "查看服务、数据库、DeepSeek 和备份配置状态，不返回真实密钥或本机路径。",
+    inputSchema: {}
+  }, async () => textResult({ service: "ok", database: "ok", deepseekConfigured: Boolean(config.deepseekApiKey), backup: { lastSuccessAt: backup.status().lastSuccessAt, remoteConfigured: backup.status().remoteConfigured }, timezone: config.timezone, openclaw: openclaw.settings() }));
+
+  server.registerTool("get_app_settings", {
+    description: "读取可公开给 OpenClaw 的应用设置。只返回人民币、时区、AI 模型/思考模式和接管模式，不返回任何密钥或令牌。",
+    inputSchema: {}
+  }, async () => textResult({
+    currency: "CNY",
+    timezone: config.timezone,
+    deepseek: { configured: Boolean(config.deepseekApiKey), model: config.deepseekModel, thinking: config.deepseekThinking },
+    openclaw: openclaw.settings(),
+    credentialsExposed: false
+  }));
+
+  server.registerTool("direct_update_timezone", {
+    description: "立即修改账本时区。必须先通过 get_app_status 读取当前时区。",
+    inputSchema: { requestId, timezone: z.string().min(1).max(64), expectedTimezone: z.string().min(1).max(64) }
+  }, async ({ requestId: idempotency, timezone, expectedTimezone }) => {
+    try { new Intl.DateTimeFormat("zh-CN", { timeZone: timezone }).format(new Date()); } catch { throw new Error("无效的 IANA 时区"); }
+    return textResult(openclaw.execute({
+      requestId: idempotency, action: "settings.timezone", entityType: "setting", summary: "OpenClaw 修改时区", request: { timezone, expectedTimezone },
+      run: () => {
+        const before = openclaw.settingSnapshot("timezone");
+        if (before?.value !== expectedTimezone) throw new Error("时区已经变化，请重新查询");
+        const after = openclaw.updateSetting("timezone", timezone);
+        return { result: { timezone }, entityId: "timezone", snapshots: [{ entityType: "setting" as const, entityId: "timezone", before, after }] };
+      }
+    }));
+  });
+
+  server.registerTool("list_openclaw_operations", {
+    description: "列出最近的 OpenClaw 直接操作及 30 天撤销状态。",
+    inputSchema: { limit: z.number().int().min(1).max(100).optional().default(30) }
+  }, async ({ limit }) => textResult(openclaw.listOperations(limit)));
+
+  server.registerTool("undo_openclaw_operation", {
+    description: "撤销 OpenClaw 自己最近 30 天内的可撤销操作；不会覆盖后来发生的新修改。",
+    inputSchema: { operationId: z.string().uuid() }
+  }, async ({ operationId }) => textResult(openclaw.undo(operationId, "openclaw")));
+}
+
+type MatterSnapshotEntity = "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "transaction";
+type MatterSnapshot = { entityType: MatterSnapshotEntity; entityId: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null };
+
+function appendLinkedTransaction(
+  snapshots: MatterSnapshot[],
+  repository: LedgerRepository,
+  openclaw: OpenClawControlService,
+  link: { mode: string; transactionId: string | null } | null | undefined,
+  seen: Set<string>
+): void {
+  if (link?.mode !== "create" || !link.transactionId || seen.has(link.transactionId)) return;
+  const transaction = repository.getTransaction(link.transactionId, true);
+  seen.add(transaction.id);
+  snapshots.push({ entityType: "transaction", entityId: transaction.id, before: null, after: openclaw.transactionSnapshot(transaction) });
+}
+
+function registerMatterTools(
+  server: McpServer,
+  repository: LedgerRepository,
+  _config: AppConfig,
+  openclaw: OpenClawControlService,
+  matters: MattersRepository
+): void {
+  const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
+  const expectedUpdatedAt = z.string().datetime();
+  const amount = z.number().positive().max(1_000_000_000).describe("金额，元，最多两位小数");
+  const matterPage = { status: z.enum(["active", "trash", "all"]).optional().default("active"), search: z.string().max(80).optional(), page: z.number().int().positive().optional().default(1), pageSize: z.number().int().min(1).max(100).optional().default(30) };
+
+  // Read-only tools are intentionally available in both confirm and direct
+  // modes.  They return the same public shapes as the REST endpoints.
+  server.registerTool("list_borrowers", {
+    description: "查询借款人、已借出、已归还和当前未还金额。不会修改数据。",
+    inputSchema: matterPage
+  }, async (input) => {
+    const result = matters.listBorrowers(input);
+    repository.audit("openclaw", "mcp.list_borrowers", "borrower", null, { count: result.items.length });
+    return textResult(result);
+  });
+
+  server.registerTool("list_loans", {
+    description: "查询借款及还款流水。可按借款人、状态、关键词和分页查询。",
+    inputSchema: { ...matterPage, borrowerId: z.string().uuid().optional(), loanStatus: z.enum(["active", "settled"]).optional() }
+  }, async (input) => {
+    const result = matters.listLoans(input);
+    repository.audit("openclaw", "mcp.list_loans", "loan", null, { count: result.items.length });
+    return textResult(result);
+  });
+
+  server.registerTool("get_loan", {
+    description: "读取一笔借款和其全部还款流水。",
+    inputSchema: { loanId: z.string().uuid() }
+  }, async ({ loanId }) => {
+    const result = matters.getLoan(loanId, true);
+    repository.audit("openclaw", "mcp.get_loan", "loan", loanId);
+    return textResult(result);
+  });
+
+  server.registerTool("get_loan_summary", {
+    description: "获取总借出、总归还、未还余额和未结清借款数量。",
+    inputSchema: {}
+  }, async () => {
+    const result = matters.loanSummary();
+    repository.audit("openclaw", "mcp.get_loan_summary", "loan", null);
+    return textResult(result);
+  });
+
+  server.registerTool("list_loan_repayments", {
+    description: "查询指定借款的还款流水。",
+    inputSchema: { loanId: z.string().uuid(), includeDeleted: z.boolean().optional().default(false) }
+  }, async ({ loanId, includeDeleted }) => {
+    const result = matters.listRepayments(loanId, includeDeleted);
+    repository.audit("openclaw", "mcp.list_loan_repayments", "loan_repayment", loanId, { count: result.length });
+    return textResult(result);
+  });
+
+  server.registerTool("list_subscriptions", {
+    description: "查询订阅、下次续费日、到期状态和付款历史。",
+    inputSchema: { ...matterPage, subscriptionStatus: z.enum(["active", "paused", "cancelled"]).optional() }
+  }, async (input) => {
+    const result = matters.listSubscriptions(input);
+    repository.audit("openclaw", "mcp.list_subscriptions", "subscription", null, { count: result.items.length });
+    return textResult(result);
+  });
+
+  server.registerTool("get_subscription", {
+    description: "读取一项订阅和其付款历史。",
+    inputSchema: { subscriptionId: z.string().uuid() }
+  }, async ({ subscriptionId }) => {
+    const result = matters.getSubscription(subscriptionId, true);
+    repository.audit("openclaw", "mcp.get_subscription", "subscription", subscriptionId);
+    return textResult(result);
+  });
+
+  server.registerTool("get_subscription_summary", {
+    description: "获取启用中的订阅、近期需要处理的续费和按币种汇总。",
+    inputSchema: {}
+  }, async () => {
+    const result = matters.subscriptionSummary();
+    repository.audit("openclaw", "mcp.get_subscription_summary", "subscription", null);
+    return textResult(result);
+  });
+
+  server.registerTool("list_subscription_payments", {
+    description: "查询指定订阅的付款历史。",
+    inputSchema: { subscriptionId: z.string().uuid(), includeDeleted: z.boolean().optional().default(false) }
+  }, async ({ subscriptionId, includeDeleted }) => {
+    const result = matters.listPayments(subscriptionId, includeDeleted);
+    repository.audit("openclaw", "mcp.list_subscription_payments", "subscription_payment", subscriptionId, { count: result.length });
+    return textResult(result);
+  });
+
+  server.registerTool("direct_create_borrower", {
+    description: "direct 模式下立即新增借款人；必须提供 requestId。",
+    inputSchema: { requestId, name: z.string().min(1).max(80), note: z.string().max(240).nullable().optional() }
+  }, async (input) => textResult(openclaw.execute({
+    requestId: input.requestId, action: "borrower.create", entityType: "borrower", summary: "OpenClaw 新增借款人", request: input,
+    run: () => {
+      const result = matters.createBorrower({ name: input.name, note: input.note }, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "borrower" as const, entityId: result.id, before: null, after: openclaw.borrowerSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_update_borrower", {
+    description: "direct 模式下修改借款人。必须传入最近查询到的 updatedAt。",
+    inputSchema: { requestId, borrowerId: z.string().uuid(), expectedUpdatedAt, name: z.string().min(1).max(80).optional(), note: z.string().max(240).nullable().optional(), isArchived: z.boolean().optional() }
+  }, async ({ requestId: idempotency, borrowerId, expectedUpdatedAt: expected, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "borrower.update", entityType: "borrower", summary: "OpenClaw 修改借款人", request: { borrowerId, expectedUpdatedAt: expected, ...changes },
+    run: () => {
+      const before = matters.getBorrower(borrowerId, false);
+      if (before.updatedAt !== expected) throw new Error("借款人已经变化，请重新查询后再修改");
+      const result = matters.updateBorrower(borrowerId, { ...changes, expectedUpdatedAt: expected }, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "borrower" as const, entityId: result.id, before: openclaw.borrowerSnapshot(before), after: openclaw.borrowerSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_delete_borrower", {
+    description: "direct 模式下将借款人移入 30 天回收站。借款人必须没有未删除的借款。",
+    inputSchema: { requestId, borrowerId: z.string().uuid(), expectedUpdatedAt }
+  }, async ({ requestId: idempotency, borrowerId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "borrower.delete", entityType: "borrower", summary: "OpenClaw 删除借款人", request: { borrowerId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getBorrower(borrowerId, false);
+      if (before.updatedAt !== expected) throw new Error("借款人已经变化，请重新查询后再删除");
+      const result = matters.deleteBorrower(borrowerId, { actor: "openclaw" }, expected);
+      return { result, entityId: result.id, snapshots: [{ entityType: "borrower" as const, entityId: result.id, before: openclaw.borrowerSnapshot(before), after: openclaw.borrowerSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_restore_borrower", {
+    description: "direct 模式下从回收站恢复借款人。",
+    inputSchema: { requestId, borrowerId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+  }, async ({ requestId: idempotency, borrowerId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "borrower.restore", entityType: "borrower", summary: "OpenClaw 恢复借款人", request: { borrowerId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getBorrower(borrowerId, true);
+      if (expected && before.updatedAt !== expected) throw new Error("借款人已经变化，请重新查询后再恢复");
+      const result = matters.restoreBorrower(borrowerId, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "borrower" as const, entityId: result.id, before: openclaw.borrowerSnapshot(before), after: openclaw.borrowerSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_create_loan", {
+    description: "direct 模式下立即新增一笔别人欠你的借款。可选关联或同时创建支出账目。",
+    inputSchema: { requestId, borrowerId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() }
+  }, async ({ requestId: idempotency, amount: value, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.create", entityType: "loan", summary: "OpenClaw 新增借款", request: { amount: value, ...input },
+    run: () => {
+      const result = matters.createLoan({ ...input, principalMinor: amountToMinor(value) } as never, { actor: "openclaw" });
+      const snapshots: MatterSnapshot[] = [{ entityType: "loan", entityId: result.id, before: null, after: openclaw.loanSnapshot(result) }];
+      appendLinkedTransaction(snapshots, repository, openclaw, result.ledgerLink, new Set());
+      return { result, entityId: result.id, snapshots };
+    }
+  })));
+
+  server.registerTool("direct_update_loan", {
+    description: "direct 模式下修改借款金额、日期、用途或备注；金额不能低于已还金额。",
+    inputSchema: { requestId, loanId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional() }
+  }, async ({ requestId: idempotency, loanId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.update", entityType: "loan", summary: "OpenClaw 修改借款", request: { loanId, expectedUpdatedAt: expected, amount: value, ...changes },
+    run: () => {
+      const before = matters.getLoan(loanId, false);
+      if (before.updatedAt !== expected) throw new Error("借款已经变化，请重新查询后再修改");
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { principalMinor: amountToMinor(value) }) };
+      const result = matters.updateLoan(loanId, patch as never, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "loan" as const, entityId: result.id, before: openclaw.loanSnapshot(before), after: openclaw.loanSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_delete_loan", {
+    description: "direct 模式下将借款移入 30 天回收站。",
+    inputSchema: { requestId, loanId: z.string().uuid(), expectedUpdatedAt }
+  }, async ({ requestId: idempotency, loanId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.delete", entityType: "loan", summary: "OpenClaw 删除借款", request: { loanId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getLoan(loanId, false);
+      if (before.updatedAt !== expected) throw new Error("借款已经变化，请重新查询后再删除");
+      const result = matters.deleteLoan(loanId, { actor: "openclaw" }, expected);
+      return { result, entityId: result.id, snapshots: [{ entityType: "loan" as const, entityId: result.id, before: openclaw.loanSnapshot(before), after: openclaw.loanSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_restore_loan", {
+    description: "direct 模式下从回收站恢复借款。",
+    inputSchema: { requestId, loanId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+  }, async ({ requestId: idempotency, loanId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.restore", entityType: "loan", summary: "OpenClaw 恢复借款", request: { loanId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getLoan(loanId, true);
+      if (expected && before.updatedAt !== expected) throw new Error("借款已经变化，请重新查询后再恢复");
+      const result = matters.restoreLoan(loanId, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "loan" as const, entityId: result.id, before: openclaw.loanSnapshot(before), after: openclaw.loanSnapshot(result) }] };
+    }
+  })));
+
+  const repaymentInput = { requestId, loanId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(240).nullable().optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() };
+  server.registerTool("direct_record_loan_repayment", {
+    description: "direct 模式下记录一笔还款，不能超过该借款剩余金额，可选创建收入账目。",
+    inputSchema: repaymentInput
+  }, async ({ requestId: idempotency, loanId, amount: value, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.repayment.create", entityType: "loan_repayment", summary: "OpenClaw 记录借款还款", request: { loanId, amount: value, ...input },
+    run: () => {
+      const beforeLoan = matters.getLoan(loanId, false);
+      const result = matters.createRepayment(loanId, { ...input, amountMinor: amountToMinor(value) } as never, { actor: "openclaw" });
+      const afterLoan = matters.getLoan(loanId, false);
+      const snapshots: MatterSnapshot[] = [
+        { entityType: "loan", entityId: loanId, before: openclaw.loanSnapshot(beforeLoan), after: openclaw.loanSnapshot(afterLoan) },
+        { entityType: "loan_repayment", entityId: result.id, before: null, after: openclaw.repaymentSnapshot(result) }
+      ];
+      appendLinkedTransaction(snapshots, repository, openclaw, result.ledgerLink, new Set());
+      return { result, entityId: result.id, snapshots };
+    }
+  })));
+
+  server.registerTool("direct_update_loan_repayment", {
+    description: "direct 模式下修改还款金额、日期或备注；必须传入当前 updatedAt。",
+    inputSchema: { requestId, repaymentId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), note: z.string().max(240).nullable().optional() }
+  }, async ({ requestId: idempotency, repaymentId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.repayment.update", entityType: "loan_repayment", summary: "OpenClaw 修改还款", request: { repaymentId, expectedUpdatedAt: expected, amount: value, ...changes },
+    run: () => {
+      const before = matters.getRepayment(repaymentId, false);
+      if (before.updatedAt !== expected) throw new Error("还款记录已经变化，请重新查询后再修改");
+      const beforeLoan = matters.getLoan(before.loanId, false);
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { amountMinor: amountToMinor(value) }) };
+      const result = matters.updateRepayment(repaymentId, patch as never, { actor: "openclaw" });
+      const afterLoan = matters.getLoan(before.loanId, false);
+      return { result, entityId: result.id, snapshots: [
+        { entityType: "loan_repayment" as const, entityId: result.id, before: openclaw.repaymentSnapshot(before), after: openclaw.repaymentSnapshot(result) },
+        { entityType: "loan" as const, entityId: before.loanId, before: openclaw.loanSnapshot(beforeLoan), after: openclaw.loanSnapshot(afterLoan) }
+      ] };
+    }
+  })));
+
+  server.registerTool("direct_delete_loan_repayment", {
+    description: "direct 模式下将还款记录移入 30 天回收站。",
+    inputSchema: { requestId, repaymentId: z.string().uuid(), expectedUpdatedAt }
+  }, async ({ requestId: idempotency, repaymentId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.repayment.delete", entityType: "loan_repayment", summary: "OpenClaw 删除借款还款", request: { repaymentId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getRepayment(repaymentId, false);
+      if (before.updatedAt !== expected) throw new Error("还款记录已经变化，请重新查询后再删除");
+      const beforeLoan = matters.getLoan(before.loanId, false);
+      const result = matters.deleteRepayment(repaymentId, { actor: "openclaw" }, expected);
+      const afterLoan = matters.getLoan(before.loanId, false);
+      return { result, entityId: result.id, snapshots: [
+        { entityType: "loan_repayment" as const, entityId: result.id, before: openclaw.repaymentSnapshot(before), after: openclaw.repaymentSnapshot(result) },
+        { entityType: "loan" as const, entityId: before.loanId, before: openclaw.loanSnapshot(beforeLoan), after: openclaw.loanSnapshot(afterLoan) }
+      ] };
+    }
+  })));
+
+  server.registerTool("direct_restore_loan_repayment", {
+    description: "direct 模式下从回收站恢复还款记录。",
+    inputSchema: { requestId, repaymentId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+  }, async ({ requestId: idempotency, repaymentId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "loan.repayment.restore", entityType: "loan_repayment", summary: "OpenClaw 恢复借款还款", request: { repaymentId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getRepayment(repaymentId, true);
+      if (expected && before.updatedAt !== expected) throw new Error("还款记录已经变化，请重新查询后再恢复");
+      const beforeLoan = matters.getLoan(before.loanId, false);
+      const result = matters.restoreRepayment(repaymentId, { actor: "openclaw" });
+      const afterLoan = matters.getLoan(before.loanId, false);
+      return { result, entityId: result.id, snapshots: [
+        { entityType: "loan_repayment" as const, entityId: result.id, before: openclaw.repaymentSnapshot(before), after: openclaw.repaymentSnapshot(result) },
+        { entityType: "loan" as const, entityId: before.loanId, before: openclaw.loanSnapshot(beforeLoan), after: openclaw.loanSnapshot(afterLoan) }
+      ] };
+    }
+  })));
+
+  server.registerTool("direct_create_subscription", {
+    description: "direct 模式下新增订阅，可指定月/年/自定义周期和首笔付款。",
+    inputSchema: { requestId, name: z.string().min(1).max(100), plan: z.string().max(100).nullable().optional(), startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), amount, currency: z.enum(["CNY", "USD"]), cycle: z.enum(["month", "year", "custom"]), customDays: z.number().int().min(1).max(366).optional().nullable(), nextBillingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), reminderDays: z.number().int().min(0).max(60).optional(), website: z.string().url().max(500).nullable().optional(), note: z.string().max(240).nullable().optional(), initialPayment: z.object({ amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(240).nullable().optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() }).optional() }
+  }, async ({ requestId: idempotency, amount: value, initialPayment, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.create", entityType: "subscription", summary: "OpenClaw 新增订阅", request: { amount: value, initialPayment, ...input },
+    run: () => {
+      const result = matters.createSubscription({ ...input, recurringAmountMinor: amountToMinor(value), initialPayment: initialPayment ? {
+        amountMinor: amountToMinor(initialPayment.amount), currency: input.currency, localDate: initialPayment.localDate,
+        note: initialPayment.note ?? null, paymentType: "initial", ledgerLink: initialPayment.ledgerLink
+      } : undefined } as never, { actor: "openclaw" });
+      const snapshots: MatterSnapshot[] = [{ entityType: "subscription", entityId: result.id, before: null, after: openclaw.subscriptionSnapshot(result) }];
+      const seen = new Set<string>();
+      for (const payment of result.payments) {
+        snapshots.push({ entityType: "subscription_payment", entityId: payment.id, before: null, after: openclaw.paymentSnapshot(payment) });
+        appendLinkedTransaction(snapshots, repository, openclaw, payment.ledgerLink, seen);
+      }
+      return { result, entityId: result.id, snapshots };
+    }
+  })));
+
+  server.registerTool("direct_update_subscription", {
+    description: "direct 模式下修改订阅信息、价格、周期、续费日期、提醒或状态；必须传入当前 updatedAt。",
+    inputSchema: { requestId, subscriptionId: z.string().uuid(), expectedUpdatedAt, name: z.string().min(1).max(100).optional(), plan: z.string().max(100).nullable().optional(), startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), amount: amount.optional(), currency: z.enum(["CNY", "USD"]).optional(), cycle: z.enum(["month", "year", "custom"]).optional(), customDays: z.number().int().min(1).max(366).nullable().optional(), nextBillingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), reminderDays: z.number().int().min(0).max(60).optional(), status: z.enum(["active", "paused", "cancelled"]).optional(), website: z.string().url().max(500).nullable().optional(), note: z.string().max(240).nullable().optional() }
+  }, async ({ requestId: idempotency, subscriptionId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.update", entityType: "subscription", summary: "OpenClaw 修改订阅", request: { subscriptionId, expectedUpdatedAt: expected, amount: value, ...changes },
+    run: () => {
+      const before = matters.getSubscription(subscriptionId, false);
+      if (before.updatedAt !== expected) throw new Error("订阅已经变化，请重新查询后再修改");
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { recurringAmountMinor: amountToMinor(value) }) };
+      const result = matters.updateSubscription(subscriptionId, patch as never, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "subscription" as const, entityId: result.id, before: openclaw.subscriptionSnapshot(before), after: openclaw.subscriptionSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_delete_subscription", {
+    description: "direct 模式下将订阅移入 30 天回收站。",
+    inputSchema: { requestId, subscriptionId: z.string().uuid(), expectedUpdatedAt }
+  }, async ({ requestId: idempotency, subscriptionId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.delete", entityType: "subscription", summary: "OpenClaw 删除订阅", request: { subscriptionId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getSubscription(subscriptionId, false);
+      if (before.updatedAt !== expected) throw new Error("订阅已经变化，请重新查询后再删除");
+      const result = matters.deleteSubscription(subscriptionId, { actor: "openclaw" }, expected);
+      return { result, entityId: result.id, snapshots: [{ entityType: "subscription" as const, entityId: result.id, before: openclaw.subscriptionSnapshot(before), after: openclaw.subscriptionSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_restore_subscription", {
+    description: "direct 模式下从回收站恢复订阅。",
+    inputSchema: { requestId, subscriptionId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+  }, async ({ requestId: idempotency, subscriptionId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.restore", entityType: "subscription", summary: "OpenClaw 恢复订阅", request: { subscriptionId, expectedUpdatedAt: expected },
+    run: () => {
+      const before = matters.getSubscription(subscriptionId, true);
+      if (expected && before.updatedAt !== expected) throw new Error("订阅已经变化，请重新查询后再恢复");
+      const result = matters.restoreSubscription(subscriptionId, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "subscription" as const, entityId: result.id, before: openclaw.subscriptionSnapshot(before), after: openclaw.subscriptionSnapshot(result) }] };
+    }
+  })));
+
+  const paymentInput = { requestId, subscriptionId: z.string().uuid(), amount, currency: z.enum(["CNY", "USD"]), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(240).nullable().optional(), paymentType: z.enum(["initial", "renewal", "manual"]).optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() };
+  server.registerTool("direct_record_subscription_payment", {
+    description: "direct 模式下记录订阅续费/付款，更新下次续费日，可选创建人民币支出账目。",
+    inputSchema: paymentInput
+  }, async ({ requestId: idempotency, subscriptionId, amount: value, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.payment.create", entityType: "subscription_payment", summary: "OpenClaw 记录订阅付款", request: { subscriptionId, amount: value, ...input },
+    run: () => {
+      const beforeSubscription = matters.getSubscription(subscriptionId, false);
+      const result = matters.createPayment(subscriptionId, { ...input, amountMinor: amountToMinor(value), paymentType: input.paymentType ?? "renewal" } as never, { actor: "openclaw" });
+      const afterSubscription = matters.getSubscription(subscriptionId, false);
+      const snapshots: MatterSnapshot[] = [
+        { entityType: "subscription", entityId: subscriptionId, before: openclaw.subscriptionSnapshot(beforeSubscription), after: openclaw.subscriptionSnapshot(afterSubscription) },
+        { entityType: "subscription_payment", entityId: result.id, before: null, after: openclaw.paymentSnapshot(result) }
+      ];
+      appendLinkedTransaction(snapshots, repository, openclaw, result.ledgerLink, new Set());
+      return { result, entityId: result.id, snapshots };
+    }
+  })));
+
+  server.registerTool("direct_update_subscription_payment", {
+    description: "direct 模式下修改订阅付款记录；必须传入当前 updatedAt。",
+    inputSchema: { requestId, paymentId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), currency: z.enum(["CNY", "USD"]).optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), note: z.string().max(240).nullable().optional(), paymentType: z.enum(["initial", "renewal", "manual"]).optional() }
+  }, async ({ requestId: idempotency, paymentId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "subscription.payment.update", entityType: "subscription_payment", summary: "OpenClaw 修改订阅付款", request: { paymentId, expectedUpdatedAt: expected, amount: value, ...changes },
+    run: () => {
+      const before = matters.getPayment(paymentId, false);
+      if (before.updatedAt !== expected) throw new Error("付款记录已经变化，请重新查询后再修改");
+      const beforeSubscription = matters.getSubscription(before.subscriptionId, false);
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { amountMinor: amountToMinor(value) }) };
+      const result = matters.updatePayment(paymentId, patch as never, { actor: "openclaw" });
+      const afterSubscription = matters.getSubscription(before.subscriptionId, false);
+      return { result, entityId: result.id, snapshots: [
+        { entityType: "subscription_payment" as const, entityId: result.id, before: openclaw.paymentSnapshot(before), after: openclaw.paymentSnapshot(result) },
+        { entityType: "subscription" as const, entityId: before.subscriptionId, before: openclaw.subscriptionSnapshot(beforeSubscription), after: openclaw.subscriptionSnapshot(afterSubscription) }
+      ] };
+    }
+  })));
+
+  for (const [name, action, summary, operation] of [
+    ["direct_delete_subscription_payment", "subscription.payment.delete", "OpenClaw 删除订阅付款", "delete"],
+    ["direct_restore_subscription_payment", "subscription.payment.restore", "OpenClaw 恢复订阅付款", "restore"]
+  ] as const) {
+    server.registerTool(name, {
+      description: operation === "delete" ? "direct 模式下将订阅付款移入 30 天回收站。" : "direct 模式下从回收站恢复订阅付款。",
+      inputSchema: { requestId, paymentId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+    }, async ({ requestId: idempotency, paymentId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+      requestId: idempotency, action, entityType: "subscription_payment", summary, request: { paymentId, expectedUpdatedAt: expected },
+      run: () => {
+        const before = matters.getPayment(paymentId, operation === "restore");
+        if (expected && before.updatedAt !== expected) throw new Error("订阅付款已经变化，请重新查询");
+        const beforeSubscription = matters.getSubscription(before.subscriptionId, false);
+        const result = operation === "delete"
+          ? matters.deletePayment(paymentId, { actor: "openclaw" }, expected)
+          : matters.restorePayment(paymentId, { actor: "openclaw" });
+        const afterSubscription = matters.getSubscription(before.subscriptionId, false);
+        return { result, entityId: result.id, snapshots: [
+          { entityType: "subscription_payment" as const, entityId: result.id, before: openclaw.paymentSnapshot(before), after: openclaw.paymentSnapshot(result) },
+          { entityType: "subscription" as const, entityId: before.subscriptionId, before: openclaw.subscriptionSnapshot(beforeSubscription), after: openclaw.subscriptionSnapshot(afterSubscription) }
+        ] };
+      }
+    })));
+  }
+}
+
+export function attachMcpRoutes(
+  app: Express,
+  repository: LedgerRepository,
+  ai: AiService,
+  backup: BackupService,
+  openclaw: OpenClawControlService,
+  config: AppConfig,
+  matters?: MattersRepository
+): void {
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const auth = createMcpAuth(config);
+
+  app.post("/mcp", auth, async (request: Request, response: Response) => {
+    try {
+      const sessionId = request.header("mcp-session-id");
+      let transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!transport && !sessionId && isInitializeRequest(request.body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (newSessionId) => {
+            transports.set(newSessionId, transport!);
+          }
+        });
+        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters });
+        server.server.onclose = () => {
+          if (transport?.sessionId) transports.delete(transport.sessionId);
+        };
+        await server.connect(transport);
+      }
+      if (!transport) {
+        response.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "无效或缺少 MCP 会话" }, id: null });
+        return;
+      }
+      await transport.handleRequest(request, response, request.body);
+    } catch {
+      if (!response.headersSent) {
+        response.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "MCP 内部错误" }, id: null });
+      }
+    }
+  });
+
+  app.get("/mcp", auth, async (request: Request, response: Response) => {
+    const sessionId = request.header("mcp-session-id");
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+    if (!transport) {
+      response.status(400).send("无效或缺少 MCP 会话");
+      return;
+    }
+    await transport.handleRequest(request, response);
+  });
+
+  app.delete("/mcp", auth, async (request: Request, response: Response) => {
+    const sessionId = request.header("mcp-session-id");
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+    if (!transport) {
+      response.status(400).send("无效或缺少 MCP 会话");
+      return;
+    }
+    await transport.handleRequest(request, response);
+    transports.delete(sessionId!);
+  });
+}

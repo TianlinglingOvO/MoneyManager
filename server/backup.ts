@@ -1,0 +1,152 @@
+import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync as SnapshotDatabase } from "node:sqlite";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import type { AppConfig } from "./config";
+import { AppError } from "./errors";
+import type { LedgerRepository } from "./repository";
+
+export interface BackupResult {
+  success: true;
+  createdAt: string;
+  localPath: string;
+  remoteUploaded: boolean;
+  remoteMessage: string;
+}
+
+function safeSqlitePath(value: string): string {
+  return value.replaceAll("'", "''");
+}
+
+function remoteTarget(config: AppConfig, filename: string): string {
+  const remote = config.rcloneRemote.endsWith(":") ? config.rcloneRemote : `${config.rcloneRemote}:`;
+  const directory = config.rcloneBackupPath.replace(/^\/+|\/+$/g, "");
+  return `${remote}${directory}/${filename}`;
+}
+
+function pruneLocal(directory: string, retentionCount: number): void {
+  const snapshots = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.startsWith("money-") && entry.name.endsWith(".sqlite"))
+    .map((entry) => ({ name: entry.name, modifiedAt: statSync(path.join(directory, entry.name)).mtimeMs }))
+    .sort((a, b) => b.modifiedAt - a.modifiedAt);
+  for (const snapshot of snapshots.slice(Math.max(1, retentionCount))) {
+    rmSync(path.join(directory, snapshot.name), { force: true });
+  }
+}
+
+function pruneRemote(config: AppConfig, keep = 30): void {
+  const remoteDirectory = remoteTarget(config, "").replace(/\/$/, "");
+  const listing = spawnSync("rclone", ["lsjson", remoteDirectory, "--files-only", "--include", "*.sqlite.age"], {
+    windowsHide: true,
+    encoding: "utf8"
+  });
+  if (listing.status !== 0) return;
+  try {
+    const files = JSON.parse(listing.stdout) as Array<{ Name?: string; ModTime?: string }>;
+    files.sort((a, b) => String(b.ModTime ?? "").localeCompare(String(a.ModTime ?? "")));
+    for (const file of files.slice(keep)) {
+      if (!file.Name || file.Name.includes("/") || file.Name.includes("\\")) continue;
+      spawnSync("rclone", ["deletefile", `${remoteDirectory}/${file.Name}`], { windowsHide: true, encoding: "utf8" });
+    }
+  } catch {
+    // 远端清理失败不影响已经完成的本地快照和上传。
+  }
+}
+
+export class BackupService {
+  private running = false;
+
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly repository: LedgerRepository,
+    private readonly config: AppConfig
+  ) {}
+
+  status(): { lastSuccessAt: string | null; lastLocalPath: string | null; remoteConfigured: boolean } {
+    const rows = this.database.prepare("SELECT key, value FROM settings WHERE key IN ('backup.lastSuccessAt', 'backup.lastLocalPath')")
+      .all() as unknown as Array<{ key: string; value: string }>;
+    const map = new Map(rows.map((row) => [row.key, row.value]));
+    return {
+      lastSuccessAt: map.get("backup.lastSuccessAt") ?? null,
+      lastLocalPath: map.get("backup.lastLocalPath") ?? null,
+      remoteConfigured: Boolean(this.config.backupAgeRecipient && this.config.rcloneRemote)
+    };
+  }
+
+  async createBackup(): Promise<BackupResult> {
+    if (this.running) throw new AppError("备份正在进行，请稍后再试", 409, "BACKUP_RUNNING");
+    this.running = true;
+    try {
+      mkdirSync(this.config.backupLocalDir, { recursive: true });
+      const now = new Date();
+      const stamp = now.toISOString().replace(/[:.]/g, "-");
+      const localPath = path.join(this.config.backupLocalDir, `money-${stamp}.sqlite`);
+      this.database.exec(`VACUUM INTO '${safeSqlitePath(localPath)}'`);
+
+      const snapshot = new SnapshotDatabase(localPath, { readOnly: true });
+      const integrity = snapshot.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+      snapshot.close();
+      if (integrity.integrity_check !== "ok") {
+        rmSync(localPath, { force: true });
+        throw new AppError("SQLite 完整性检查未通过，已取消备份", 500, "BACKUP_INTEGRITY_ERROR");
+      }
+
+      pruneLocal(this.config.backupLocalDir, this.config.backupRetentionCount);
+      let remoteUploaded = false;
+      let remoteMessage = "尚未配置 Google Drive 加密备份";
+
+      if (this.config.backupAgeRecipient && this.config.rcloneRemote) {
+        const encryptedPath = `${localPath}.age`;
+        const age = spawnSync("age", ["-r", this.config.backupAgeRecipient, "-o", encryptedPath, localPath], {
+          windowsHide: true,
+          encoding: "utf8"
+        });
+        if (age.status !== 0 || !existsSync(encryptedPath)) {
+          remoteMessage = "本地备份成功，但未找到 age 或加密失败";
+        } else {
+          const remote = remoteTarget(this.config, path.basename(encryptedPath));
+          const upload = spawnSync("rclone", ["copyto", encryptedPath, remote, "--checksum"], {
+            windowsHide: true,
+            encoding: "utf8"
+          });
+          if (upload.status === 0) {
+            remoteUploaded = true;
+            remoteMessage = "加密副本已上传到 Google Drive";
+            pruneRemote(this.config, 30);
+          } else {
+            remoteMessage = "本地备份成功，但 Google Drive 上传失败";
+          }
+          rmSync(encryptedPath, { force: true });
+        }
+      }
+
+      const createdAt = now.toISOString();
+      const upsert = this.database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`);
+      upsert.run("backup.lastSuccessAt", createdAt, createdAt);
+      upsert.run("backup.lastLocalPath", localPath, createdAt);
+      this.repository.audit("system", "backup.create", "database", null, { remoteUploaded });
+      return { success: true, createdAt, localPath, remoteUploaded, remoteMessage };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  startDailyScheduler(): NodeJS.Timeout {
+    const runIfDue = async () => {
+      const now = new Date();
+      if (now.getHours() < 3) return;
+      const last = this.status().lastSuccessAt;
+      if (last && new Date(last).toDateString() === now.toDateString()) return;
+      try {
+        this.repository.purgeExpiredTrash();
+        await this.createBackup();
+      } catch {
+        // 备份错误仅写入服务端健康状态，不记录账目或密钥。
+      }
+    };
+    void runIfDue();
+    return setInterval(() => void runIfDue(), 60 * 60 * 1000);
+  }
+}

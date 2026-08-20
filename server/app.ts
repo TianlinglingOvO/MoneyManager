@@ -1,0 +1,465 @@
+import express, { type NextFunction, type Request, type Response } from "express";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { z, ZodError } from "zod";
+import {
+  aiAnalysisInputSchema,
+  appearancePatchSchema,
+  categoryDispositionSchema,
+  categoryInputSchema,
+  categoryPatchSchema,
+  dailyTotalsQuerySchema,
+  proposalResolutionInputSchema,
+  proposalRevisionInputSchema,
+  openClawSettingsPatchSchema,
+  permanentDeleteTransactionSchema,
+  reportQuerySchema,
+  transactionInputSchema,
+  transactionPatchSchema,
+  transactionQuerySchema
+} from "../shared/schemas";
+import type { AppConfig } from "./config";
+import { createUserAuth } from "./auth";
+import { AppError } from "./errors";
+import { LedgerRepository } from "./repository";
+import { AiService } from "./ai";
+import { BackupService } from "./backup";
+import { attachMcpRoutes } from "./mcp";
+import { OpenClawControlService } from "./openclaw-control";
+import { AppearanceService } from "./appearance";
+import { MattersRepository, attachMatterRoutes } from "./matters";
+
+function localDate(timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function csvCell(value: unknown): string {
+  const text = value == null ? "" : String(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function requestIdempotencyKey(request: Request): string | null {
+  const key = request.header("Idempotency-Key")?.trim();
+  if (!key) return null;
+  if (key.length > 128) throw new AppError("幂等键过长");
+  return key;
+}
+
+export interface AppServices {
+  repository: LedgerRepository;
+  ai: AiService;
+  backup: BackupService;
+  openclaw: OpenClawControlService;
+  appearance: AppearanceService;
+  matters: MattersRepository;
+}
+
+export function createApp(config: AppConfig, database: DatabaseSync): { app: express.Express; services: AppServices } {
+  const app = express();
+  const repository = new LedgerRepository(database);
+  repository.purgeExpiredTrash();
+  const ai = new AiService(database, repository, config);
+  const backup = new BackupService(database, repository, config);
+  const openclaw = new OpenClawControlService(database, repository, config);
+  const appearance = new AppearanceService(database, repository);
+  const matters = new MattersRepository(database, repository, config.timezone);
+  const userAuth = createUserAuth(config);
+  const distPath = path.resolve(process.cwd(), "dist");
+  const indexPath = path.join(distPath, "index.html");
+
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        // Personal backgrounds are decoded locally and displayed from an
+        // object URL. blob: permits that local image without allowing uploads.
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"]
+      }
+    },
+    crossOriginEmbedderPolicy: false
+  }));
+  app.use(express.json({ limit: "512kb" }));
+
+  app.get("/health", (_request, response) => {
+    try {
+      const row = database.prepare("SELECT 1 AS ok").get() as { ok: number };
+      response.json({ status: row.ok === 1 ? "ok" : "error", version: "1.0.0" });
+    } catch {
+      response.status(503).json({ status: "error", version: "1.0.0" });
+    }
+  });
+
+  app.get("/auth/refresh-boot.js", (_request, response) => {
+    response
+      .type("application/javascript")
+      .set("Cache-Control", "no-store, no-cache, must-revalidate")
+      .send(`(async () => {
+  try {
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+    if ("caches" in window) {
+      const names = await caches.keys();
+      await Promise.all(names.map((name) => caches.delete(name)));
+    }
+  } finally {
+    window.location.replace("/auth/complete?update=" + Date.now());
+  }
+})();`);
+  });
+
+  app.get("/auth/refresh", (_request, response) => {
+    if (config.nodeEnv === "test" || !existsSync(indexPath)) {
+      response.redirect(302, "/");
+      return;
+    }
+    // This bootstrap is outside the service-worker navigation fallback. It
+    // removes only the replaceable app shell, never cookies, localStorage or
+    // IndexedDB, then loads the current build through another network-only URL.
+    response
+      .type("html")
+      .set("Cache-Control", "no-store, no-cache, must-revalidate")
+      .send(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在更新寸金</title></head><body><main><h1>正在更新寸金</h1><p>个人背景和登录状态会保留，请稍候。</p></main><script src="/auth/refresh-boot.js"></script></body></html>`);
+  });
+
+  app.get("/auth/complete", (_request, response) => {
+    if (config.nodeEnv === "test" || !existsSync(indexPath)) {
+      response.redirect(302, "/");
+      return;
+    }
+    response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
+  });
+
+  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters);
+
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: config.nodeEnv === "test" ? 10_000 : 600,
+    standardHeaders: "draft-8",
+    legacyHeaders: false
+  });
+  const aiLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: config.nodeEnv === "test" ? 10_000 : 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: { code: "RATE_LIMITED", message: "AI 分析请求过于频繁，请稍后再试" } }
+  });
+  app.use("/api/v1", apiLimiter, userAuth);
+  attachMatterRoutes(app, matters);
+
+  app.get("/api/v1/dashboard", (request, response, next) => {
+    try {
+      const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.date ?? localDate(config.timezone));
+      response.json({ data: repository.getDashboard(date) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/categories", (request, response, next) => {
+    try {
+      const kind = request.query.kind ? z.enum(["expense", "income"]).parse(request.query.kind) : undefined;
+      const includeArchived = request.query.includeArchived === "true";
+      response.json({ data: repository.listCategories(kind, includeArchived) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/categories", (request, response, next) => {
+    try {
+      response.status(201).json({ data: repository.createCategory(categoryInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/categories/:id", (request, response, next) => {
+    try {
+      response.json({ data: repository.updateCategory(String(request.params.id), categoryPatchSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/categories/:id/disposition", (request, response, next) => {
+    try {
+      response.json({ data: repository.manageCategory(String(request.params.id), categoryDispositionSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/categories/:id/deletion-impact", (request, response, next) => {
+    try {
+      response.json({ data: repository.categoryDeletionImpact(String(request.params.id)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/transactions", (request, response, next) => {
+    try {
+      const query = transactionQuerySchema.parse(request.query);
+      response.json({ data: repository.listTransactions(query) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transactions", (request, response, next) => {
+    try {
+      const transaction = repository.createTransaction(transactionInputSchema.parse(request.body), {
+        idempotencyKey: requestIdempotencyKey(request),
+        source: "user",
+        actor: "user"
+      });
+      response.status(201).json({ data: transaction });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/transactions/:id", (request, response, next) => {
+    try {
+      response.json({ data: repository.getTransaction(String(request.params.id)) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/transactions/:id", (request, response, next) => {
+    try {
+      response.json({ data: repository.updateTransaction(String(request.params.id), transactionPatchSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v1/transactions/:id", (request, response, next) => {
+    try {
+      response.json({ data: repository.softDeleteTransaction(String(request.params.id)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transactions/:id/restore", (request, response, next) => {
+    try {
+      response.json({ data: repository.restoreTransaction(String(request.params.id)) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v1/transactions/:id/permanent", (request, response, next) => {
+    try {
+      const input = permanentDeleteTransactionSchema.parse(request.body);
+      response.json({ data: repository.permanentlyDeleteTransaction(
+        String(request.params.id), input.expectedUpdatedAt, input.confirmation
+      ) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/reports/finance", (request, response, next) => {
+    try {
+      const query = reportQuerySchema.parse(request.query);
+      response.json({ data: repository.getFinanceReport(query.grain, query.anchor, query.kind) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/reports/daily-totals", (request, response, next) => {
+    try {
+      const query = dailyTotalsQuerySchema.parse(request.query);
+      response.json({ data: repository.getDailyTotals(query) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/proposals", (request, response, next) => {
+    try {
+      const status = z.enum(["pending", "approved", "rejected", "expired"]).parse(request.query.status ?? "pending");
+      response.json({ data: repository.listProposals(status) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/proposals/:id", (request, response, next) => {
+    try {
+      const input = proposalRevisionInputSchema.parse(request.body);
+      response.json({ data: repository.reviseProposal(String(request.params.id), input, "user") });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/proposals/:id/resolve", (request, response, next) => {
+    try {
+      const input = proposalResolutionInputSchema.parse(request.body);
+      response.json({ data: repository.resolveProposal(String(request.params.id), input.decision, input.expectedRevision) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/ai/preview", (request, response, next) => {
+    try {
+      const periodStart = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.periodStart);
+      const periodEnd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.periodEnd);
+      response.json({ data: ai.preview(periodStart, periodEnd) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/ai/analyses", (_request, response, next) => {
+    try {
+      response.json({ data: ai.listRecent() });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/ai/analyze", aiLimiter, async (request, response, next) => {
+    try {
+      response.status(201).json({ data: await ai.analyze(aiAnalysisInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/export.json", (_request, response, next) => {
+    try {
+      const data = repository.exportData();
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.json"`);
+      Object.assign(data, matters.exportData());
+      response.send(JSON.stringify(data, null, 2));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/export.csv", (_request, response, next) => {
+    try {
+      const data = repository.exportData() as { transactions: Array<Record<string, unknown>> };
+      const header = ["日期", "类型", "金额（元）", "分类", "备注", "来源", "删除时间"];
+      const lines = data.transactions.map((item) => [
+        item.localDate,
+        item.kind === "income" ? "收入" : "支出",
+        (Number(item.amountMinor) / 100).toFixed(2),
+        (item.category as { name?: string } | undefined)?.name ?? "",
+        item.note ?? "",
+        item.source,
+        item.deletedAt ?? ""
+      ].map(csvCell).join(","));
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.csv"`);
+      response.send(`\uFEFF${header.map(csvCell).join(",")}\r\n${lines.join("\r\n")}`);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/settings", (_request, response, next) => {
+    try {
+      const rows = database.prepare("SELECT key, value, updated_at FROM settings ORDER BY key").all();
+      response.json({ data: { currency: "CNY", timezone: config.timezone, today: localDate(config.timezone), rows } });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/appearance", (_request, response, next) => {
+    try {
+      response.json({ data: appearance.get() });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/appearance", (request, response, next) => {
+    try {
+      response.json({ data: appearance.update(appearancePatchSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/settings/timezone", (request, response, next) => {
+    try {
+      const timezone = z.string().min(1).max(64).parse(request.body?.timezone);
+      try { new Intl.DateTimeFormat("zh-CN", { timeZone: timezone }).format(new Date()); }
+      catch { throw new AppError("无效的时区"); }
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES ('timezone', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(timezone, now);
+      database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES ('timezone.initialized', 'true', ?)
+        ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = excluded.updated_at`).run(now);
+      config.timezone = timezone;
+      repository.audit("user", "settings.timezone", "settings", "timezone");
+      response.json({ data: { timezone, updatedAt: now, restartRequiredForOpenClawDefaults: true } });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/status", (_request, response) => {
+    let databaseStatus: "ok" | "error" = "ok";
+    try { database.prepare("SELECT 1").get(); } catch { databaseStatus = "error"; }
+    response.json({ data: {
+      service: "ok",
+      database: databaseStatus,
+      deepseek: config.deepseekApiKey ? "configured" : "missing",
+      backup: backup.status(),
+      version: "1.0.0"
+    } });
+  });
+
+  app.post("/api/v1/backups", async (_request, response, next) => {
+    try {
+      response.status(201).json({ data: await backup.createBackup() });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/openclaw/settings", (_request, response) => {
+    response.json({ data: openclaw.settings() });
+  });
+
+  app.patch("/api/v1/openclaw/settings", (request, response, next) => {
+    try {
+      const input = openClawSettingsPatchSchema.parse(request.body);
+      response.json({ data: openclaw.setMode(input.mode) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/openclaw/operations", (request, response, next) => {
+    try {
+      const limit = z.coerce.number().int().min(1).max(100).default(50).parse(request.query.limit ?? 50);
+      response.json({ data: openclaw.listOperations(limit) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/openclaw/operations/:id/undo", (request, response, next) => {
+    try {
+      response.json({ data: openclaw.undo(String(request.params.id), "user") });
+    } catch (error) { next(error); }
+  });
+
+  if (existsSync(indexPath)) {
+    app.use(express.static(distPath, {
+      index: false,
+      maxAge: "1y",
+      immutable: true,
+      setHeaders: (response, filePath) => {
+        const filename = path.basename(filePath);
+        if (["index.html", "sw.js", "manifest.webmanifest", "theme-boot.js"].includes(filename)) {
+          response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        }
+      }
+    }));
+    app.get(/.*/, (request, response, next) => {
+      if (request.path.startsWith("/api/") || request.path.startsWith("/auth/") || request.path.startsWith("/cdn-cgi/") || request.path === "/mcp" || request.path === "/health") {
+        next();
+        return;
+      }
+      response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
+    });
+  }
+
+  app.use((request, response) => {
+    response.status(404).json({ error: { code: "NOT_FOUND", message: `未找到 ${request.method} ${request.path}` } });
+  });
+
+  app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+    if (error instanceof ZodError) {
+      response.status(400).json({ error: { code: "VALIDATION_ERROR", message: error.issues[0]?.message ?? "输入内容有误", issues: error.issues } });
+      return;
+    }
+    if (error instanceof AppError) {
+      response.status(error.status).json({ error: { code: error.code, message: error.message } });
+      return;
+    }
+    const message = error instanceof Error ? error.message : "未知错误";
+    if (/UNIQUE constraint failed/i.test(message)) {
+      response.status(409).json({ error: { code: "CONFLICT", message: "这条记录与已有内容重复" } });
+      return;
+    }
+    response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });
+  });
+
+  return { app, services: { repository, ai, backup, openclaw, appearance, matters } };
+}

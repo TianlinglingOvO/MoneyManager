@@ -1,0 +1,48 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+- `src/` contains the React/Vite PWA. `InsightsPage.tsx` owns `/`; `/analytics` redirects there. `BillsPage.tsx` owns the flat recent, monthly, and yearly bill views.
+- Reuse shared components in `src/components/`; keep Recharts imports inside lazy-loaded `FinanceCharts.tsx`.
+- Keep category composition filtering, percentage calculation, and adaptive sector spacing in `src/category-composition.ts`; do not duplicate those rules in page components.
+- `src/appearance.tsx`, `src/device-background.ts`, and `src/ledger-clock.tsx` own appearance, local backgrounds, and ledger date. Tokens and responsive layouts live in `src/styles.css`.
+- `server/` contains app services; `server/matters.ts` owns borrowers, loans, repayments, subscriptions, payments, ledger links, and matter exports. `shared/` holds Zod schemas/types; `db/` holds migrations; `tests/` holds coverage.
+- Treat `data/`, `backups/`, `.env`, `output/`, `dist/`, and `dist-server/` as generated or private.
+
+## Build, Test, and Development Commands
+
+Use Node.js 22+; prefer `npm.cmd` on Windows:
+
+- `npm.cmd run dev`: start API and Vite.
+- `npm.cmd test`: run Vitest once.
+- `npm.cmd run typecheck`: validate browser and server TypeScript.
+- `npm.cmd run build`: create production output; `npm.cmd start` serves it.
+- `npm.cmd run backup:snapshot -- <label>`: create and integrity-check a pre-deployment SQLite snapshot.
+
+## Coding Style & Naming Conventions
+
+Use strict TypeScript, two-space indentation, semicolons, and double quotes. Use `PascalCase` for components/types and `camelCase` for functions/variables. Prefer `@/` and `@shared/` imports. Validate with Zod and store currency in integer minor units. Extend semantic CSS tokens; preserve 44px mobile targets, visible focus, WCAG AA, and `prefers-reduced-motion`.
+
+## Architecture & Safety Invariants
+
+- SQLite is authoritative. Browser storage may contain appearance, device layout, scroll/filter state, and device-only images, but never ledger copies or amount/note drafts.
+- `localDate` is the occurrence date; `createdAt` is recording time. Period boundaries, “today,” AI defaults, and relative dates must use `LedgerClock` from `/api/v1/settings`, not the browser timezone.
+- Matters are statistically separate from the ledger. Only an explicit `LedgerLink` may create or reference a transaction; that transaction and the matter never synchronize afterward. CNY loan links must match amount and kind, while USD subscription links represent the actual CNY charge.
+- Loan repayments belong to one loan and cannot exceed its outstanding amount. Subscription renewals never advance automatically: only a recorded payment advances the anchored month/year/custom cycle. Keep CNY and USD summaries separate.
+- Preserve soft-deleted borrowers, loans, repayments, subscriptions, and payments for 30 days. Full JSON and matter CSV exports must not silently stop at the API page limit.
+- Keep matter writes and optional ledger creation in one SQLite savepoint/transaction. OpenClaw matter writes require `direct` mode, a unique `requestId`, version checks, and reversible operation snapshots.
+- Keep insight period/kind in shareable URL parameters. Preserve drill-down return context and bill scroll/filter state.
+- Keep insight category panels mutually exclusive: detail shows rank, amount, and period change; composition shows every current positive-value category in the donut and legend with amount, share, and drill-down. Never collapse categories into an `other` slice.
+- Keep bill navigation flat and URL-compatible: `/bills` is recent, `view=ledger&period=month` is monthly, `view=ledger&period=year` is yearly, and `view=trash` is the global period-independent trash. Never persist trash mode in session state or inherit it during insight drill-down.
+- A normal transaction delete is always soft. Permanent transaction deletion is allowed only from trash with `updatedAt` conflict protection. Category purge requires a fresh impact revision plus exact-name confirmation, removes all category transactions atomically, detaches matter links, rejects affected pending proposals, and invalidates related undo snapshots. It is deliberately non-undoable; do not add a bulk “empty trash” action.
+- Shared sheets/dialogs must manage and restore focus, support Escape/Android back, and confirm before discarding dirty forms. Background polling must not replay entry animations.
+- Keep motion centralized in `src/motion.ts`: micro feedback is 120–160ms, panels/routes are 220–280ms, trend charts are 800ms, and donut charts are 900ms. Start chart motion only after matching non-placeholder data arrives, play it once on session entry or deliberate user changes, and disable both CSS and Recharts animation for `prefers-reduced-motion`. Recharts completion must use its lifecycle callbacks; never stop chart animation with a wall-clock timer.
+- Personal image bytes stay in IndexedDB. OpenClaw cannot modify appearance. Never log credentials, notes, amounts, or sensitive request bodies.
+- The in-app boot splash is decorative, pointer-free, session-once, shorter than 800ms, and skipped for `prefers-reduced-motion`; it must never delay data initialization or replay on routing/background refresh.
+- Keep `/api`, `/auth`, `/cdn-cgi`, and `/mcp` outside PWA navigation caching.
+
+## Testing & Change Review
+
+Name tests `*.test.ts` or `*.test.tsx`; use Supertest and React Testing Library. Cover precision, authorization, timezone boundaries, URL state, sorting, focus behavior, undo conflicts, and mobile layouts. For visible changes, inspect 1440×900, 1024×768, and 412×915. Capture stable Playwright completion-state screenshots only after chart `data-animation-running` becomes `false`; keep comparison artifacts under `output/playwright/`. Then run tests, typecheck, and build.
+
+Use imperative commits such as `Refine insights navigation`. PRs should describe behavior/data changes, verification, migration/configuration impact, and screenshots. Back up production SQLite before deployment; never commit databases, backups, tokens, keys, or `.env`.
