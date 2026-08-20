@@ -8,11 +8,11 @@ import type { CategoryMetric, TrendPoint } from "../shared/types";
 
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  AreaChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  PieChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  Area: ({ animationBegin, animationDuration, animationEasing, isAnimationActive, onAnimationStart, onAnimationEnd }: { animationBegin: number; animationDuration: number; animationEasing: string; isAnimationActive: boolean; onAnimationStart: () => void; onAnimationEnd: () => void }) => <div data-testid="area-motion" data-begin={animationBegin} data-duration={animationDuration} data-easing={animationEasing} data-active={isAnimationActive}><button onClick={onAnimationStart}>趋势开始</button><button onClick={onAnimationEnd}>趋势完成</button></div>,
-  Pie: ({ animationBegin, animationDuration, animationEasing, isAnimationActive, paddingAngle, onAnimationStart, onAnimationEnd, children }: { animationBegin: number; animationDuration: number; animationEasing: string; isAnimationActive: boolean; paddingAngle: number; onAnimationStart: () => void; onAnimationEnd: () => void; children: ReactNode }) => <div data-testid="pie-motion" data-begin={animationBegin} data-duration={animationDuration} data-easing={animationEasing} data-active={isAnimationActive} data-padding={paddingAngle}><button onClick={onAnimationStart}>构成开始</button><button onClick={onAnimationEnd}>构成完成</button>{children}</div>,
-  Cell: ({ className }: { className?: string }) => <div className={className} />,
+  AreaChart: ({ children }: { children: ReactNode }) => <svg>{children}</svg>,
+  PieChart: ({ children }: { children: ReactNode }) => <svg>{children}</svg>,
+  Area: ({ animationBegin, animationDuration, animationEasing, isAnimationActive, onAnimationStart, onAnimationEnd }: { animationBegin: number; animationDuration: number; animationEasing: string; isAnimationActive: boolean; onAnimationStart: () => void; onAnimationEnd: () => void }) => <foreignObject data-testid="area-motion" data-begin={animationBegin} data-duration={animationDuration} data-easing={animationEasing} data-active={isAnimationActive}><button onClick={onAnimationStart}>趋势开始</button><button onClick={onAnimationEnd}>趋势完成</button></foreignObject>,
+  Pie: ({ animationBegin, animationDuration, animationEasing, isAnimationActive, paddingAngle, onAnimationStart, onAnimationEnd, children }: { animationBegin: number; animationDuration: number; animationEasing: string; isAnimationActive: boolean; paddingAngle: number; onAnimationStart: () => void; onAnimationEnd: () => void; children: ReactNode }) => <foreignObject data-testid="pie-motion" data-begin={animationBegin} data-duration={animationDuration} data-easing={animationEasing} data-active={isAnimationActive} data-padding={paddingAngle}><button onClick={onAnimationStart}>构成开始</button><button onClick={onAnimationEnd}>构成完成</button>{children}</foreignObject>,
+  Cell: ({ className }: { className?: string }) => <span className={className} />,
   CartesianGrid: () => null,
   ReferenceLine: () => null,
   Tooltip: () => null,

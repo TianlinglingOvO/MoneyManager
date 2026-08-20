@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-labelledby="title desc">
+  <title id="title">SMB</title>
+  <desc id="desc">Sutady Moneybook 共用骨架合字</desc>
+  <rect x="3" y="3" width="174" height="174" rx="39" fill="#291D3A"/>
+  <g fill="none" stroke="#FFF3E4" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M67 49H43c-10 0-16 6-16 15s7 15 17 15h8c11 0 18 7 18 17s-7 18-19 18H27"/>
+    <path d="M84 119V49l20 27 20-27v70"/>
+    <path d="M124 49h13c12 0 20 7 20 18 0 9-6 15-15 17 11 2 18 9 18 19 0 12-9 20-23 20h-13"/>
+  </g>
+  <circle cx="124" cy="84" r="7" fill="#F06B55"/>
+</svg>

@@ -15,7 +15,7 @@ let backupTimer: NodeJS.Timeout | null = null;
 server.listen(config.port, config.host, () => {
   if (config.nodeEnv === "production") backupTimer = services.backup.startDailyScheduler();
   const authLabel = config.authMode === "cloudflare" ? "Cloudflare Access" : "本地开发模式";
-  console.log(`寸金记账已启动：http://${config.host}:${config.port}（${authLabel}）`);
+  console.log(`SMB 已启动：http://${config.host}:${config.port}（${authLabel}）`);
 });
 
 function shutdown(): void {

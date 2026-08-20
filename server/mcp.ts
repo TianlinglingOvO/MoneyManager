@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { AppConfig } from "./config";
 import type { LedgerRepository } from "./repository";
+import { APP_VERSION } from "../shared/app-metadata";
 import type { AiService } from "./ai";
 import type { BackupService } from "./backup";
 import type { OpenClawControlService } from "./openclaw-control";
@@ -41,7 +42,7 @@ export function createLedgerMcpServer(
   config: AppConfig,
   services?: { ai: AiService; backup: BackupService; openclaw: OpenClawControlService; matters?: MattersRepository }
 ): McpServer {
-  const server = new McpServer({ name: "sutady-money-manager", version: "1.0.0" });
+  const server = new McpServer({ name: "sutady-money-manager", version: APP_VERSION });
 
   server.registerTool("list_categories", {
     description: "列出可用于记账的收入或支出分类。",
@@ -213,7 +214,7 @@ function registerDirectTools(
   const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
   server.registerTool("get_openclaw_control_status", {
-    description: "查看寸金当前是需要网页确认还是允许 OpenClaw 直接操作。只返回能力和状态，永不返回密钥。",
+    description: "查看 SMB 当前是需要网页确认还是允许 OpenClaw 直接操作。只返回能力和状态，永不返回密钥。",
     inputSchema: {}
   }, async () => textResult({ ...openclaw.settings(), deepseekConfigured: Boolean(config.deepseekApiKey), backupRemoteConfigured: Boolean(config.backupAgeRecipient && config.rcloneRemote) }));
 

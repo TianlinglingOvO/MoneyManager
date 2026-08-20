@@ -1,4 +1,4 @@
-# 寸金记账部署指南
+# SMB 部署指南
 
 下面的账号授权步骤必须由账本所有者亲自完成。所有模板都不含真实密钥，也不会修改 OpenClaw 的 18789 端口。
 
@@ -74,16 +74,16 @@ MCP 路径应用设置：
 
 默认模型是经济型 `deepseek-v4-flash`，并关闭思考模式以减少日常分析开销。请求使用官方 `/chat/completions` 与 JSON Output；密钥不进入页面、数据库、日志或代码。
 
-给已经部署好的寸金记账添加或更换密钥时，不需要手工编辑 `.env`：
+给已经部署好的 SMB 添加或更换密钥时，不需要手工编辑 `.env`：
 
 1. 双击项目根目录的 `配置DeepSeek密钥.cmd`。
 2. 在弹出的窗口中粘贴 DeepSeek API Key。输入不会显示，粘贴后直接按 Enter。
-3. 看到“配置完成”后重启寸金记账服务。
+3. 看到“配置完成”后重启 SMB 服务。
 4. 打开设置页确认 DeepSeek 状态变成“已配置”，然后在 AI 页面选择一段有账目的期间进行首次分析。
 
 脚本只会更新本机 `.env` 中的 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_MODEL`，不会把密钥保存到网页、SQLite 数据库或日志。
 
-DeepSeek 当前只支持开启或关闭思考模式，没有低、中、高等级。寸金默认使用 `DEEPSEEK_THINKING=disabled`；如需开启，可改为 `DEEPSEEK_THINKING=enabled`。修改后必须重启服务。
+DeepSeek 当前只支持开启或关闭思考模式，没有低、中、高等级。SMB 默认使用 `DEEPSEEK_THINKING=disabled`；如需开启，可改为 `DEEPSEEK_THINKING=enabled`。修改后必须重启服务。
 
 配置完成后，在“设置”页应看到 DeepSeek 为“已配置”。第一次分析前，页面会明确显示发送期间、笔数和字段。账目变化后旧报告会标记为需要重新分析。
 

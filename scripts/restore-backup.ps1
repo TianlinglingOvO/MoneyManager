@@ -36,7 +36,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "备份没有通过 SQLite 完整性检查。" }
 
   $activeConnection = Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue
-  if ($activeConnection) { throw "寸金服务仍在运行。请先停止计划任务和手动服务后再恢复。" }
+  if ($activeConnection) { throw "SMB 服务仍在运行。请先停止计划任务和手动服务后再恢复。" }
 
   if ($PSCmdlet.ShouldProcess($targetDatabase, "用已验证的备份替换主数据库")) {
     $targetDirectory = Split-Path -Parent $targetDatabase

@@ -11,7 +11,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $environmentPath = Join-Path $projectRoot ".env"
 
 if (-not (Test-Path -LiteralPath $environmentPath)) {
-  throw "缺少本机配置 .env，请先完成寸金记账的本机部署。"
+  throw "缺少本机配置 .env，请先完成 SMB 的本机部署。"
 }
 
 $secureKey = Read-Host "请粘贴 DeepSeek API Key（输入内容不会显示），然后按 Enter" -AsSecureString
@@ -59,7 +59,7 @@ try {
     Write-Host "模型：$Model"
     Write-Host "思考模式：$Thinking"
     Write-Host "密钥没有写入网页、数据库或日志。"
-    Write-Host "请重启寸金记账服务后再进行 AI 分析。"
+    Write-Host "请重启 SMB 服务后再进行 AI 分析。"
   }
 } finally {
   $plainKey = $null

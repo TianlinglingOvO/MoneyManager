@@ -13,11 +13,11 @@
 3. 插入 U 盘或选择另一台设备可保存的位置，再生成离线恢复密钥：
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\initialize-backup.ps1 -RecoveryKeyPath "E:\寸金恢复密钥.txt" -RcloneRemote "money-drive"
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\initialize-backup.ps1 -RecoveryKeyPath "E:\SMB恢复密钥.txt" -RcloneRemote "money-drive"
    ```
 
 4. 把恢复密钥移出笔记本并妥善保存。应用只保留公钥，Google Drive 只保存加密文件；私钥丢失后远端备份无法解密。
-5. 重启寸金服务，在设置页点击“立即备份”，确认显示“加密副本已上传到 Google Drive”。
+5. 重启 SMB 服务，在设置页点击“立即备份”，确认显示“加密副本已上传到 Google Drive”。
 
 ## 验证普通快照
 
@@ -30,13 +30,13 @@ node .\scripts\verify-sqlite.mjs ".\backups\local\money-某个时间.sqlite"
 ## 从 Google Drive 恢复
 
 1. 用 `rclone copy` 把需要的 `.sqlite.age` 下载到本机临时目录。
-2. 停止“寸金记账”计划任务和正在运行的服务。
+2. 停止旧版兼容名称“寸金记账”的计划任务和正在运行的 SMB 服务。
 3. 执行恢复；PowerShell 会再次询问确认：
 
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore-backup.ps1 `
      -BackupPath "D:\Downloads\money-时间.sqlite.age" `
-     -IdentityPath "E:\寸金恢复密钥.txt"
+     -IdentityPath "E:\SMB恢复密钥.txt"
    ```
 
 4. 脚本会先解密到临时目录、做完整性和外键检查，再把当前数据库复制到 `backups\pre-restore`，最后替换主库并再次检查。

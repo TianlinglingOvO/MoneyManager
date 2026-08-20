@@ -20,21 +20,23 @@ describe("冷启动品牌开屏", () => {
       removeEventListener: vi.fn()
     }));
     render(<BootSplash />);
-    expect(screen.queryByText("寸金")).not.toBeInTheDocument();
+    expect(screen.queryByText("SMB")).not.toBeInTheDocument();
   });
 
   it("每个浏览会话只播放一次并在 0.8 秒内退出", async () => {
     vi.useFakeTimers();
     window.sessionStorage.clear();
     const first = render(<BootSplash />);
-    expect(screen.getByText("寸金")).toBeInTheDocument();
+    expect(screen.getByText("SMB")).toBeInTheDocument();
+    expect(screen.getByText("Sutady Moneybook")).toBeInTheDocument();
+    expect(document.querySelector('img[src="/smb-favicon-v2.svg"]')).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(440); });
-    expect(screen.getByText("寸金").closest(".boot-splash")).toHaveClass("is-closing");
+    expect(screen.getByText("SMB").closest(".boot-splash")).toHaveClass("is-closing");
     await act(async () => { await vi.advanceTimersByTimeAsync(280); });
-    expect(screen.queryByText("寸金")).not.toBeInTheDocument();
+    expect(screen.queryByText("SMB")).not.toBeInTheDocument();
 
     first.unmount();
     render(<BootSplash />);
-    expect(screen.queryByText("寸金")).not.toBeInTheDocument();
+    expect(screen.queryByText("SMB")).not.toBeInTheDocument();
   });
 });

@@ -15,6 +15,7 @@ import {
 import { api } from "../api";
 import { useEntry } from "../entry-context";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { BrandMark } from "./BrandMark";
 
 const sidebarStorageKey = "money-manager.sidebar-collapsed";
 
@@ -78,8 +79,8 @@ export function AppShell() {
     <div className={`app-shell ${collapsed ? "sidebar-is-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand__mark">寸</span>
-          <div className="brand__copy"><strong>寸金记账</strong><small>私人账本</small></div>
+          <BrandMark className="brand__mark" compact />
+          <div className="brand__copy"><strong>SMB</strong><small>Sutady Moneybook</small></div>
         </div>
         <button className="sidebar__collapse" type="button" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? "展开侧栏" : "收起侧栏"} title={collapsed ? "展开侧栏" : "收起侧栏"}>
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
@@ -102,7 +103,10 @@ export function AppShell() {
 
       <div className="main-column">
         <header className="mobile-header">
-          <div className="brand brand--mobile"><span className="brand__mark">寸</span><strong>寸金</strong></div>
+          <div className="brand brand--mobile">
+            <BrandMark className="brand__mark" compact />
+            <div className="brand__copy"><strong>SMB</strong><small>Sutady Moneybook</small></div>
+          </div>
           <div className="mobile-header__actions">
             <NavLink to="/proposals" className="icon-button" aria-label={`OpenClaw 操作中心${pending ? `，${pending}项待处理` : ""}`}>
               <BellRing size={20} />{pending > 0 && <span className="icon-badge">{pending}</span>}

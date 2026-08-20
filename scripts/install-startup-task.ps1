@@ -16,6 +16,6 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
 if ($PSCmdlet.ShouldProcess($TaskName, "注册当前用户登录启动并在失败后重启的任务")) {
-  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "寸金私人记账服务；仅监听 127.0.0.1:8788" -Force | Out-Null
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "SMB 私人账本服务；仅监听 127.0.0.1:8788" -Force | Out-Null
   Write-Host "已注册任务：$TaskName"
 }

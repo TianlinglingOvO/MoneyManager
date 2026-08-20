@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useReducedMotion } from "../motion";
+import { BrandMark } from "./BrandMark";
 
 const sessionKey = "money-manager.boot-splash.v1";
 let claimedThisDocument = false;
@@ -39,8 +40,9 @@ export function BootSplash() {
   return (
     <div className={`boot-splash ${phase === "closing" ? "is-closing" : ""}`} aria-hidden="true">
       <div className="boot-splash__brand">
-        <span>寸</span>
-        <strong>寸金</strong>
+        <BrandMark compact />
+        <strong>SMB</strong>
+        <small>Sutady Moneybook</small>
       </div>
     </div>
   );

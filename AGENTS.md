@@ -7,6 +7,7 @@
 - Keep category composition filtering, percentage calculation, and adaptive sector spacing in `src/category-composition.ts`; do not duplicate those rules in page components.
 - `src/appearance.tsx`, `src/device-background.ts`, and `src/ledger-clock.tsx` own appearance, local backgrounds, and ledger date. Tokens and responsive layouts live in `src/styles.css`.
 - `server/` contains app services; `server/matters.ts` owns borrowers, loans, repayments, subscriptions, payments, ledger links, and matter exports. `shared/` holds Zod schemas/types; `db/` holds migrations; `tests/` holds coverage.
+- `shared/app-metadata.ts` exposes the external SMB brand and reads the canonical version from `package.json`. Editable brand SVGs and generated PWA icons live in `public/`; regenerate PNGs with `scripts/build-brand-assets.ps1`.
 - Treat `data/`, `backups/`, `.env`, `output/`, `dist/`, and `dist-server/` as generated or private.
 
 ## Build, Test, and Development Commands
@@ -40,9 +41,11 @@ Use strict TypeScript, two-space indentation, semicolons, and double quotes. Use
 - Personal image bytes stay in IndexedDB. OpenClaw cannot modify appearance. Never log credentials, notes, amounts, or sensitive request bodies.
 - The in-app boot splash is decorative, pointer-free, session-once, shorter than 800ms, and skipped for `prefers-reduced-motion`; it must never delay data initialization or replay on routing/background refresh.
 - Keep `/api`, `/auth`, `/cdn-cgi`, and `/mcp` outside PWA navigation caching.
+- The external product is `SMB — Sutady Moneybook`, positioned as `私人账本`. The mark always uses `#291D3A`, `#F06B55`, and `#FFF3E4`; themes must not recolor it. Keep domain, database paths, environment variables, Cloudflare configuration, MCP name `sutady-money-manager`, cache keys, and export format unchanged.
+- `package.json` is the only version source. Increment patch for fixes/polish, minor for backward-compatible features, and major for product identity or incompatible contracts. Health, status, settings, and MCP metadata must import the shared version instead of hard-coding it.
 
 ## Testing & Change Review
 
 Name tests `*.test.ts` or `*.test.tsx`; use Supertest and React Testing Library. Cover precision, authorization, timezone boundaries, URL state, sorting, focus behavior, undo conflicts, and mobile layouts. For visible changes, inspect 1440×900, 1024×768, and 412×915. Capture stable Playwright completion-state screenshots only after chart `data-animation-running` becomes `false`; keep comparison artifacts under `output/playwright/`. Then run tests, typecheck, and build.
 
-Use imperative commits such as `Refine insights navigation`. PRs should describe behavior/data changes, verification, migration/configuration impact, and screenshots. Back up production SQLite before deployment; never commit databases, backups, tokens, keys, or `.env`.
+Use imperative commits such as `Refine insights navigation`. PRs should describe behavior/data changes, verification, migration/configuration impact, and screenshots. Maintain local Git history on `main`; never configure or push a remote without explicit authorization. Back up production SQLite before deployment; never commit databases, backups, tokens, keys, or `.env`.

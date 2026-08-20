@@ -30,6 +30,7 @@ describe("OpenClaw MCP", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
+      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.0.0" });
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "direct_add_transaction",

@@ -6,13 +6,13 @@ openclaw_dir="$HOME/.openclaw"
 openclaw_env="$openclaw_dir/.env"
 
 if [[ ! -f "$windows_env" ]]; then
-  printf '找不到寸金本机配置：%s\n' "$windows_env" >&2
+  printf '找不到 SMB 本机配置：%s\n' "$windows_env" >&2
   exit 1
 fi
 
 money_manager_token="$(awk -F= '$1 == "MCP_API_TOKEN" { sub(/^[^=]*=/, ""); print }' "$windows_env" | tail -n 1)"
 if [[ -z "$money_manager_token" ]]; then
-  printf '寸金 .env 中缺少 MCP_API_TOKEN。\n' >&2
+  printf 'SMB .env 中缺少 MCP_API_TOKEN。\n' >&2
   exit 1
 fi
 
@@ -47,6 +47,6 @@ mv -f "$temporary_env" "$openclaw_env"
 
 trap - EXIT
 unset money_manager_token cloudflare_client_id cloudflare_client_secret
-printf '\nOpenClaw 的三个寸金凭据已写入 ~/.openclaw/.env。\n'
+printf '\nOpenClaw 的三个 SMB 凭据已写入 ~/.openclaw/.env。\n'
 printf '文件权限已设置为仅当前 WSL 用户可读写。\n'
 printf '下一步仍需创建 Cloudflare 的 /mcp Service Auth 应用。\n'

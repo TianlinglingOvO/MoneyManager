@@ -30,6 +30,7 @@ import {
   X
 } from "lucide-react";
 import type { AppearanceBackgroundPreset, AppearancePreferences, AppearancePreset, Category, TransactionKind } from "@shared/types";
+import { APP_VERSION } from "@shared/app-metadata";
 import { api } from "../api";
 import { useAppearance } from "../appearance";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
@@ -330,7 +331,7 @@ export function SettingsPage() {
           <div><span className="status-icon"><Database size={20} /></span><p>数据库</p><strong>{status.data?.database === "ok" ? "运行正常" : "等待连接"}</strong><small>SQLite · 本机 SSD</small></div>
           <div><span className="status-icon"><Bot size={20} /></span><p>DeepSeek</p><strong>{status.data?.deepseek === "configured" ? "已配置" : "尚未配置"}</strong><small>密钥仅保存在本机</small></div>
           <div><span className="status-icon"><HardDrive size={20} /></span><p>最近备份</p><strong>{status.data?.backup.lastSuccessAt ? new Date(status.data.backup.lastSuccessAt).toLocaleDateString("zh-CN") : "尚未备份"}</strong><small>{status.data?.backup.remoteConfigured ? "本地 + Google Drive" : "本地快照可用"}</small></div>
-          <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>寸金 {status.data?.version ?? "1.0.0"}</strong><small>单人私人账本</small></div>
+          <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>私人账本</small></div>
         </div>
       </section>
 

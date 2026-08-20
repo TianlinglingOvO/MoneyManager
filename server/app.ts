@@ -31,6 +31,7 @@ import { attachMcpRoutes } from "./mcp";
 import { OpenClawControlService } from "./openclaw-control";
 import { AppearanceService } from "./appearance";
 import { MattersRepository, attachMatterRoutes } from "./matters";
+import { APP_VERSION } from "../shared/app-metadata";
 
 function localDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -102,9 +103,9 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.get("/health", (_request, response) => {
     try {
       const row = database.prepare("SELECT 1 AS ok").get() as { ok: number };
-      response.json({ status: row.ok === 1 ? "ok" : "error", version: "1.0.0" });
+      response.json({ status: row.ok === 1 ? "ok" : "error", version: APP_VERSION });
     } catch {
-      response.status(503).json({ status: "error", version: "1.0.0" });
+      response.status(503).json({ status: "error", version: APP_VERSION });
     }
   });
 
@@ -139,7 +140,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response
       .type("html")
       .set("Cache-Control", "no-store, no-cache, must-revalidate")
-      .send(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在更新寸金</title></head><body><main><h1>正在更新寸金</h1><p>个人背景和登录状态会保留，请稍候。</p></main><script src="/auth/refresh-boot.js"></script></body></html>`);
+      .send(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在更新 SMB</title></head><body><main><h1>正在更新 SMB</h1><p>个人背景和登录状态会保留，请稍候。</p></main><script src="/auth/refresh-boot.js"></script></body></html>`);
   });
 
   app.get("/auth/complete", (_request, response) => {
@@ -385,7 +386,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
       database: databaseStatus,
       deepseek: config.deepseekApiKey ? "configured" : "missing",
       backup: backup.status(),
-      version: "1.0.0"
+      version: APP_VERSION
     } });
   });
 

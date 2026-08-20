@@ -223,7 +223,11 @@ describe("HTTP API", () => {
   it("允许浏览器显示仅保存在本机的 blob 背景图片", async () => {
     const app = createApp(context.config, context.database).app;
     const response = await request(app).get("/health").expect(200);
+    expect(response.body).toMatchObject({ status: "ok", version: "2.0.0" });
     expect(response.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
+
+    const status = await request(app).get("/api/v1/status").expect(200);
+    expect(status.body.data.version).toBe("2.0.0");
   });
 
   it("只有网页接口能切换 OpenClaw 模式，并可查询与撤销直接操作", async () => {

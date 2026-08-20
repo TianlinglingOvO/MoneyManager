@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "node:path";
+import { APP_DESCRIPTION, APP_FULL_NAME, APP_BRAND_NAME, BRAND_COLORS, PWA_ICONS } from "./shared/app-metadata";
 
 export default defineConfig({
   plugins: [
@@ -9,21 +10,23 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: "auto",
-      includeAssets: ["favicon.png", "pwa-192x192.png", "pwa-512x512.png"],
+      includeAssets: [
+        "smb-mark-v2.svg",
+        "smb-favicon-v2.svg",
+        "smb-pwa-192-v2.png",
+        "smb-pwa-512-v2.png",
+        "smb-maskable-512-v2.png"
+      ],
       manifest: {
-        name: "寸金记账",
-        short_name: "寸金",
-        description: "只属于你的简洁私人账本",
-        theme_color: "#f3efe7",
-        background_color: "#f3efe7",
+        name: APP_FULL_NAME,
+        short_name: APP_BRAND_NAME,
+        description: APP_DESCRIPTION,
+        theme_color: BRAND_COLORS.ink,
+        background_color: BRAND_COLORS.cream,
         display: "standalone",
         start_url: "/",
         lang: "zh-CN",
-        icons: [
-          { src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" },
-          { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" },
-          { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
-        ]
+        icons: [...PWA_ICONS]
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],

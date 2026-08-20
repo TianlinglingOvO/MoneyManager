@@ -14,7 +14,7 @@ const content: Record<ConnectionIssueCode, { title: string; description: string 
   },
   FORBIDDEN: {
     title: "当前账号没有访问权限",
-    description: "请退出当前登录状态，并使用允许访问寸金记账的邮箱重新登录。"
+    description: "请退出当前登录状态，并使用允许访问 SMB 的邮箱重新登录。"
   },
   OFFLINE: {
     title: "设备暂时没有网络",
@@ -22,7 +22,7 @@ const content: Record<ConnectionIssueCode, { title: string; description: string 
   },
   SERVICE_UNAVAILABLE: {
     title: "暂时无法连接账本服务",
-    description: "请检查本机寸金服务和 Cloudflare Tunnel 是否正在运行，然后重试。"
+    description: "请检查本机 SMB 服务和 Cloudflare Tunnel 是否正在运行，然后重试。"
   },
   INVALID_RESPONSE: {
     title: "账本服务返回了异常内容",
