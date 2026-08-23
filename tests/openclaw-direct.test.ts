@@ -5,6 +5,7 @@ import { createLedgerMcpServer } from "../server/mcp";
 import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
 import { OpenClawControlService } from "../server/openclaw-control";
+import { BudgetService } from "../server/budgets";
 import type { TestContext } from "./helpers";
 import { createTestContext, expenseCategory, transactionInput } from "./helpers";
 
@@ -23,9 +24,10 @@ describe("OpenClaw 直接接管", () => {
     context = createTestContext();
     const ai = new AiService(context.database, context.repository, context.config);
     const backup = new BackupService(context.database, context.repository, context.config);
-    control = new OpenClawControlService(context.database, context.repository, context.config);
+    const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
+    control = new OpenClawControlService(context.database, context.repository, context.config, budgets);
     control.setMode("direct");
-    server = createLedgerMcpServer(context.repository, context.config, { ai, backup, openclaw: control });
+    server = createLedgerMcpServer(context.repository, context.config, { ai, backup, openclaw: control, budgets });
     client = new Client({ name: "direct-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -116,6 +118,74 @@ describe("OpenClaw 直接接管", () => {
     } });
     expect(result.isError).toBe(true);
     expect(context.repository.listTransactions().total).toBe(0);
+  });
+
+  it("批量记账整批原子写入、幂等并可整批撤销", async () => {
+    const category = expenseCategory(context);
+    const args = {
+      requestId: "batch-create-001",
+      transactions: [
+        { kind: "expense", amount: 12.5, categoryId: category.id, localDate: "2026-08-20", note: "早餐" },
+        { kind: "expense", amount: 24.2, categoryId: category.id, localDate: "2026-08-20", note: "晚餐" }
+      ]
+    };
+    const first = parsed(await client.callTool({ name: "direct_add_transactions_batch", arguments: args }));
+    const duplicate = parsed(await client.callTool({ name: "direct_add_transactions_batch", arguments: args }));
+    expect(first.result.count).toBe(2);
+    expect(duplicate.duplicate).toBe(true);
+    expect(context.repository.listTransactions().total).toBe(2);
+    await client.callTool({ name: "undo_openclaw_operation", arguments: { operationId: first.operation.id } });
+    expect(context.repository.listTransactions().total).toBe(0);
+    expect(context.repository.listTransactions({ deleted: "trash" }).total).toBe(2);
+
+    const invalid = await client.callTool({
+      name: "direct_add_transactions_batch",
+      arguments: {
+        requestId: "batch-invalid-001",
+        transactions: [
+          { kind: "expense", amount: 10, categoryId: category.id, localDate: "2026-08-20" },
+          { kind: "income", amount: 10, categoryId: category.id, localDate: "2026-08-20" }
+        ]
+      }
+    });
+    expect(invalid.isError).toBe(true);
+    expect(context.repository.listTransactions({ deleted: "all" }).total).toBe(2);
+  });
+
+  it("OpenClaw 可设置和删除预算，并分别撤销", async () => {
+    const category = expenseCategory(context);
+    const created = parsed(await client.callTool({
+      name: "direct_set_budget",
+      arguments: {
+        requestId: "budget-set-001",
+        month: "2026-08",
+        totalAmount: 3000,
+        categories: [{ categoryId: category.id, amount: 1000 }],
+        expectedUpdatedAt: null
+      }
+    }));
+    expect(created.result.totalMinor).toBe(300_000);
+    const summary = parsed(await client.callTool({
+      name: "get_budget_summary",
+      arguments: { month: "2026-08" }
+    }));
+    expect(summary.categories[0].budgetMinor).toBe(100_000);
+
+    const deleted = parsed(await client.callTool({
+      name: "direct_delete_budget",
+      arguments: {
+        requestId: "budget-delete-001",
+        month: "2026-08",
+        expectedUpdatedAt: created.result.updatedAt
+      }
+    }));
+    expect(deleted.result.deleted).toBe(true);
+    await client.callTool({ name: "undo_openclaw_operation", arguments: { operationId: deleted.operation.id } });
+    const restored = parsed(await client.callTool({
+      name: "get_budget_summary",
+      arguments: { month: "2026-08" }
+    }));
+    expect(restored.totalMinor).toBe(300_000);
   });
 
   it("可恢复回收站账目并撤销恢复，也可撤销时区修改", async () => {
@@ -243,5 +313,28 @@ describe("OpenClaw 直接接管", () => {
     expect(result.isError).toBe(true);
     expect(context.repository.getCategory(source.id).name).toBe(source.name);
     expect(control.listOperations()).toHaveLength(beforeCount);
+  });
+
+  it("外部操作失败与超时中断会收敛为失败，详情按需返回快照", async () => {
+    await expect(control.executeExternal({
+      requestId: "external-failure-001",
+      action: "backup.create",
+      entityType: "database",
+      summary: "测试外部失败",
+      request: { mode: "test" },
+      run: async () => { throw new Error("test failure"); }
+    })).rejects.toThrow("test failure");
+    const failed = control.listOperations().find((item) => item.requestId === "external-failure-001");
+    expect(failed).toMatchObject({ status: "failed", undoable: false });
+    expect(failed?.failedAt).toBeTruthy();
+
+    const oldId = "11111111-2222-4333-8444-555555555555";
+    context.database.prepare(`INSERT INTO openclaw_operations(
+      id, request_id, request_hash, action, entity_type, entity_id, status, undoable,
+      summary, result_json, created_at, expires_at, undone_at, failed_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, 'running', 0, ?, NULL, ?, ?, NULL, NULL)`)
+      .run(oldId, "stale-running-001", "hash", "ai.analyze", "ai_report", "测试中断操作", "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z");
+    expect(control.reconcileStaleRunningOperations(15 * 60 * 1000, new Date("2026-01-01T01:00:00.000Z"))).toBe(1);
+    expect(control.getOperationDetail(oldId)).toMatchObject({ status: "failed", items: [] });
   });
 });

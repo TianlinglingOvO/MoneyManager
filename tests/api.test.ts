@@ -35,13 +35,18 @@ describe("HTTP API", () => {
     expect(list.body.data.total).toBe(1);
     expect(list.body.data.items[0].note).toBe("午餐");
 
-    await request(app).patch(`/api/v1/transactions/${id}`).send({ amountMinor: 2_500 }).expect(200);
+    const updateResponse = await request(app).patch(`/api/v1/transactions/${id}`).send({
+      amountMinor: 2_500,
+      expectedUpdatedAt: createResponse.body.data.updatedAt
+    }).expect(200);
     const updated = await request(app).get(`/api/v1/transactions/${id}`).expect(200);
     expect(updated.body.data.amountMinor).toBe(2_500);
     expect(updated.body.data.occurredAt).toBeUndefined();
     const stored = context.database.prepare("SELECT occurred_at, local_date FROM transactions WHERE id = ?").get(id) as { occurred_at: string; local_date: string };
     expect(stored).toEqual({ occurred_at: "2026-08-03", local_date: "2026-08-03" });
-    await request(app).delete(`/api/v1/transactions/${id}`).expect(200);
+    await request(app).delete(`/api/v1/transactions/${id}`).send({
+      expectedUpdatedAt: updateResponse.body.data.updatedAt
+    }).expect(200);
     const trash = await request(app).get("/api/v1/transactions?deleted=trash").expect(200);
     expect(trash.body.data.items[0].id).toBe(id);
     await request(app).post(`/api/v1/transactions/${id}/restore`).expect(200);
@@ -223,11 +228,36 @@ describe("HTTP API", () => {
   it("允许浏览器显示仅保存在本机的 blob 背景图片", async () => {
     const app = createApp(context.config, context.database).app;
     const response = await request(app).get("/health").expect(200);
-    expect(response.body).toMatchObject({ status: "ok", version: "2.0.0" });
+    expect(response.body).toMatchObject({ status: "ok", version: "2.2.0" });
     expect(response.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
 
     const status = await request(app).get("/api/v1/status").expect(200);
-    expect(status.body.data.version).toBe("2.0.0");
+    expect(status.body.data.version).toBe("2.2.0");
+  });
+
+  it("网页账目修改和删除拒绝旧版本，并拒绝跨站写请求", async () => {
+    const category = expenseCategory(context);
+    const transaction = context.repository.createTransaction(transactionInput(category.id));
+    const app = createApp(context.config, context.database).app;
+
+    await request(app).patch(`/api/v1/transactions/${transaction.id}`).send({
+      amountMinor: 2_000,
+      expectedUpdatedAt: "2020-01-01T00:00:00.000Z"
+    }).expect(409);
+    await request(app).delete(`/api/v1/transactions/${transaction.id}`).send({
+      expectedUpdatedAt: "2020-01-01T00:00:00.000Z"
+    }).expect(409);
+    expect(context.repository.getTransaction(transaction.id).deletedAt).toBeNull();
+
+    await request(app).post("/api/v1/transactions")
+      .set("Sec-Fetch-Site", "cross-site")
+      .send(transactionInput(category.id, { localDate: "2026-08-04" }))
+      .expect(403);
+    await request(app).post("/api/v1/transactions")
+      .set("Origin", "https://attacker.example")
+      .set("Host", "money.sutady.top")
+      .send(transactionInput(category.id, { localDate: "2026-08-04" }))
+      .expect(403);
   });
 
   it("只有网页接口能切换 OpenClaw 模式，并可查询与撤销直接操作", async () => {

@@ -26,7 +26,7 @@ function pngDimensions(filePath: string): { width: number; height: number; color
 
 describe("SMB 2.0 品牌", () => {
   it("以 package.json 作为唯一版本来源并保留内部包名", () => {
-    expect(packageMetadata).toMatchObject({ name: "sutady-money-manager", version: "2.0.0" });
+    expect(packageMetadata).toMatchObject({ name: "sutady-money-manager", version: "2.2.0" });
     expect(APP_VERSION).toBe(packageMetadata.version);
   });
 
@@ -58,5 +58,11 @@ describe("SMB 2.0 品牌", () => {
       expect(dimensions).toMatchObject({ width: expected[index], height: expected[index], colorType: 6 });
     });
     expect(files.reduce((total, file) => total + statSync(path.join(publicPath, file)).size, 0)).toBeLessThan(200_000);
+  });
+
+  it("PWA 清单提供不重复打开的记账快捷入口", () => {
+    const config = readFileSync(path.resolve(process.cwd(), "vite.config.ts"), "utf8");
+    expect(config).toContain('url: "/?entry=1"');
+    expect(config).toContain('name: "记一笔"');
   });
 });

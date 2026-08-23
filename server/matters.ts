@@ -17,6 +17,7 @@ import {
   borrowerInputSchema,
   borrowerPatchSchema,
   ledgerLinkInputSchema,
+  loanCreateInputSchema,
   loanInputSchema,
   loanPatchSchema,
   matterDeleteSchema,
@@ -35,6 +36,7 @@ type BorrowerInput = z.infer<typeof borrowerInputSchema>;
 type BorrowerPatch = z.infer<typeof borrowerPatchSchema>;
 type MatterQuery = z.infer<typeof matterQuerySchema>;
 type LoanInput = z.infer<typeof loanInputSchema>;
+type LoanCreateInput = z.infer<typeof loanCreateInputSchema>;
 type LoanPatch = z.infer<typeof loanPatchSchema>;
 type RepaymentInput = z.infer<typeof repaymentInputSchema>;
 type RepaymentPatch = z.infer<typeof repaymentPatchSchema>;
@@ -421,6 +423,38 @@ export class MattersRepository {
       const id = randomUUID();
       this.database.prepare(`INSERT INTO loans(id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, input.borrowerId, input.principalMinor, input.localDate, input.purpose?.trim() || null, input.note?.trim() || null, link.mode, link.transactionId, now, now);
+      this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink"]);
+      return this.getLoan(id);
+    });
+  }
+
+  createLoanForBorrowerSelection(rawInput: LoanCreateInput, options: IdempotencyOptions = {}): Loan {
+    const input = loanCreateInputSchema.parse(rawInput);
+    return this.executeIdempotent(options, "loan.create", input, () => {
+      let borrower: Borrower;
+      if (input.borrowerId) {
+        borrower = this.getBorrower(input.borrowerId, false);
+      } else {
+        const normalizedName = input.newBorrowerName!.trim().replace(/\s+/g, " ");
+        const existing = this.database.prepare("SELECT id FROM borrowers WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL")
+          .get(normalizedName) as { id: string } | undefined;
+        if (existing) {
+          borrower = this.getBorrower(existing.id, false);
+        } else {
+          const now = new Date().toISOString();
+          const id = randomUUID();
+          this.database.prepare("INSERT INTO borrowers(id, name, note, is_archived, created_at, updated_at, deleted_at) VALUES (?, ?, NULL, 0, ?, ?, NULL)")
+            .run(id, normalizedName, now, now);
+          this.audit(options.actor ?? "user", "borrower.create", "borrower", id, ["name"]);
+          borrower = this.getBorrower(id, false);
+        }
+      }
+      if (borrower.isArchived) throw new ConflictError("同名借款人已停用，请先恢复后再选择");
+      const link = this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.principalMinor, "CNY", input.localDate);
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      this.database.prepare(`INSERT INTO loans(id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, borrower.id, input.principalMinor, input.localDate, input.purpose?.trim() || null, input.note?.trim() || null, link.mode, link.transactionId, now, now);
       this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink"]);
       return this.getLoan(id);
     });
@@ -939,7 +973,7 @@ export function attachMatterRoutes(app: Express, matters: MattersRepository): vo
     response.json({ data: matters.listLoans(query) });
   });
   matterRoute(app, "post", "/api/v1/loans", (request, response) => {
-    response.status(201).json({ data: matters.createLoan(normalizeLoanBody(request) as LoanInput, { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
+    response.status(201).json({ data: matters.createLoanForBorrowerSelection(normalizeLoanBody(request) as LoanCreateInput, { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
   });
   matterRoute(app, "get", "/api/v1/loans/:id", (request, response) => {
     response.json({ data: matters.getLoan(String(request.params.id)) });

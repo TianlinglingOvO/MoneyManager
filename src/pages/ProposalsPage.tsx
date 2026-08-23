@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Check, Clock3, History, Pencil, RotateCcw, ShieldCheck, X } from "lucide-react";
-import type { Category, OpenClawOperation, Proposal, TransactionKind } from "@shared/types";
+import { Bot, Check, ChevronDown, Clock3, History, Pencil, RotateCcw, ShieldCheck, X } from "lucide-react";
+import type { Category, OpenClawOperation, OpenClawOperationDetail, Proposal, TransactionKind } from "@shared/types";
 import { api, ApiError } from "../api";
 import { QuickEntry } from "../components/QuickEntry";
 import { money } from "../utils";
@@ -72,9 +72,56 @@ function ProposalCard({ proposal, categoryMap, busy, onEdit, onResolve }: Propos
   );
 }
 
+function changedFields(detail: OpenClawOperationDetail): string[] {
+  return [...new Set(detail.items.flatMap((item) => {
+    const before = item.before ?? {};
+    const after = item.after ?? {};
+    return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+  }))].sort();
+}
+
+function snapshotText(value: Record<string, unknown> | null): string {
+  return value === null ? "（无）" : JSON.stringify(value, null, 2);
+}
+
+function OperationDetail({ operationId }: { operationId: string }) {
+  const [showValues, setShowValues] = useState(false);
+  const detail = useQuery({
+    queryKey: ["openclaw", "operation", operationId],
+    queryFn: () => api.openClawOperation(operationId)
+  });
+  if (detail.isLoading) return <div className="operation-detail is-loading">正在读取操作详情…</div>;
+  if (detail.isError || !detail.data) return <div className="operation-detail is-error">操作详情暂时无法读取。</div>;
+  const fields = changedFields(detail.data);
+  const failureReason = detail.data.result && typeof detail.data.result === "object" && "failureReason" in detail.data.result
+    ? String((detail.data.result as { failureReason?: unknown }).failureReason ?? "")
+    : "";
+  return <div className="operation-detail">
+    <dl>
+      <div><dt>请求 ID</dt><dd><code>{detail.data.requestId}</code></dd></div>
+      <div><dt>影响项目</dt><dd>{detail.data.items.length} 项</dd></div>
+      <div><dt>字段变化</dt><dd>{fields.length > 0 ? fields.join("、") : "无快照字段变化"}</dd></div>
+      {detail.data.failedAt && <div><dt>失败时间</dt><dd>{new Date(detail.data.failedAt).toLocaleString("zh-CN")}</dd></div>}
+      {failureReason && <div><dt>失败原因</dt><dd>{failureReason}</dd></div>}
+    </dl>
+    {detail.data.items.length > 0 && <>
+      <button type="button" className="text-button operation-detail__reveal" onClick={() => setShowValues((value) => !value)} aria-expanded={showValues}>
+        <ChevronDown className={showValues ? "is-open" : ""} size={15} />{showValues ? "隐藏字段值" : "显示字段值（可能包含金额和备注）"}
+      </button>
+      {showValues && <div className="operation-snapshot-list">{detail.data.items.map((item) => <section key={`${item.sequence}-${item.entityId}`}>
+        <strong>{item.entityType} · {item.entityId.slice(0, 8)}…</strong>
+        <div><span>执行前</span><pre>{snapshotText(item.before)}</pre></div>
+        <div><span>执行后</span><pre>{snapshotText(item.after)}</pre></div>
+      </section>)}</div>}
+    </>}
+  </div>;
+}
+
 export function ProposalsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Proposal | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const proposals = useQuery({ queryKey: ["proposals", "pending"], queryFn: () => api.proposals("pending") });
   const control = useQuery({ queryKey: ["openclaw", "settings"], queryFn: api.openClawSettings });
@@ -120,11 +167,18 @@ export function ProposalsPage() {
         {(operations.data?.length ?? 0) === 0 ? <div className="openclaw-history__empty">还没有直接操作记录</div> : <div className="openclaw-operation-list">
           {operations.data?.map((operation: OpenClawOperation) => {
             const canUndo = operation.undoable && operation.status === "applied" && operation.expiresAt > new Date().toISOString();
-            return <article key={operation.id}>
-              <span className={`operation-status is-${operation.status}`}>{operation.status === "undone" ? "已撤销" : operation.status === "running" ? "处理中" : "已执行"}</span>
-              <div><strong>{operation.summary}</strong><small>{new Date(operation.createdAt).toLocaleString("zh-CN")} · {operation.action}</small></div>
-              {canUndo && <button className="secondary-button" disabled={undo.isPending} onClick={() => undo.mutate(operation.id)}><RotateCcw size={16} />撤销</button>}
-              {!operation.undoable && <em>不可撤销</em>}
+            const isOpen = detailId === operation.id;
+            return <article className="openclaw-operation-card" key={operation.id}>
+              <div className="openclaw-operation-row">
+                <span className={`operation-status is-${operation.status}`}>{operation.status === "undone" ? "已撤销" : operation.status === "running" ? "处理中" : operation.status === "failed" ? "失败" : "已执行"}</span>
+                <div><strong>{operation.summary}</strong><small>{new Date(operation.createdAt).toLocaleString("zh-CN")} · {operation.action}</small></div>
+                <div className="openclaw-operation-actions">
+                  <button className="secondary-button" type="button" aria-expanded={isOpen} onClick={() => setDetailId(isOpen ? null : operation.id)}>查看详情</button>
+                  {canUndo && <button className="secondary-button" disabled={undo.isPending} onClick={() => undo.mutate(operation.id)}><RotateCcw size={16} />撤销</button>}
+                  {!operation.undoable && <em>不可撤销</em>}
+                </div>
+              </div>
+              {isOpen && <OperationDetail operationId={operation.id} />}
             </article>;
           })}
         </div>}

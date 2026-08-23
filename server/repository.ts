@@ -23,6 +23,7 @@ import {
   dailyTotalsQuerySchema,
   proposalInputSchema,
   proposalRevisionInputSchema,
+  requestIdSchema,
   transactionInputSchema,
   transactionPatchSchema,
   transactionQuerySchema
@@ -40,6 +41,11 @@ type DailyTotalsQuery = z.infer<typeof dailyTotalsQuerySchema>;
 type ProposalInput = z.infer<typeof proposalInputSchema>;
 type ProposalRevisionInput = z.infer<typeof proposalRevisionInputSchema>;
 type SqlValue = string | number | null;
+
+interface ProposalCreateOptions {
+  requestId?: string | null;
+  requestHash?: string | null;
+}
 
 interface CategoryRow {
   id: string;
@@ -80,6 +86,8 @@ interface ProposalRow {
   source: "openclaw" | "system";
   status: ProposalStatus;
   revision: number;
+  request_id: string | null;
+  request_hash: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
@@ -229,11 +237,14 @@ export class LedgerRepository {
     const transactionIds = new Set(transactions.map((item) => item.id));
     const links = this.linkedMatters(undefined, id);
     const proposals = this.pendingProposalsForDeletion(transactionIds, id);
+    const budgetRows = this.database.prepare("SELECT month, amount_minor, updated_at FROM category_monthly_budgets WHERE category_id = ? ORDER BY month")
+      .all(id) as unknown as Array<{ month: string; amount_minor: number; updated_at: string }>;
     const revision = createHash("sha256").update(JSON.stringify({
       category: [category.id, category.name, category.updatedAt],
       transactions: transactions.map((item) => [item.id, item.updatedAt, item.deletedAt]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
       links: links.map((item) => [item.entityType, item.id, item.updatedAt]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
-      proposals: proposals.map((item) => [item.id, item.revision, item.updatedAt]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      proposals: proposals.map((item) => [item.id, item.revision, item.updatedAt]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      budgets: budgetRows.map((item) => [item.month, item.amount_minor, item.updated_at])
     })).digest("hex");
     return {
       categoryId: category.id,
@@ -365,7 +376,14 @@ export class LedgerRepository {
     if (input.action === "delete") {
       if (category.transactionCount > 0) throw new ConflictError("这个分类仍有账目，请先迁移或选择停用");
       if (proposalsUsingCategory.length > 0) throw new ConflictError("这个分类仍被待确认操作使用，请先处理待确认操作");
+      const budgetMonths = this.database.prepare(
+        "SELECT month FROM category_monthly_budgets WHERE category_id = ?"
+      ).all(id) as unknown as Array<{ month: string }>;
       this.database.prepare("DELETE FROM categories WHERE id = ?").run(id);
+      budgetMonths.forEach(({ month }) => {
+        this.database.prepare(`DELETE FROM monthly_budgets WHERE month = ? AND total_minor IS NULL
+          AND NOT EXISTS (SELECT 1 FROM category_monthly_budgets WHERE month = ?)`).run(month, month);
+      });
       this.audit(actor, "category.delete", "category", id, { kind: category.kind });
       return { action: "delete", migratedTransactionCount: 0 };
     }
@@ -395,6 +413,14 @@ export class LedgerRepository {
           trigger: "category_migration"
         });
       }
+      const budgetMonths = this.database.prepare(
+        "SELECT month FROM category_monthly_budgets WHERE category_id = ? ORDER BY month"
+      ).all(category.id) as unknown as Array<{ month: string }>;
+      this.database.prepare("INSERT INTO category_monthly_budgets(month, category_id, amount_minor, created_at, updated_at) SELECT month, ?, amount_minor, created_at, ? FROM category_monthly_budgets WHERE category_id = ? ON CONFLICT(month, category_id) DO UPDATE SET amount_minor = category_monthly_budgets.amount_minor + excluded.amount_minor, updated_at = excluded.updated_at")
+        .run(target.id, now, category.id);
+      this.database.prepare("DELETE FROM category_monthly_budgets WHERE category_id = ?").run(category.id);
+      const touchBudget = this.database.prepare("UPDATE monthly_budgets SET updated_at = ? WHERE month = ?");
+      budgetMonths.forEach((item) => touchBudget.run(now, item.month));
       this.database.prepare("DELETE FROM categories WHERE id = ?").run(category.id);
       this.audit(actor, "category.migrate", "category", category.id, {
         targetCategoryId: target.id,
@@ -422,11 +448,22 @@ export class LedgerRepository {
     if (impact.revision !== expectedRevision) throw new ConflictError("分类或关联内容已经变化，请重新查看影响后再删除");
     if (!withinTransaction) this.database.exec("BEGIN IMMEDIATE");
     try {
+      const budgetMonths = this.database.prepare(
+        "SELECT month FROM category_monthly_budgets WHERE category_id = ?"
+      ).all(id) as unknown as Array<{ month: string }>;
       const currentImpact = this.categoryDeletionImpact(id);
       if (currentImpact.revision !== expectedRevision) throw new ConflictError("分类或关联内容已经变化，请重新查看影响后再删除");
       const transactions = this.categoryDependencies(id).transactions;
       const result = this.permanentlyDeleteBatch(transactions, actor, id);
       this.database.prepare("DELETE FROM categories WHERE id = ?").run(id);
+      const now = new Date().toISOString();
+      budgetMonths.forEach(({ month }) => {
+        const removed = this.database.prepare(`DELETE FROM monthly_budgets WHERE month = ? AND total_minor IS NULL
+          AND NOT EXISTS (SELECT 1 FROM category_monthly_budgets WHERE month = ?)`).run(month, month);
+        if (Number(removed.changes) === 0) {
+          this.database.prepare("UPDATE monthly_budgets SET updated_at = ? WHERE month = ?").run(now, month);
+        }
+      });
       this.audit(actor, "category.purge", "category", id, {
         transactionCount: result.permanentlyDeletedTransactionCount,
         detachedLedgerLinkCount: result.detachedLedgerLinkCount,
@@ -506,22 +543,46 @@ export class LedgerRepository {
     return this.getTransaction(id);
   }
 
-  updateTransaction(id: string, rawPatch: TransactionPatch, actor: "user" | "openclaw" = "user"): Transaction {
+  updateTransaction(
+    id: string,
+    rawPatch: TransactionPatch,
+    actor: "user" | "openclaw" = "user",
+    expectedUpdatedAt?: string
+  ): Transaction {
     const current = this.getTransaction(id, false);
+    if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) {
+      throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
+    }
     const patch = transactionPatchSchema.parse(rawPatch);
     const next = { ...current, ...patch };
     this.assertCategoryForTransaction(next.categoryId, next.kind);
-    this.database.prepare(`UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?,
-      local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`)
-      .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, new Date().toISOString(), id);
+    const updatedAt = new Date().toISOString();
+    const result = expectedUpdatedAt
+      ? this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
+        .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, updatedAt, id, expectedUpdatedAt)
+      : this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+        .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, updatedAt, id);
+    if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
     this.audit(actor, "transaction.update", "transaction", id, { kind: next.kind });
     return this.getTransaction(id);
   }
 
-  softDeleteTransaction(id: string, actor: "user" | "openclaw" = "user"): Transaction {
-    this.getTransaction(id, false);
+  softDeleteTransaction(
+    id: string,
+    actor: "user" | "openclaw" = "user",
+    expectedUpdatedAt?: string
+  ): Transaction {
+    const current = this.getTransaction(id, false);
+    if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) {
+      throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
+    }
     const now = new Date().toISOString();
-    this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, now, id);
+    const result = expectedUpdatedAt
+      ? this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
+        .run(now, now, id, expectedUpdatedAt)
+      : this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+        .run(now, now, id);
+    if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
     this.audit(actor, "transaction.delete", "transaction", id);
     return this.getTransaction(id);
   }
@@ -682,7 +743,22 @@ export class LedgerRepository {
     });
   }
 
-  createProposal(rawInput: ProposalInput, source: "openclaw" | "system" = "openclaw"): Proposal {
+  createProposal(
+    rawInput: ProposalInput,
+    source: "openclaw" | "system" = "openclaw",
+    options: ProposalCreateOptions = {}
+  ): Proposal {
+    const requestId = options.requestId ? requestIdSchema.parse(options.requestId) : null;
+    const requestHash = options.requestHash?.trim() || null;
+    if (Boolean(requestId) !== Boolean(requestHash)) throw new AppError("提案幂等信息不完整");
+    if (requestId) {
+      const existing = this.database.prepare("SELECT * FROM proposals WHERE request_id = ?")
+        .get(requestId) as unknown as ProposalRow | undefined;
+      if (existing) {
+        if (existing.request_hash !== requestHash) throw new ConflictError("相同 requestId 已用于不同提案");
+        return mapProposal(existing);
+      }
+    }
     const input = proposalInputSchema.parse(rawInput);
     if (input.action === "create") {
       this.assertCategoryForTransaction(input.payload.categoryId, input.payload.kind);
@@ -703,13 +779,17 @@ export class LedgerRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.prepare(`INSERT INTO proposals(
-      id, action, target_transaction_id, payload, reason, source, status, revision, created_at, updated_at, resolved_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, NULL)`)
+      id, action, target_transaction_id, payload, reason, source, status, revision,
+      request_id, request_hash, created_at, updated_at, resolved_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, NULL)`)
       .run(
         id, input.action, input.action === "create" ? null : input.targetTransactionId,
-        JSON.stringify(input.payload), input.reason ?? null, source, now, now
+        JSON.stringify(input.payload), input.reason ?? null, source, requestId, requestHash, now, now
       );
-    this.audit(source === "openclaw" ? "openclaw" : "system", "proposal.create", "proposal", id, { action: input.action });
+    this.audit(source === "openclaw" ? "openclaw" : "system", "proposal.create", "proposal", id, {
+      action: input.action,
+      requestId
+    });
     return this.getProposal(id);
   }
 

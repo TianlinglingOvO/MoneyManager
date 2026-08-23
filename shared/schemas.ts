@@ -27,6 +27,17 @@ export const transactionPatchSchema = transactionInputSchema.partial().refine(
   "至少需要修改一个字段"
 );
 
+export const transactionUpdateRequestSchema = transactionInputSchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime()
+}).strict().refine(
+  (value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"),
+  "至少需要修改一个字段"
+);
+
+export const transactionDeleteSchema = z.object({
+  expectedUpdatedAt: z.string().datetime()
+}).strict();
+
 export const categoryInputSchema = z.object({
   kind: transactionKindSchema,
   name: z.string().trim().min(1).max(16),
@@ -122,7 +133,8 @@ export const aiAnalysisInputSchema = z.object({
   mode: z.enum(["overview", "growth", "saving", "structure", "custom"]),
   periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  question: z.string().trim().max(500).optional().nullable()
+  question: z.string().trim().max(500).optional().nullable(),
+  includeNotes: z.boolean().optional().default(false)
 }).refine((value) => value.periodStart <= value.periodEnd, "开始日期不能晚于结束日期")
   .refine((value) => value.mode !== "custom" || Boolean(value.question), "自定义分析需要填写问题");
 
@@ -131,6 +143,41 @@ export const requestIdSchema = z.string().trim().min(8).max(128).regex(/^[A-Za-z
 export const openClawSettingsPatchSchema = z.object({
   mode: z.enum(["confirm", "direct"])
 });
+
+export const budgetMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+
+export const monthlyBudgetInputSchema = z.object({
+  totalMinor: z.number().int().positive().max(100_000_000_000).nullable(),
+  categories: z.array(z.object({
+    categoryId: z.string().uuid(),
+    amountMinor: z.number().int().positive().max(100_000_000_000)
+  }).strict()).max(200),
+  expectedUpdatedAt: z.string().datetime().nullable().optional()
+}).strict().superRefine((value, context) => {
+  const ids = new Set<string>();
+  value.categories.forEach((item, index) => {
+    if (ids.has(item.categoryId)) {
+      context.addIssue({ code: "custom", path: ["categories", index, "categoryId"], message: "同一分类不能重复设置预算" });
+    }
+    ids.add(item.categoryId);
+  });
+});
+
+export const budgetDeleteSchema = z.object({
+  expectedUpdatedAt: z.string().datetime()
+}).strict();
+
+export const healthReportQuerySchema = z.object({
+  month: budgetMonthSchema
+});
+
+export const healthAcknowledgeSchema = z.object({
+  month: budgetMonthSchema
+}).strict();
+
+export const healthExplainSchema = z.object({
+  month: budgetMonthSchema
+}).strict();
 
 export const matterCurrencySchema = z.enum(["CNY", "USD"]);
 export const matterStatusSchema = z.enum(["active", "paused", "cancelled"]);
@@ -182,6 +229,15 @@ export const loanInputSchema = z.object({
   note: z.string().trim().max(240).optional().nullable(),
   ledgerLink: ledgerLinkInputSchema.optional()
 }).strict();
+
+export const loanCreateInputSchema = loanInputSchema.omit({ borrowerId: true }).extend({
+  borrowerId: z.string().uuid().optional(),
+  newBorrowerName: z.string().trim().min(1).max(80).optional()
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.borrowerId) === Boolean(value.newBorrowerName)) {
+    context.addIssue({ code: "custom", path: ["borrowerId"], message: "必须选择已有借款人或填写新借款人，且只能选择一种" });
+  }
+});
 
 export const loanPatchSchema = loanInputSchema.omit({ borrowerId: true, ledgerLink: true }).partial().extend({
   expectedUpdatedAt: z.string().datetime().optional()

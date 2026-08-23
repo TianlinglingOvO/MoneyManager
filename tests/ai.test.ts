@@ -28,7 +28,7 @@ describe("DeepSeek 分析", () => {
   });
   afterEach(() => { context.cleanup(); });
 
-  it("发送完整明细，但以程序计算的汇总为准，并缓存结果", async () => {
+  it("默认不发送备注，以程序计算的汇总为准并缓存结果", async () => {
     const fetchMock = vi.fn().mockResolvedValue(deepseekResponse(JSON.stringify(validAnalysis)));
     vi.stubGlobal("fetch", fetchMock);
     const service = new AiService(context.database, context.repository, context.config);
@@ -41,7 +41,8 @@ describe("DeepSeek 分析", () => {
     expect(requestBody.thinking).toEqual({ type: "disabled" });
     const userMessage = requestBody.messages[1].content as string;
     expect(userMessage).toContain('"expenseMinor":1234');
-    expect(userMessage).toContain('"note":"早餐"');
+    expect(userMessage).not.toContain('"note"');
+    expect(first.includeNotes).toBe(false);
   });
 
   it.each([

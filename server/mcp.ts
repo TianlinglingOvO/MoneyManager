@@ -9,10 +9,12 @@ import type { LedgerRepository } from "./repository";
 import { APP_VERSION } from "../shared/app-metadata";
 import type { AiService } from "./ai";
 import type { BackupService } from "./backup";
-import type { OpenClawControlService } from "./openclaw-control";
+import { hashOpenClawRequest, type OpenClawControlService } from "./openclaw-control";
 import type { MattersRepository } from "./matters";
+import type { BudgetService } from "./budgets";
+import type { HealthService } from "./health";
 import { createMcpAuth } from "./auth";
-import { categoryDispositionSchema, categoryInputSchema, categoryPatchSchema, transactionPatchSchema } from "../shared/schemas";
+import { categoryDispositionSchema, categoryInputSchema, categoryPatchSchema, requestIdSchema, transactionPatchSchema } from "../shared/schemas";
 
 function textResult(data: unknown) {
   return {
@@ -40,7 +42,14 @@ export function amountToMinor(amount: number): number {
 export function createLedgerMcpServer(
   repository: LedgerRepository,
   config: AppConfig,
-  services?: { ai: AiService; backup: BackupService; openclaw: OpenClawControlService; matters?: MattersRepository }
+  services?: {
+    ai: AiService;
+    backup: BackupService;
+    openclaw: OpenClawControlService;
+    matters?: MattersRepository;
+    budgets?: BudgetService;
+    health?: HealthService;
+  }
 ): McpServer {
   const server = new McpServer({ name: "sutady-money-manager", version: APP_VERSION });
 
@@ -100,9 +109,40 @@ export function createLedgerMcpServer(
     return textResult(result);
   });
 
+  if (services?.health) {
+    server.registerTool("get_ledger_health", {
+      description: "读取指定月份的确定性账本体检结果。只返回结构化问题和统计，不包含账目备注，不修改账本。",
+      inputSchema: { month: z.string().regex(/^\\d{4}-(0[1-9]|1[0-2])$/).optional() }
+    }, async ({ month }) => {
+      const result = services.health!.report(month ?? services.health!.currentMonth());
+      repository.audit("openclaw", "mcp.get_ledger_health", "health_report", result.month, {
+        issueCount: result.issueCount
+      });
+      return textResult({
+        month: result.month,
+        score: result.score,
+        issueCount: result.issueCount,
+        acknowledgedCount: result.acknowledgedCount,
+        dataHash: result.dataHash,
+        generatedAt: result.generatedAt,
+        issues: result.issues.map((issue) => ({
+          fingerprint: issue.fingerprint,
+          type: issue.type,
+          severity: issue.severity,
+          title: issue.title,
+          detail: issue.detail,
+          relatedTransactionIds: issue.relatedTransactionIds,
+          href: issue.href,
+          acknowledged: issue.acknowledged
+        }))
+      });
+    });
+  }
+
   server.registerTool("propose_add_transaction", {
-    description: "仅当用户明确要求‘先让我确认’时提出一笔新账；direct 模式的普通记账请优先使用 direct_add_transaction。此工具只会进入待确认列表。",
+    description: "仅当用户明确要求‘先让我确认’时提出一笔新账；必须使用唯一 requestId，重复调用会安全返回原提案。此工具只会进入待确认列表。",
     inputSchema: {
+      requestId: requestIdSchema,
       kind: z.enum(["expense", "income"]),
       amount: z.number().positive().max(1_000_000_000).describe("人民币元，最多两位小数"),
       categoryId: z.string().uuid(),
@@ -110,7 +150,7 @@ export function createLedgerMcpServer(
       note: z.string().max(240).optional(),
       reason: z.string().max(240).optional()
     }
-  }, async (input) => {
+  }, async ({ requestId, ...input }) => {
     const localDate = input.localDate ?? currentLocalDate(config.timezone);
     const proposal = repository.createProposal({
       action: "create",
@@ -122,6 +162,9 @@ export function createLedgerMcpServer(
         note: input.note ?? null
       },
       reason: input.reason ?? null
+    }, "openclaw", {
+      requestId,
+      requestHash: hashOpenClawRequest("proposal.create", input)
     });
     return textResult({ message: "已提交待确认，尚未写入正式账本。", proposal });
   });
@@ -129,6 +172,7 @@ export function createLedgerMcpServer(
   server.registerTool("propose_update_transaction", {
     description: "仅当用户明确要求‘先让我确认’时提出修改请求；direct 模式请优先使用 direct_update_transaction。此工具只会进入待确认列表。",
     inputSchema: {
+      requestId: requestIdSchema,
       transactionId: z.string().uuid(),
       kind: z.enum(["expense", "income"]).optional(),
       amount: z.number().positive().max(1_000_000_000).optional(),
@@ -137,7 +181,8 @@ export function createLedgerMcpServer(
       note: z.string().max(240).nullable().optional(),
       reason: z.string().max(240).optional()
     }
-  }, async ({ transactionId, amount, reason, ...changes }) => {
+  }, async ({ requestId, transactionId, amount, reason, ...changes }) => {
+    const request = { transactionId, amount, reason, ...changes };
     const payload: Record<string, unknown> = { ...changes };
     if (amount !== undefined) payload.amountMinor = amountToMinor(amount);
     const proposal = repository.createProposal({
@@ -145,6 +190,9 @@ export function createLedgerMcpServer(
       targetTransactionId: transactionId,
       payload,
       reason: reason ?? null
+    }, "openclaw", {
+      requestId,
+      requestHash: hashOpenClawRequest("proposal.update", request)
     });
     return textResult({ message: "修改请求已提交待确认，原账目尚未改变。", proposal });
   });
@@ -152,15 +200,19 @@ export function createLedgerMcpServer(
   server.registerTool("propose_delete_transaction", {
     description: "仅当用户明确要求‘先让我确认’时提出删除请求；direct 模式请优先使用 direct_delete_transaction。批准后账目会进入可恢复的回收站。",
     inputSchema: {
+      requestId: requestIdSchema,
       transactionId: z.string().uuid(),
       reason: z.string().max(240).optional()
     }
-  }, async ({ transactionId, reason }) => {
+  }, async ({ requestId, transactionId, reason }) => {
     const proposal = repository.createProposal({
       action: "delete",
       targetTransactionId: transactionId,
       payload: {},
       reason: reason ?? null
+    }, "openclaw", {
+      requestId,
+      requestHash: hashOpenClawRequest("proposal.delete", { transactionId, reason })
     });
     return textResult({ message: "删除请求已提交待确认，账目尚未删除。", proposal });
   });
@@ -208,9 +260,15 @@ function registerDirectTools(
   server: McpServer,
   repository: LedgerRepository,
   config: AppConfig,
-  services: { ai: AiService; backup: BackupService; openclaw: OpenClawControlService; matters?: MattersRepository }
+  services: {
+    ai: AiService;
+    backup: BackupService;
+    openclaw: OpenClawControlService;
+    matters?: MattersRepository;
+    budgets?: BudgetService;
+  }
 ): void {
-  const { ai, backup, openclaw } = services;
+  const { ai, backup, openclaw, budgets } = services;
   const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
   server.registerTool("get_openclaw_control_status", {
@@ -238,6 +296,52 @@ function registerDirectTools(
           localDate: request.localDate, note: input.note ?? null
         }, { source: "openclaw", actor: "openclaw", idempotencyKey: `openclaw:${input.requestId}` });
         return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: null, after: openclaw.transactionSnapshot(transaction) }] };
+      }
+    });
+    return textResult(output);
+  });
+
+  server.registerTool("direct_add_transactions_batch", {
+    description: "direct 模式下一次原子新增 1–20 笔账目。每笔金额、日期和分类都必须明确；不能确定时必须先在聊天中询问，不能猜测。整批共用一个 requestId，任意一笔失败则全部不写入，并可作为一项操作整体撤销。",
+    inputSchema: {
+      requestId,
+      transactions: z.array(z.object({
+        kind: z.enum(["expense", "income"]),
+        amount: z.number().positive().max(1_000_000_000),
+        categoryId: z.string().uuid(),
+        localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        note: z.string().max(240).nullable().optional()
+      }).strict()).min(1).max(20)
+    }
+  }, async ({ requestId: idempotency, transactions }) => {
+    const output = openclaw.execute({
+      requestId: idempotency,
+      action: "transaction.batch.create",
+      entityType: "transaction",
+      summary: "OpenClaw 批量新增账目",
+      request: { transactions },
+      run: () => {
+        const created = transactions.map((item, index) => repository.createTransaction({
+          kind: item.kind,
+          amountMinor: amountToMinor(item.amount),
+          categoryId: item.categoryId,
+          localDate: item.localDate,
+          note: item.note ?? null
+        }, {
+          source: "openclaw",
+          actor: "openclaw",
+          idempotencyKey: "openclaw:" + idempotency + ":" + index
+        }));
+        return {
+          result: { transactions: created, count: created.length },
+          entityId: created[0]?.id ?? null,
+          snapshots: created.map((transaction) => ({
+            entityType: "transaction" as const,
+            entityId: transaction.id,
+            before: null,
+            after: openclaw.transactionSnapshot(transaction)
+          }))
+        };
       }
     });
     return textResult(output);
@@ -325,6 +429,86 @@ function registerDirectTools(
     return textResult(output);
   });
 
+  if (budgets) {
+    server.registerTool("get_budget_summary", {
+      description: "读取指定月份的月总预算、分类预算、已使用、剩余和当前月预测。不会修改预算。",
+      inputSchema: { month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }
+    }, async ({ month }) => {
+      const result = budgets.get(month);
+      repository.audit("openclaw", "mcp.get_budget_summary", "budget", month, {
+        categoryCount: result.categories.length
+      });
+      return textResult(result);
+    });
+
+    server.registerTool("direct_set_budget", {
+      description: "direct 模式下设置一个月的总预算和分类预算。金额单位为元；已有预算必须传入最新版 updatedAt，新预算传 null。可在 30 天内撤销。",
+      inputSchema: {
+        requestId,
+        month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+        totalAmount: z.number().positive().max(1_000_000_000).nullable(),
+        categories: z.array(z.object({
+          categoryId: z.string().uuid(),
+          amount: z.number().positive().max(1_000_000_000)
+        }).strict()).max(200),
+        expectedUpdatedAt: z.string().datetime().nullable()
+      }
+    }, async ({ requestId: idempotency, month, totalAmount, categories, expectedUpdatedAt }) => {
+      const request = { month, totalAmount, categories, expectedUpdatedAt };
+      return textResult(openclaw.execute({
+        requestId: idempotency,
+        action: "budget.set",
+        entityType: "budget",
+        summary: "OpenClaw 设置月度预算",
+        request,
+        run: () => {
+          const before = budgets.snapshot(month);
+          const result = budgets.put(month, {
+            totalMinor: totalAmount === null ? null : amountToMinor(totalAmount),
+            categories: categories.map((item) => ({
+              categoryId: item.categoryId,
+              amountMinor: amountToMinor(item.amount)
+            })),
+            expectedUpdatedAt
+          }, { actor: "openclaw", withinTransaction: true });
+          const after = budgets.snapshot(month);
+          return {
+            result,
+            entityId: month,
+            snapshots: [{ entityType: "budget" as const, entityId: month, before, after }]
+          };
+        }
+      }));
+    });
+
+    server.registerTool("direct_delete_budget", {
+      description: "direct 模式下删除指定月份的全部预算设置。必须传入最新版 updatedAt，可在 30 天内撤销。",
+      inputSchema: {
+        requestId,
+        month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+        expectedUpdatedAt: z.string().datetime()
+      }
+    }, async ({ requestId: idempotency, month, expectedUpdatedAt }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "budget.delete",
+      entityType: "budget",
+      summary: "OpenClaw 删除月度预算",
+      request: { month, expectedUpdatedAt },
+      run: () => {
+        const before = budgets.snapshot(month);
+        const result = budgets.delete(month, expectedUpdatedAt, {
+          actor: "openclaw",
+          withinTransaction: true
+        });
+        return {
+          result,
+          entityId: month,
+          snapshots: [{ entityType: "budget" as const, entityId: month, before, after: null }]
+        };
+      }
+    })));
+  }
+
   server.registerTool("direct_create_category", {
     description: "立即新增收支分类。",
     inputSchema: { requestId, kind: z.enum(["expense", "income"]), name: z.string().min(1).max(16), icon: z.string().min(1).max(8), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }
@@ -363,10 +547,17 @@ function registerDirectTools(
         const beforeCategory = repository.getCategory(categoryId);
         if (beforeCategory.updatedAt !== expectedUpdatedAt) throw new Error("分类已经变化，请重新查询");
         const { transactions, proposals } = repository.categoryDependencies(categoryId);
+        const budgetSnapshots = budgets?.snapshotsForCategory(categoryId) ?? [];
         const result = repository.manageCategory(categoryId, disposition, "openclaw", true);
         const snapshots = [
           ...transactions.map((before) => ({ entityType: "transaction" as const, entityId: before.id, before: openclaw.transactionSnapshot(before), after: openclaw.transactionSnapshot(repository.getTransaction(before.id, true)) })),
           ...proposals.map((before) => ({ entityType: "proposal" as const, entityId: before.id, before: openclaw.proposalSnapshot(before), after: openclaw.proposalSnapshot(repository.getProposal(before.id)) })),
+          ...budgetSnapshots.map((before) => ({
+            entityType: "budget" as const,
+            entityId: before.month,
+            before,
+            after: budgets?.snapshot(before.month) ?? null
+          })),
           { entityType: "category" as const, entityId: categoryId, before: openclaw.categorySnapshot(beforeCategory), after: action === "archive" || action === "restore" ? openclaw.categorySnapshot(repository.getCategory(categoryId)) : null }
         ];
         return { result, entityId: categoryId, snapshots };
@@ -886,7 +1077,9 @@ export function attachMcpRoutes(
   backup: BackupService,
   openclaw: OpenClawControlService,
   config: AppConfig,
-  matters?: MattersRepository
+  matters?: MattersRepository,
+  budgets?: BudgetService,
+  health?: HealthService
 ): void {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const auth = createMcpAuth(config);
@@ -903,7 +1096,7 @@ export function attachMcpRoutes(
             transports.set(newSessionId, transport!);
           }
         });
-        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters });
+        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health });
         server.server.onclose = () => {
           if (transport?.sessionId) transports.delete(transport.sessionId);
         };

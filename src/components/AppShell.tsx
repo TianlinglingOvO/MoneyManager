@@ -25,7 +25,6 @@ const desktopPrimaryItems = [
   { to: "/matters?tab=loans", label: "事项", icon: WalletCards },
   { to: "/ai", label: "AI", icon: Sparkles }
 ];
-const mobilePrimaryItems = desktopPrimaryItems.slice(0, 3);
 
 function NavItem({ item, mobile = false, badge = 0 }: { item: typeof desktopPrimaryItems[number]; mobile?: boolean; badge?: number }) {
   const Icon = item.icon;
@@ -35,6 +34,7 @@ function NavItem({ item, mobile = false, badge = 0 }: { item: typeof desktopPrim
       end={item.end}
       viewTransition
       title={item.label}
+      aria-label={badge > 0 && item.label === "事项" ? `事项，${badge}项订阅需要留意` : item.label}
       className={({ isActive }) => `${mobile ? "mobile-nav__item" : "sidebar__item"} ${isActive ? "is-active" : ""}`}
     >
       <Icon size={mobile ? 21 : 19} strokeWidth={1.9} />
@@ -52,6 +52,10 @@ export function AppShell() {
   const subscriptions = useQuery({ queryKey: ["matters", "subscriptions", "badge"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
   const pending = proposals.data?.length ?? 0;
   const matterBadge = subscriptions.data?.attentionCount ?? 0;
+  const primaryItems = desktopPrimaryItems.map((item) => item.label === "事项"
+    ? { ...item, to: matterBadge > 0 ? "/matters?tab=subscriptions" : "/matters?tab=loans" }
+    : item);
+  const mobilePrimaryItems = primaryItems.slice(0, 3);
 
   useEffect(() => localStorage.setItem(sidebarStorageKey, String(collapsed)), [collapsed]);
 
@@ -86,7 +90,7 @@ export function AppShell() {
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
         </button>
         <nav className="sidebar__nav" aria-label="主导航">
-          {desktopPrimaryItems.map((item) => <NavItem key={item.to} item={item} badge={item.to.startsWith("/matters") ? matterBadge : 0} />)}
+          {primaryItems.map((item) => <NavItem key={item.to} item={item} badge={item.to.startsWith("/matters") ? matterBadge : 0} />)}
         </nav>
         <button className="sidebar__new" onClick={() => openEntry()} title="记一笔（N）"><Plus size={19} /><span>记一笔</span></button>
         <div className="sidebar__secondary">

@@ -278,5 +278,98 @@ export const migrations: Migration[] = [
       "ALTER TABLE subscription_payments ADD COLUMN next_billing_date_before TEXT",
       "ALTER TABLE subscription_payments ADD COLUMN next_billing_date_after TEXT"
     ]
+  },
+  {
+    version: 7,
+    name: "budgets_health_and_batch_operations",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS monthly_budgets (
+        month TEXT PRIMARY KEY CHECK (month GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+        total_minor INTEGER CHECK (total_minor IS NULL OR total_minor > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS category_monthly_budgets (
+        month TEXT NOT NULL REFERENCES monthly_budgets(month) ON DELETE CASCADE,
+        category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(month, category_id)
+      )`,
+      "CREATE INDEX IF NOT EXISTS idx_category_monthly_budgets_category ON category_monthly_budgets(category_id, month)",
+      `CREATE TABLE IF NOT EXISTS health_acknowledgements (
+        fingerprint TEXT PRIMARY KEY,
+        issue_type TEXT NOT NULL,
+        acknowledged_at TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS idx_health_acknowledgements_time ON health_acknowledgements(acknowledged_at)",
+      "ALTER TABLE openclaw_operation_items RENAME TO openclaw_operation_items_legacy_v7",
+      `CREATE TABLE openclaw_operation_items (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES openclaw_operations(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('transaction', 'category', 'proposal', 'setting', 'borrower', 'loan', 'loan_repayment', 'subscription', 'subscription_payment', 'budget')),
+        entity_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT
+      )`,
+      `INSERT INTO openclaw_operation_items(id, operation_id, sequence, entity_type, entity_id, before_json, after_json)
+        SELECT id, operation_id, sequence, entity_type, entity_id, before_json, after_json
+        FROM openclaw_operation_items_legacy_v7`,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)",
+      "DROP TABLE openclaw_operation_items_legacy_v7"
+    ]
+  },
+  {
+    version: 8,
+    name: "trust_closure",
+    statements: [
+      "ALTER TABLE ai_reports ADD COLUMN include_notes INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE proposals ADD COLUMN request_id TEXT",
+      "ALTER TABLE proposals ADD COLUMN request_hash TEXT",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_request_id ON proposals(request_id) WHERE request_id IS NOT NULL",
+      "ALTER TABLE openclaw_operation_items RENAME TO openclaw_operation_items_legacy_v8",
+      "ALTER TABLE openclaw_operations RENAME TO openclaw_operations_legacy_v8",
+      `CREATE TABLE openclaw_operations (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        request_hash TEXT NOT NULL,
+        action TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'applied', 'undone', 'failed')),
+        undoable INTEGER NOT NULL DEFAULT 1,
+        summary TEXT NOT NULL,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        undone_at TEXT,
+        failed_at TEXT
+      )`,
+      `CREATE TABLE openclaw_operation_items (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES openclaw_operations(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('transaction', 'category', 'proposal', 'setting', 'borrower', 'loan', 'loan_repayment', 'subscription', 'subscription_payment', 'budget')),
+        entity_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT
+      )`,
+      `INSERT INTO openclaw_operations(
+        id, request_id, request_hash, action, entity_type, entity_id, status, undoable,
+        summary, result_json, created_at, expires_at, undone_at, failed_at
+      ) SELECT id, request_id, request_hash, action, entity_type, entity_id, status, undoable,
+        summary, result_json, created_at, expires_at, undone_at, NULL
+        FROM openclaw_operations_legacy_v8`,
+      `INSERT INTO openclaw_operation_items(id, operation_id, sequence, entity_type, entity_id, before_json, after_json)
+        SELECT id, operation_id, sequence, entity_type, entity_id, before_json, after_json
+        FROM openclaw_operation_items_legacy_v8`,
+      "DROP TABLE openclaw_operation_items_legacy_v8",
+      "DROP TABLE openclaw_operations_legacy_v8",
+      "CREATE INDEX IF NOT EXISTS idx_openclaw_operations_created ON openclaw_operations(created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_openclaw_operations_status_expires ON openclaw_operations(status, expires_at)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
+    ]
   }
 ];

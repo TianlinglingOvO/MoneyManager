@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
@@ -17,6 +17,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Search,
   Trash2,
   WalletCards,
   X
@@ -115,8 +116,10 @@ function LedgerLinkFields({ mode, setMode, kind, setKind, amount, setAmount, cat
 
 function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean; onClose: () => void; borrowers: Borrower[]; editing?: Loan; today: string }) {
   const queryClient = useQueryClient();
-  const [borrowerId, setBorrowerId] = useState(editing?.borrowerId ?? borrowers[0]?.id ?? "");
-  const [newBorrower, setNewBorrower] = useState("");
+  const [borrowerId, setBorrowerId] = useState(editing?.borrowerId ?? "");
+  const [borrowerSearch, setBorrowerSearch] = useState("");
+  const [borrowerPickerOpen, setBorrowerPickerOpen] = useState(false);
+  const borrowerSearchRef = useRef<HTMLInputElement | null>(null);
   const [amount, setAmount] = useState(editing ? (editing.amountMinor / 100).toFixed(2) : "");
   const [lentDate, setLentDate] = useState(editing?.localDate ?? defaultDate(today));
   const [purpose, setPurpose] = useState(editing?.purpose ?? "");
@@ -129,16 +132,28 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
   const [error, setError] = useState("");
   const categories = useQuery({ queryKey: ["categories", "all", false], queryFn: () => api.categories(undefined, false) });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date" }) });
+  const selectedBorrower = borrowers.find((item) => item.id === borrowerId);
+  const normalizedBorrowerSearch = borrowerSearch.trim().replace(/\s+/g, " ");
+  const matchingBorrowers = borrowers.filter((item) => item.name.toLocaleLowerCase().includes(normalizedBorrowerSearch.toLocaleLowerCase()));
+  const exactBorrower = borrowers.find((item) => item.name.toLocaleLowerCase() === normalizedBorrowerSearch.toLocaleLowerCase());
+  const restoreBorrower = useMutation({
+    mutationFn: (borrower: Borrower) => api.updateBorrower(borrower.id, { isArchived: false, expectedUpdatedAt: borrower.updatedAt }),
+    onSuccess: async (borrower) => {
+      await queryClient.invalidateQueries({ queryKey: ["matters", "borrowers"] });
+      setBorrowerId(borrower.id);
+      setBorrowerSearch("");
+      setBorrowerPickerOpen(false);
+    },
+    onError: (reason) => setError(reason instanceof Error ? reason.message : "恢复借款人失败")
+  });
   const save = useMutation({
     mutationFn: async () => {
       setError("");
       const amountMinor = parseAmountMinor(amount);
-      if (!borrowerId && !newBorrower.trim()) throw new Error("请选择或填写借款人");
+      if (!borrowerId && !normalizedBorrowerSearch) throw new Error("请选择或新建借款人");
       if (!amountMinor) throw new Error("请输入有效借款金额");
-      let targetBorrowerId = borrowerId;
-      if (!targetBorrowerId) targetBorrowerId = (await api.createBorrower({ name: newBorrower.trim() })).id;
       const ledgerLink = linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: parseAmountMinor(linkAmount) ?? amountMinor, categoryId: linkCategory };
-      const input = { borrowerId: targetBorrowerId, principalMinor: amountMinor, localDate: lentDate, purpose: purpose.trim() || null, note: note.trim() || null, ledgerLink };
+      const input = { ...(borrowerId ? { borrowerId } : { newBorrowerName: normalizedBorrowerSearch }), principalMinor: amountMinor, localDate: lentDate, purpose: purpose.trim() || null, note: note.trim() || null, ledgerLink };
       if (editing) return api.updateLoan(editing.id, {
         principalMinor: amountMinor,
         localDate: lentDate,
@@ -151,17 +166,16 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["loan"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} onClose={onClose} className="matter-sheet">
-    <form className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+  return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} closeLabel={editing ? "关闭编辑借款" : "关闭记录借款"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="loan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>}>
+    <form id="loan-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记录别人从你这里借走的钱，之后可以在对应借款下分次登记还款。</p>
-      <label className="matter-field"><span>借款人</span><select value={borrowerId} disabled={Boolean(editing)} onChange={(event) => { setBorrowerId(event.target.value); setNewBorrower(""); }}><option value="">选择已有借款人</option>{borrowers.filter((item) => !item.isArchived).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      {!editing && <div className="matter-inline-new"><span>或</span><input value={newBorrower} onChange={(event) => { setNewBorrower(event.target.value); setBorrowerId(""); }} placeholder="填写新的借款人" /></div>}
+      {editing ? <label className="matter-field"><span>借款人</span><div className="borrower-picker__selected is-locked"><strong>{selectedBorrower?.name ?? editing.borrowerName}</strong><small>已有借款不能更换借款人</small></div></label> : <div className="matter-field borrower-picker"><span>借款人</span>{selectedBorrower ? <div className="borrower-picker__selected"><span><strong>{selectedBorrower.name}</strong><small>已选择借款人</small></span><button type="button" className="text-button" onClick={() => { setBorrowerId(""); setBorrowerPickerOpen(true); window.requestAnimationFrame(() => borrowerSearchRef.current?.focus()); }}>更换</button></div> : <div className="borrower-picker__control"><Search size={17} aria-hidden="true" /><input ref={borrowerSearchRef} role="combobox" aria-label="搜索或新建借款人" aria-expanded={borrowerPickerOpen} aria-controls="borrower-options" aria-autocomplete="list" value={borrowerSearch} onFocus={() => setBorrowerPickerOpen(true)} onChange={(event) => { setBorrowerSearch(event.target.value); setBorrowerPickerOpen(true); }} onKeyDown={(event) => { if (event.key === "Escape" && borrowerPickerOpen) { event.preventDefault(); event.stopPropagation(); setBorrowerPickerOpen(false); } }} placeholder="搜索已有借款人，或输入新名称" />{borrowerPickerOpen && <div id="borrower-options" className="borrower-picker__options" role="listbox" aria-label="借款人选项">{matchingBorrowers.map((borrower) => <div className="borrower-picker__option" key={borrower.id}>{borrower.isArchived ? <><span><strong>{borrower.name}</strong><small>已停用</small></span><button type="button" className="secondary-button" onClick={() => restoreBorrower.mutate(borrower)} disabled={restoreBorrower.isPending}>恢复后选择</button></> : <button type="button" role="option" aria-selected="false" onClick={() => { setBorrowerId(borrower.id); setBorrowerSearch(""); setBorrowerPickerOpen(false); }}><span className="matter-person-card__avatar">{borrower.name.slice(0, 1)}</span><span><strong>{borrower.name}</strong><small>待收回 {money(borrower.outstandingMinor)}</small></span></button>}</div>)}{normalizedBorrowerSearch && !exactBorrower && <button type="button" className="borrower-picker__create" role="option" aria-selected="false" onClick={() => setBorrowerPickerOpen(false)}><Plus size={17} /><span><strong>新建“{normalizedBorrowerSearch}”</strong><small>保存借款时一并创建</small></span></button>}{matchingBorrowers.length === 0 && !normalizedBorrowerSearch && <p>输入姓名以搜索或新建借款人。</p>}</div>}</div>}{exactBorrower && !borrowerId && <small className={exactBorrower.isArchived ? "form-warning" : "form-hint"}>{exactBorrower.isArchived ? "同名借款人已停用，请先恢复。" : "已有同名借款人，选择后会沿用现有记录。"}</small>}</div>}
       <div className="matter-form-grid"><label className="matter-field"><span>借出金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="300.00" /></label><label className="matter-field"><span>借出日期</span><input required type="date" value={lentDate} onChange={(event) => { setLentDate(event.target.value); setLinkDate(event.target.value); }} /></label></div>
       <label className="matter-field"><span>用途</span><input maxLength={120} value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="例如：生活费、给女朋友买花" /></label>
       <label className="matter-field"><span>备注 <small>选填</small></span><textarea maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可以补充约定或说明" /></label>
       {!editing && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind={linkKind} setKind={setLinkKind} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={linkDate} setDate={setLinkDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <button className="primary-button matter-submit" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>
+
     </form>
   </BottomSheet>;
 }
@@ -188,14 +202,14 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-income"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "income" }) });
-  return <BottomSheet open={open} title="记录还款" onClose={onClose} className="matter-sheet">
-    <form className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+  return <BottomSheet open={open} title="记录还款" closeLabel="关闭记录还款" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="repayment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存还款</button>}>
+    <form id="repayment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{loan?.borrowerName ?? "这笔借款"} · 未还 {money(loan?.outstandingMinor ?? 0)}</p>
       <div className="matter-form-grid"><label className="matter-field"><span>还款金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label><label className="matter-field"><span>还款日期</span><input required type="date" value={repaidDate} onChange={(event) => setRepaidDate(event.target.value)} /></label></div>
       <label className="matter-field"><span>备注 <small>选填</small></span><input maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：微信转账" /></label>
       <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="income" setKind={() => undefined} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={repaidDate} setDate={setRepaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />
       {error && <p className="form-error" role="alert">{error}</p>}
-      <button className="primary-button matter-submit" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存还款</button>
+
     </form>
   </BottomSheet>;
 }
@@ -312,8 +326,8 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title={editing ? "编辑订阅" : "添加订阅"} onClose={onClose} className="matter-sheet">
-    <form className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+  return <BottomSheet open={open} title={editing ? "编辑订阅" : "添加订阅"} closeLabel={editing ? "关闭编辑订阅" : "关闭添加订阅"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存订阅"}</button>}>
+    <form id="subscription-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记下价格、续费日期和首月优惠，之后只需确认每次是否真的续费。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>订阅名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="OpenAI、opencode…" /></label><label className="matter-field"><span>套餐 <small>选填</small></span><input value={plan} onChange={(event) => setPlan(event.target.value)} placeholder="Pro" /></label></div>
       <div className="matter-form-grid"><label className="matter-field"><span>常规续费价格</span><input required inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder="10.00" /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => setCurrency(event.target.value as MatterCurrency)}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
@@ -324,7 +338,7 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
       <label className="matter-field"><span>网址 <small>选填</small></span><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" /></label>
       <label className="matter-field"><span>备注 <small>选填</small></span><textarea maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="首月优惠、付款方式等" /></label>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <button className="primary-button matter-submit" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存订阅"}</button>
+
     </form>
   </BottomSheet>;
 }
@@ -356,8 +370,8 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   const [linkAmount, setLinkAmount] = useState("");
   const [linkCategory, setLinkCategory] = useState("");
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-subscription"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "expense" }) });
-  return <BottomSheet open={open} title="记录一次续费" onClose={onClose} className="matter-sheet">
-    <form className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+  return <BottomSheet open={open} title="记录一次续费" closeLabel="关闭记录续费" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-payment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>}>
+    <form id="subscription-payment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{subscription?.name} · 确认付款后才会更新下一次续费日期。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>本次付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => setCurrency(event.target.value as MatterCurrency)}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
       {currency === "USD" && <label className="matter-field"><span>实际扣款人民币 <small>用于账单</small></span><input inputMode="decimal" value={actualCny} onChange={(event) => setActualCny(event.target.value.replace(/[^\d.]/g, ""))} placeholder="例如 72.00" /></label>}
@@ -365,7 +379,7 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
       <label className="matter-field"><span>备注 <small>选填</small></span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="首月优惠已结束" /></label>
       <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="expense" setKind={() => undefined} amount={linkAmount || actualCny} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={paidDate} setDate={setPaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} currency={currency} />
       {error && <p className="form-error" role="alert">{error}</p>}
-      <button className="primary-button matter-submit" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>
+
     </form>
   </BottomSheet>;
 }
@@ -415,9 +429,11 @@ export function MattersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab: MatterTab = searchParams.get("tab") === "subscriptions" ? "subscriptions" : "loans";
   const setTab = (value: MatterTab) => setSearchParams({ tab: value }, { replace: true });
+  const subscriptionSummaryQuery = useQuery({ queryKey: ["matters", "subscriptions", "badge"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
+  const attentionCount = subscriptionSummaryQuery.data?.attentionCount ?? 0;
   return <div className="page matters-page">
     <header className="page-heading page-heading--row"><div><p className="eyebrow">财务事项</p><h1>借款与订阅</h1><p>把不适合放进日常账单的财务承诺，放在一个容易回看的地方。</p></div><div className="matters-heading-icon"><WalletCards size={25} /></div></header>
-    <div className="view-tabs matters-tabs" role="tablist" aria-label="财务事项分类"><button role="tab" aria-selected={tab === "loans"} className={tab === "loans" ? "is-active" : ""} onClick={() => setTab("loans")}>借款</button><button role="tab" aria-selected={tab === "subscriptions"} className={tab === "subscriptions" ? "is-active" : ""} onClick={() => setTab("subscriptions")}>订阅</button></div>
+    <div className="view-tabs matters-tabs" role="tablist" aria-label="财务事项分类"><button role="tab" aria-selected={tab === "loans"} className={tab === "loans" ? "is-active" : ""} onClick={() => setTab("loans")}>借款</button><button role="tab" aria-selected={tab === "subscriptions"} aria-label={attentionCount > 0 ? `订阅，${attentionCount}项需要留意` : "订阅"} className={tab === "subscriptions" ? "is-active" : ""} onClick={() => setTab("subscriptions")}><span>订阅</span>{attentionCount > 0 && <em className="matter-tab-badge">{attentionCount}</em>}</button></div>
     {tab === "loans" ? <LoansTab today={today} /> : <SubscriptionsTab today={today} />}
   </div>;
 }

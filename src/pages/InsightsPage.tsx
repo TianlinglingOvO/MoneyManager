@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useReducer, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { addMonths, addWeeks, addYears, format } from "date-fns";
-import { ArrowDownRight, ArrowUpRight, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, WalletCards } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ReportGrain, TransactionKind } from "@shared/types";
 import { api } from "../api";
@@ -9,7 +9,10 @@ import { buildCategoryComposition, categoryCompositionPercent } from "../categor
 import { RecentRecordedList } from "../components/RecentRecordedList";
 import { MoneyValue } from "../components/MoneyValue";
 import { SegmentedControl } from "../components/SegmentedControl";
+import { BudgetSheet } from "../components/BudgetSheet";
+import { HealthSheet } from "../components/HealthSheet";
 import { useEntry } from "../entry-context";
+import { budgetProgress, budgetTone, hasConfiguredBudget } from "../finance-health";
 import { useLedgerClock } from "../ledger-clock";
 import { useReducedMotion, useResolvedChartMotionToken } from "../motion";
 import { money, percentLabel } from "../utils";
@@ -65,6 +68,8 @@ export function InsightsPage() {
   const [chartMotionRequest, requestChartMotion] = useReducer((value: number) => value + 1, shouldPlayInitialMotion() ? 1 : 0);
   const [breakdownMotionRequest, requestBreakdownMotion] = useReducer((value: number) => value + 1, 0);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  const [healthOpen, setHealthOpen] = useState(false);
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -100,6 +105,23 @@ export function InsightsPage() {
   const loanSummaryQuery = useQuery({ queryKey: ["matters", "loans", "summary"], queryFn: api.loanSummary, staleTime: 60_000 });
   const subscriptionSummaryQuery = useQuery({ queryKey: ["matters", "subscriptions", "summary"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
   const report = reportQuery.data;
+  const budgetMonth = report?.range.start.slice(0, 7) ?? anchor.slice(0, 7);
+  const showPlanning = grain === "month" && kind === "expense";
+  const budgetQuery = useQuery({
+    queryKey: ["budget", budgetMonth],
+    queryFn: () => api.budget(budgetMonth),
+    enabled: showPlanning
+  });
+  const healthQuery = useQuery({
+    queryKey: ["health", budgetMonth],
+    queryFn: () => api.healthReport(budgetMonth),
+    enabled: showPlanning
+  });
+  const expenseCategoriesQuery = useQuery({
+    queryKey: ["categories", "expense", true],
+    queryFn: () => api.categories("expense", true),
+    enabled: budgetOpen
+  });
   const averageLabel = report?.averageUnit === "month" ? "月均" : "日均";
   const visibleCategories = report && showAllCategories ? report.categories : report?.categories.slice(0, 5) ?? [];
   const compositionCategories = useMemo(() => buildCategoryComposition(report?.categories ?? []), [report?.categories]);
@@ -140,6 +162,12 @@ export function InsightsPage() {
     if (categoryId) params.set("categoryId", categoryId);
     return `/bills?${params.toString()}`;
   };
+  const planningBudget = budgetQuery.data;
+  const planningProgress = budgetProgress(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
+  const planningTone = budgetTone(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
+  const activeHealthIssues = healthQuery.data?.issues.filter((issue) => !issue.acknowledged) ?? [];
+  const criticalHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "critical").length;
+  const warningHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "warning").length;
 
   return (
     <div className={`page insights-page ${reportQuery.isFetching && report ? "is-refreshing" : ""}`}>
@@ -173,6 +201,36 @@ export function InsightsPage() {
               <article><span>记录笔数</span><strong>{report.transactionCount}</strong><small>本期有效账目</small></article>
             </div>
           </section>
+
+          {showPlanning && <section className="insight-planning-strip" aria-label="预算与账本体检">
+            <button className={`insight-planning-card is-${planningTone}`} type="button" onClick={() => setBudgetOpen(true)}>
+              <span className="insight-planning-card__icon"><Target size={19} /></span>
+              <span className="insight-planning-card__body">
+                <small>本月预算</small>
+                {hasConfiguredBudget(planningBudget) ? <>
+                  <strong>{planningBudget?.totalMinor == null
+                    ? `${planningBudget?.categories.length ?? 0} 个分类预算`
+                    : <>{money(planningBudget.spentMinor)} <em>/ {money(planningBudget.totalMinor)}</em></>}</strong>
+                  {planningBudget?.totalMinor != null && <i aria-hidden="true"><b style={{ width: `${planningProgress ?? 0}%` }} /></i>}
+                  <span>{planningBudget?.totalMinor == null
+                    ? "按分类分别提醒"
+                    : planningBudget.remainingMinor != null && planningBudget.remainingMinor < 0
+                      ? `已超支 ${money(Math.abs(planningBudget.remainingMinor))}`
+                      : `还可使用 ${money(planningBudget.remainingMinor ?? 0)}`}</span>
+                </> : <><strong>设置本月预算</strong><span>只提醒，不限制记账</span></>}
+              </span>
+              <ChevronRight size={17} />
+            </button>
+            <button className={`insight-planning-card health-card ${(healthQuery.data?.issueCount ?? 0) > 0 ? "has-issues" : ""}`} type="button" onClick={() => setHealthOpen(true)}>
+              <span className="insight-planning-card__icon"><ShieldCheck size={19} /></span>
+              <span className="insight-planning-card__body">
+                <small>账本体检</small>
+                <strong>{healthQuery.isPending ? "正在检查…" : `${activeHealthIssues.length} 项待核对`}</strong>
+                <span>{activeHealthIssues.length > 0 ? `${criticalHealthIssues > 0 ? `${criticalHealthIssues} 项需要处理` : "无严重问题"}${warningHealthIssues > 0 ? ` · ${warningHealthIssues} 项建议核对` : ""}` : `目前没有需要处理的项目 · 数据健康度 ${healthQuery.data?.score ?? 100} 分`}</span>
+              </span>
+              <ChevronRight size={17} />
+            </button>
+          </section>}
 
           {(loanSummaryQuery.data || subscriptionSummaryQuery.data) && <section className="insight-matters-strip" aria-label="财务事项摘要">
             <Link to="/matters?tab=loans" className="insight-matter-card insight-matter-card--loan">
@@ -232,6 +290,22 @@ export function InsightsPage() {
             <div className="section-title section-title--row"><div><h2>最近录入</h2></div><ReceiptText size={22} /></div>
             <RecentRecordedList items={recentQuery.data?.items ?? []} onEdit={openEntry} />
           </section>
+          <BudgetSheet
+            open={budgetOpen}
+            month={budgetMonth}
+            budget={planningBudget}
+            categories={expenseCategoriesQuery.data ?? []}
+            onClose={() => setBudgetOpen(false)}
+          />
+          <HealthSheet
+            open={healthOpen}
+            month={budgetMonth}
+            report={healthQuery.data}
+            isLoading={healthQuery.isPending}
+            isError={healthQuery.isError}
+            onClose={() => setHealthOpen(false)}
+            onOpenBudget={() => setBudgetOpen(true)}
+          />
         </>
       )}
     </div>

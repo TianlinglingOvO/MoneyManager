@@ -176,6 +176,7 @@ describe("日期快捷操作", () => {
       periodEnd: lastMonth.end,
       transactionCount: 3,
       model: "deepseek-chat",
+      includeNotes: false,
       createdAt: new Date().toISOString(),
       isStale: false
     };
@@ -252,17 +253,29 @@ describe("OpenClaw 操作中心", () => {
     vi.spyOn(api, "openClawOperations").mockResolvedValue([{
       id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
       entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "applied", undoable: true,
-      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: null
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: null, failedAt: null
     }]);
+    vi.spyOn(api, "openClawOperation").mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
+      entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "applied", undoable: true,
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: null, failedAt: null,
+      result: null,
+      items: [{ sequence: 0, entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", before: null, after: { amountMinor: 2420, note: "敏感备注" } }]
+    });
     const undo = vi.spyOn(api, "undoOpenClawOperation").mockResolvedValue({
       id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
       entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "undone", undoable: true,
-      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: "2026-08-12T01:00:00.000Z"
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: "2026-08-12T01:00:00.000Z", failedAt: null
     });
     renderWithProviders(<ProposalsPage />);
 
     expect(await screen.findByText("直接接管已开启")).toBeInTheDocument();
     expect(screen.getByText("OpenClaw 新增账目")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(await screen.findByText("amountMinor、note")).toBeInTheDocument();
+    expect(screen.queryByText("敏感备注")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /显示字段值/ }));
+    expect(await screen.findByText(/敏感备注/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
     await waitFor(() => expect(undo).toHaveBeenCalledWith("33333333-3333-4333-8333-333333333333", expect.anything()));
   });

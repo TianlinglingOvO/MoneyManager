@@ -28,10 +28,11 @@ function createPreMigrationBackupIfNeeded(database: DatabaseSync, config: AppCon
   database.exec(`VACUUM INTO '${sqliteLiteral(backupPath)}'`);
   const snapshot = new DatabaseSync(backupPath, { readOnly: true });
   const result = snapshot.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+  const foreignKeyIssues = snapshot.prepare("PRAGMA foreign_key_check").all();
   snapshot.close();
-  if (result.integrity_check !== "ok") {
+  if (result.integrity_check !== "ok" || foreignKeyIssues.length > 0) {
     rmSync(backupPath, { force: true });
-    throw new Error("数据库升级前备份未通过完整性检查，已停止迁移");
+    throw new Error("数据库升级前备份未通过完整性或外键检查，已停止迁移");
   }
 }
 
@@ -75,7 +76,7 @@ export function createDatabase(config: AppConfig): DatabaseSync {
   const database = new DatabaseSync(config.databasePath);
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA journal_mode = WAL");
-  database.exec("PRAGMA synchronous = NORMAL");
+  database.exec("PRAGMA synchronous = FULL");
   database.exec("PRAGMA busy_timeout = 5000");
   createPreMigrationBackupIfNeeded(database, config);
   applyMigrations(database);

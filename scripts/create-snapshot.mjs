@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const source = path.resolve(projectRoot, process.env.DATABASE_PATH ?? "./data/money.sqlite");
+const source = path.resolve(projectRoot, process.env.DATABASE_PATH ?? "./data/money-manager.sqlite");
 const backupDirectory = path.resolve(projectRoot, process.env.BACKUP_LOCAL_DIR ?? "./backups/local");
 const label = (process.argv[2] ?? "manual").replace(/[^a-z0-9-]/gi, "-").slice(0, 48) || "manual";
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");

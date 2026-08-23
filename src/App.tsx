@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import type { Transaction } from "@shared/types";
 import { EntryContext } from "./entry-context";
 import { api } from "./api";
@@ -9,6 +9,8 @@ import { BootSplash } from "./components/BootSplash";
 import { QuickEntry } from "./components/QuickEntry";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { InsightsPage } from "./pages/InsightsPage";
+import { useLedgerClock } from "./ledger-clock";
+import { ToastContext } from "./toast-context";
 
 const BillsPage = lazy(() => import("./pages/BillsPage").then((module) => ({ default: module.BillsPage })));
 const AiPage = lazy(() => import("./pages/AiPage").then((module) => ({ default: module.AiPage })));
@@ -18,10 +20,13 @@ const MattersPage = lazy(() => import("./pages/MattersPage").then((module) => ({
 
 export default function App() {
   const queryClient = useQueryClient();
+  const { isLoading: clockLoading } = useLedgerClock();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [entryOpen, setEntryOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | undefined>();
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const entryTrigger = useRef<HTMLElement | null>(null);
+  const handledShortcut = useRef(false);
   const openEntry = useCallback((transaction?: Transaction) => {
     entryTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditing(transaction);
@@ -32,6 +37,7 @@ export default function App() {
     setEditing(undefined);
     window.requestAnimationFrame(() => entryTrigger.current?.focus());
   }, []);
+  const notify = useCallback((text: string) => setToast({ id: Date.now(), text }), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +52,17 @@ export default function App() {
     return () => { cancelled = true; };
   }, [queryClient]);
 
+  useEffect(() => {
+    if (clockLoading || handledShortcut.current || searchParams.get("entry") !== "1") return;
+    handledShortcut.current = true;
+    const next = new URLSearchParams(searchParams);
+    next.delete("entry");
+    setSearchParams(next, { replace: true });
+    openEntry();
+  }, [clockLoading, openEntry, searchParams, setSearchParams]);
+
   return (
+    <ToastContext.Provider value={notify}>
     <EntryContext.Provider value={{ openEntry, closeEntry }}>
       <BootSplash />
       <Suspense fallback={<div className="route-loading" aria-label="页面加载中"><span /></div>}>
@@ -67,9 +83,10 @@ export default function App() {
         open={entryOpen}
         transaction={editing}
         onClose={closeEntry}
-        onSaved={(text) => setToast({ id: Date.now(), text })}
+        onSaved={notify}
       />
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </EntryContext.Provider>
+    </ToastContext.Provider>
   );
 }

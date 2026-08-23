@@ -21,7 +21,10 @@ function ThemeHarness() {
 }
 
 describe("主题与导航状态", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 0, attentionCount: 0, dueCount: 0, upcomingCount: 0, upcoming: [], currencies: [] });
+  });
   afterEach(() => { cleanup(); vi.restoreAllMocks(); delete document.documentElement.dataset.theme; delete document.documentElement.dataset.density; delete document.documentElement.dataset.background; delete document.documentElement.dataset.deviceBackground; });
 
   it("先应用本机缓存防闪，再用服务器设置同步并保存修改", async () => {
@@ -70,6 +73,24 @@ describe("主题与导航状态", () => {
     await waitFor(() => expect(screen.getByTestId("background-preset")).toHaveTextContent("linen"));
     expect(document.documentElement.dataset.background).toBe("linen");
     expect(update).toHaveBeenCalledWith({ backgroundPreset: "linen" });
+  });
+
+  it("订阅有待处理事项时导航徽标说明归属并默认进入订阅页", async () => {
+    vi.spyOn(api, "proposals").mockResolvedValue([]);
+    vi.mocked(api.subscriptionSummary).mockResolvedValue({ activeCount: 2, attentionCount: 2, dueCount: 1, upcomingCount: 1, upcoming: [], currencies: [] });
+    render(
+      <QueryClientProvider client={client()}>
+        <EntryContext.Provider value={{ openEntry: () => undefined, closeEntry: () => undefined }}>
+          <MemoryRouter initialEntries={["/"]}>
+            <Routes><Route element={<AppShell />}><Route index element={<div>页面内容</div>} /></Route></Routes>
+          </MemoryRouter>
+        </EntryContext.Provider>
+      </QueryClientProvider>
+    );
+
+    const links = await screen.findAllByRole("link", { name: "事项，2项订阅需要留意" });
+    expect(links.length).toBeGreaterThan(0);
+    links.forEach((link) => expect(link).toHaveAttribute("href", "/matters?tab=subscriptions"));
   });
 
   it("桌面快捷键只在非输入状态触发，并能聚焦账单搜索", async () => {

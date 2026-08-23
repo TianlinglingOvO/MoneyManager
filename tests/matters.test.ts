@@ -137,4 +137,40 @@ describe("财务事项 API", () => {
     }).expect(500);
     expect(context.repository.listTransactions().total).toBe(0);
   });
+
+  it("新借款人与借款原子创建，同名复用且停用同名需要先恢复", async () => {
+    const app = createApp(context.config, context.database).app;
+    const first = await request(app).post("/api/v1/loans").set("Idempotency-Key", "new-borrower-loan-001").send({
+      newBorrowerName: "  小 林  ",
+      principalMinor: 10_000,
+      localDate: "2026-08-22"
+    }).expect(201);
+    const reused = await request(app).post("/api/v1/loans").set("Idempotency-Key", "new-borrower-loan-002").send({
+      newBorrowerName: "小 林",
+      principalMinor: 5_000,
+      localDate: "2026-08-23"
+    }).expect(201);
+    expect(reused.body.data.borrowerId).toBe(first.body.data.borrowerId);
+    expect((await request(app).get("/api/v1/borrowers?search=%E5%B0%8F&status=active").expect(200)).body.data.total).toBe(1);
+
+    const borrower = (await request(app).get(`/api/v1/borrowers?search=%E5%B0%8F&status=active`)).body.data.items[0];
+    await request(app).patch(`/api/v1/borrowers/${borrower.id}`).send({ isArchived: true, expectedUpdatedAt: borrower.updatedAt }).expect(200);
+    await request(app).post("/api/v1/loans").send({
+      newBorrowerName: "小 林",
+      principalMinor: 1_000,
+      localDate: "2026-08-23"
+    }).expect(409);
+    const archived = (await request(app).get("/api/v1/borrowers?search=%E5%B0%8F&status=active")).body.data.items[0];
+    await request(app).patch(`/api/v1/borrowers/${archived.id}`).send({ isArchived: false, expectedUpdatedAt: archived.updatedAt }).expect(200);
+
+    const countBefore = Number((context.database.prepare("SELECT COUNT(*) AS count FROM borrowers").get() as { count: number }).count);
+    context.database.exec("CREATE TRIGGER reject_atomic_new_borrower_loan BEFORE INSERT ON loans BEGIN SELECT RAISE(ABORT, 'reject atomic loan'); END");
+    await request(app).post("/api/v1/loans").send({
+      newBorrowerName: "不会残留",
+      principalMinor: 2_000,
+      localDate: "2026-08-23"
+    }).expect(500);
+    const countAfter = Number((context.database.prepare("SELECT COUNT(*) AS count FROM borrowers").get() as { count: number }).count);
+    expect(countAfter).toBe(countBefore);
+  });
 });

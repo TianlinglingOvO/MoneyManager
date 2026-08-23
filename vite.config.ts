@@ -26,7 +26,14 @@ export default defineConfig({
         display: "standalone",
         start_url: "/",
         lang: "zh-CN",
-        icons: [...PWA_ICONS]
+        icons: [...PWA_ICONS],
+        shortcuts: [{
+          name: "记一笔",
+          short_name: "记一笔",
+          description: "快速记录一笔收入或支出",
+          url: "/?entry=1",
+          icons: [{ src: "/smb-pwa-192-v2.png", sizes: "192x192", type: "image/png" }]
+        }]
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],

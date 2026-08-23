@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { AiAnalysis } from "../shared/types";
+import type { AiAnalysis, HealthExplanation, HealthReport } from "../shared/types";
 import type { AppConfig } from "./config";
 import { AppError } from "./errors";
 import { LedgerRepository } from "./repository";
@@ -18,6 +18,11 @@ const deepseekResultSchema = z.object({
   answer: z.string().max(1600).nullable().optional()
 });
 
+const healthExplanationSchema = z.object({
+  overview: z.string().min(1).max(1200),
+  suggestions: z.array(z.string().min(1).max(400)).max(6)
+});
+
 interface AiReportRow {
   id: string;
   mode: string;
@@ -27,6 +32,7 @@ interface AiReportRow {
   data_hash: string;
   transaction_count: number;
   model: string;
+  include_notes: number;
   content: string;
   created_at: string;
 }
@@ -42,7 +48,7 @@ export class AiService {
     const { transactions } = this.repository.dataHash(periodStart, periodEnd);
     return {
       transactionCount: transactions.length,
-      fields: ["日期", "收入或支出", "分类", "金额", "备注"]
+      fields: ["日期", "收入或支出", "分类", "金额"]
     };
   }
 
@@ -56,6 +62,7 @@ export class AiService {
       periodEnd: row.period_end,
       transactionCount: Number(row.transaction_count),
       model: row.model,
+      includeNotes: Boolean(row.include_notes),
       createdAt: row.created_at,
       isStale: currentHash ? currentHash !== row.data_hash : false
     };
@@ -74,15 +81,19 @@ export class AiService {
     periodStart: string;
     periodEnd: string;
     question?: string | null;
+    includeNotes?: boolean;
   }, actor: "user" | "openclaw" = "user"): Promise<AiAnalysis> {
     if (!this.config.deepseekApiKey) {
       throw new AppError("尚未配置 DeepSeek API Key", 503, "DEEPSEEK_NOT_CONFIGURED");
     }
 
+    if (input.includeNotes) {
+      throw new AppError("账目备注属于敏感正文；当前服务未启用向外部模型发送备注", 403, "AI_NOTES_DISABLED");
+    }
     const { hash, transactions } = this.repository.dataHash(input.periodStart, input.periodEnd);
     if (transactions.length === 0) throw new AppError("这个期间还没有账目可供分析");
     const cached = this.database.prepare(`SELECT * FROM ai_reports
-      WHERE mode = ? AND period_start = ? AND period_end = ? AND COALESCE(question, '') = ? AND data_hash = ?
+      WHERE mode = ? AND period_start = ? AND period_end = ? AND COALESCE(question, '') = ? AND data_hash = ? AND include_notes = 0
       ORDER BY created_at DESC LIMIT 1`)
       .get(input.mode, input.periodStart, input.periodEnd, input.question ?? "", hash) as unknown as AiReportRow | undefined;
     if (cached) return this.mapRow(cached, hash);
@@ -113,8 +124,7 @@ export class AiService {
         date: item.localDate,
         kind: item.kind,
         category: item.category?.name ?? "未知分类",
-        amountMinor: item.amountMinor,
-        note: item.note
+        amountMinor: item.amountMinor
       }))
     };
 
@@ -169,11 +179,65 @@ export class AiService {
     const now = new Date().toISOString();
     const questionHash = createHash("sha256").update(input.question ?? "").digest("hex").slice(0, 12);
     this.database.prepare(`INSERT INTO ai_reports(
-      id, mode, period_start, period_end, question, data_hash, transaction_count, model, content, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      id, mode, period_start, period_end, question, data_hash, transaction_count, model, include_notes, content, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
       .run(id, input.mode, input.periodStart, input.periodEnd, input.question ?? null, hash, transactions.length, this.config.deepseekModel, JSON.stringify(parsed), now);
     this.repository.audit(actor, "ai.analyze", "ai_report", id, { mode: input.mode, transactionCount: transactions.length, questionHash });
     const row = this.database.prepare("SELECT * FROM ai_reports WHERE id = ?").get(id) as unknown as AiReportRow;
     return this.mapRow(row, hash);
+  }
+
+  async explainHealth(report: HealthReport): Promise<HealthExplanation> {
+    if (!this.config.deepseekApiKey) {
+      throw new AppError("尚未配置 DeepSeek API Key", 503, "DEEPSEEK_NOT_CONFIGURED");
+    }
+    const payload = {
+      month: report.month,
+      score: report.score,
+      issues: report.issues.filter((issue) => !issue.acknowledged).map((issue) => ({
+        type: issue.type,
+        severity: issue.severity,
+        title: issue.title,
+        detail: issue.detail
+      }))
+    };
+    const response = await fetch(`${this.config.deepseekBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.config.deepseekApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: this.config.deepseekModel,
+        thinking: { type: this.config.deepseekThinking },
+        messages: [
+          {
+            role: "system",
+            content: "你是谨慎的个人账本核对助手。只能解释程序给出的体检事实，不猜测原因，不修改账目，不提供投资建议。输入不含账目备注。请输出 JSON：{\"overview\":\"概览\",\"suggestions\":[\"核对建议\"]}。"
+          },
+          { role: "user", content: JSON.stringify(payload) }
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: 1200,
+        stream: false
+      }),
+      signal: AbortSignal.timeout(60_000)
+    });
+    if (!response.ok) throw new AppError("DeepSeek 暂时无法解释体检结果", 502, "DEEPSEEK_ERROR");
+    const json = await response.json() as { choices?: Array<{ message?: { content?: string | null } }> };
+    const content = json.choices?.[0]?.message?.content;
+    if (!content) throw new AppError("DeepSeek 返回了空内容", 502, "DEEPSEEK_ERROR");
+    const parsed = healthExplanationSchema.parse(JSON.parse(content));
+    this.repository.audit("user", "health.explain", "health_report", report.month, {
+      issueCount: payload.issues.length,
+      reportHash: report.dataHash.slice(0, 12)
+    });
+    return {
+      month: report.month,
+      reportHash: report.dataHash,
+      overview: parsed.overview,
+      suggestions: parsed.suggestions,
+      model: this.config.deepseekModel
+    };
   }
 }

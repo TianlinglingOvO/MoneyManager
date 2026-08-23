@@ -1,6 +1,6 @@
 {
   "name": "sutady-money-manager",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,12 +10,13 @@
     "build": "npm run build:web && npm run build:server",
     "build:web": "npm run fonts:build && tsc --noEmit && vite build",
     "build:server": "tsc -p tsconfig.server.json --noEmit && esbuild server/index.ts --bundle --platform=node --target=node22 --format=esm --packages=external --external:node:sqlite --outfile=dist-server/index.js",
-    "start": "node dist-server/index.js",
+    "start": "node scripts/start-server.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "fonts:build": "node scripts/build-font-css.mjs",
     "backup:snapshot": "node scripts/create-snapshot.mjs",
+    "backup:verify-restore": "node scripts/verify-restore.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -26,7 +27,6 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.0",
-    "drizzle-orm": "^0.44.0",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.0",
     "helmet": "^8.1.0",
@@ -47,8 +47,10 @@
     "@types/react-dom": "^19.2.0",
     "@types/supertest": "^6.0.3",
     "@vitejs/plugin-react": "^5.0.0",
+    "axe-core": "^4.13.0",
     "concurrently": "^9.2.0",
     "drizzle-kit": "^0.31.0",
+    "drizzle-orm": "^0.44.0",
     "esbuild": "^0.25.12",
     "jsdom": "^27.0.0",
     "supertest": "^7.1.0",

@@ -11,14 +11,22 @@ import {
   categoryDispositionSchema,
   categoryInputSchema,
   categoryPatchSchema,
+  budgetDeleteSchema,
+  budgetMonthSchema,
   dailyTotalsQuerySchema,
+  healthAcknowledgeSchema,
+  healthExplainSchema,
+  healthReportQuerySchema,
+  monthlyBudgetInputSchema,
   proposalResolutionInputSchema,
   proposalRevisionInputSchema,
   openClawSettingsPatchSchema,
   permanentDeleteTransactionSchema,
   reportQuerySchema,
+  transactionDeleteSchema,
   transactionInputSchema,
   transactionPatchSchema,
+  transactionUpdateRequestSchema,
   transactionQuerySchema
 } from "../shared/schemas";
 import type { AppConfig } from "./config";
@@ -32,6 +40,8 @@ import { OpenClawControlService } from "./openclaw-control";
 import { AppearanceService } from "./appearance";
 import { MattersRepository, attachMatterRoutes } from "./matters";
 import { APP_VERSION } from "../shared/app-metadata";
+import { BudgetService } from "./budgets";
+import { HealthService } from "./health";
 
 function localDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -63,6 +73,8 @@ export interface AppServices {
   openclaw: OpenClawControlService;
   appearance: AppearanceService;
   matters: MattersRepository;
+  budgets: BudgetService;
+  health: HealthService;
 }
 
 export function createApp(config: AppConfig, database: DatabaseSync): { app: express.Express; services: AppServices } {
@@ -70,8 +82,11 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   const repository = new LedgerRepository(database);
   repository.purgeExpiredTrash();
   const ai = new AiService(database, repository, config);
+  const budgets = new BudgetService(database, repository, () => config.timezone);
+  const health = new HealthService(database, repository, budgets, ai);
   const backup = new BackupService(database, repository, config);
-  const openclaw = new OpenClawControlService(database, repository, config);
+  const openclaw = new OpenClawControlService(database, repository, config, budgets);
+  openclaw.reconcileStaleRunningOperations();
   const appearance = new AppearanceService(database, repository);
   const matters = new MattersRepository(database, repository, config.timezone);
   const userAuth = createUserAuth(config);
@@ -99,6 +114,30 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     crossOriginEmbedderPolicy: false
   }));
   app.use(express.json({ limit: "512kb" }));
+  app.use((request, _response, next) => {
+    const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+    if (!unsafe || !request.path.startsWith("/api/v1")) {
+      next();
+      return;
+    }
+    if (request.header("Sec-Fetch-Site")?.toLowerCase() === "cross-site") {
+      next(new AppError("已拒绝跨站写入请求", 403, "CROSS_SITE_WRITE_BLOCKED"));
+      return;
+    }
+    const origin = request.header("Origin");
+    if (origin) {
+      try {
+        if (new URL(origin).host !== request.get("host")) {
+          next(new AppError("请求来源与 SMB 不一致", 403, "ORIGIN_MISMATCH"));
+          return;
+        }
+      } catch {
+        next(new AppError("请求来源无效", 403, "ORIGIN_MISMATCH"));
+        return;
+      }
+    }
+    next();
+  });
 
   app.get("/health", (_request, response) => {
     try {
@@ -151,7 +190,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
   });
 
-  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters);
+  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health);
 
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -234,13 +273,25 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
 
   app.patch("/api/v1/transactions/:id", (request, response, next) => {
     try {
-      response.json({ data: repository.updateTransaction(String(request.params.id), transactionPatchSchema.parse(request.body)) });
+      const input = transactionUpdateRequestSchema.parse(request.body);
+      const { expectedUpdatedAt, ...patch } = input;
+      response.json({ data: repository.updateTransaction(
+        String(request.params.id),
+        transactionPatchSchema.parse(patch),
+        "user",
+        expectedUpdatedAt
+      ) });
     } catch (error) { next(error); }
   });
 
   app.delete("/api/v1/transactions/:id", (request, response, next) => {
     try {
-      response.json({ data: repository.softDeleteTransaction(String(request.params.id)) });
+      const input = transactionDeleteSchema.parse(request.body);
+      response.json({ data: repository.softDeleteTransaction(
+        String(request.params.id),
+        "user",
+        input.expectedUpdatedAt
+      ) });
     } catch (error) { next(error); }
   });
 
@@ -270,6 +321,54 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     try {
       const query = dailyTotalsQuerySchema.parse(request.query);
       response.json({ data: repository.getDailyTotals(query) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/budgets/:month", (request, response, next) => {
+    try {
+      response.json({ data: budgets.get(budgetMonthSchema.parse(request.params.month)) });
+    } catch (error) { next(error); }
+  });
+
+  app.put("/api/v1/budgets/:month", (request, response, next) => {
+    try {
+      const month = budgetMonthSchema.parse(request.params.month);
+      response.json({ data: budgets.put(month, monthlyBudgetInputSchema.parse(request.body), {
+        actor: "user",
+        idempotencyKey: requestIdempotencyKey(request)
+      }) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v1/budgets/:month", (request, response, next) => {
+    try {
+      const month = budgetMonthSchema.parse(request.params.month);
+      const input = budgetDeleteSchema.parse(request.body);
+      response.json({ data: budgets.delete(month, input.expectedUpdatedAt, {
+        actor: "user",
+        idempotencyKey: requestIdempotencyKey(request)
+      }) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/reports/health", (request, response, next) => {
+    try {
+      const input = healthReportQuerySchema.parse(request.query);
+      response.json({ data: health.report(input.month) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/reports/health/:fingerprint/acknowledge", (request, response, next) => {
+    try {
+      const input = healthAcknowledgeSchema.parse(request.body);
+      response.json({ data: health.acknowledge(input.month, String(request.params.fingerprint)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/reports/health/explain", aiLimiter, async (request, response, next) => {
+    try {
+      const input = healthExplainSchema.parse(request.body);
+      response.json({ data: await health.explain(input.month) });
     } catch (error) { next(error); }
   });
 
@@ -320,6 +419,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
       response.setHeader("Content-Type", "application/json; charset=utf-8");
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.json"`);
       Object.assign(data, matters.exportData());
+      Object.assign(data, { budgets: budgets.exportData() });
       response.send(JSON.stringify(data, null, 2));
     } catch (error) { next(error); }
   });
@@ -414,6 +514,12 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v1/openclaw/operations/:id", (request, response, next) => {
+    try {
+      response.json({ data: openclaw.getOperationDetail(String(request.params.id)) });
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v1/openclaw/operations/:id/undo", (request, response, next) => {
     try {
       response.json({ data: openclaw.undo(String(request.params.id), "user") });
@@ -462,5 +568,5 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });
   });
 
-  return { app, services: { repository, ai, backup, openclaw, appearance, matters } };
+  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health } };
 }

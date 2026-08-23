@@ -3,7 +3,7 @@ export type ReportGrain = "day" | "week" | "month" | "year";
 export type ProposalAction = "create" | "update" | "delete";
 export type ProposalStatus = "pending" | "approved" | "rejected" | "expired";
 export type OpenClawMode = "confirm" | "direct";
-export type OpenClawOperationStatus = "running" | "applied" | "undone";
+export type OpenClawOperationStatus = "running" | "applied" | "undone" | "failed";
 export type MatterCurrency = "CNY" | "USD";
 export type MatterStatus = "active" | "paused" | "cancelled";
 export type SubscriptionCycle = "month" | "year" | "custom";
@@ -136,6 +136,76 @@ export interface FinanceReport {
   generatedAt: string;
 }
 
+export interface MonthlyBudgetCategory {
+  categoryId: string;
+  name: string;
+  icon: string;
+  color: string;
+  isArchived: boolean;
+  budgetMinor: number;
+  spentMinor: number;
+  remainingMinor: number;
+  progressPercent: number;
+}
+
+export interface MonthlyBudget {
+  month: string;
+  totalMinor: number | null;
+  spentMinor: number;
+  remainingMinor: number | null;
+  forecastMinor: number;
+  elapsedDays: number;
+  daysInMonth: number;
+  remainingDays: number;
+  recommendedDailyMinor: number | null;
+  categories: MonthlyBudgetCategory[];
+  updatedAt: string | null;
+}
+
+export interface MonthlyBudgetInput {
+  totalMinor: number | null;
+  categories: Array<{ categoryId: string; amountMinor: number }>;
+  expectedUpdatedAt?: string | null;
+}
+
+export type HealthIssueType =
+  | "duplicate"
+  | "openclaw_duplicate"
+  | "future_date"
+  | "large_expense"
+  | "budget_warning"
+  | "subscription_due"
+  | "foreign_key";
+
+export interface HealthIssue {
+  fingerprint: string;
+  type: HealthIssueType;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  detail: string;
+  relatedTransactionIds: string[];
+  href: string | null;
+  acknowledged: boolean;
+}
+
+export interface HealthReport {
+  month: string;
+  score: number;
+  issueCount: number;
+  acknowledgedCount: number;
+  issues: HealthIssue[];
+  dataHash: string;
+  generatedAt: string;
+}
+
+export interface HealthExplanation {
+  month: string;
+  reportHash: string;
+  overview: string;
+  suggestions: string[];
+  model: string;
+}
+
 export interface CategoryDispositionResult {
   action: "archive" | "restore" | "migrate" | "delete" | "purge";
   category?: Category;
@@ -183,6 +253,7 @@ export interface AiAnalysis {
   periodEnd: string;
   transactionCount: number;
   model: string;
+  includeNotes: boolean;
   createdAt: string;
   isStale: boolean;
 }
@@ -193,10 +264,18 @@ export interface SystemStatus {
   deepseek: "configured" | "missing";
   backup: {
     lastSuccessAt: string | null;
-    lastLocalPath: string | null;
     remoteConfigured: boolean;
+    local: BackupCheckStatus;
+    remote: BackupCheckStatus;
+    restoreVerification: BackupCheckStatus;
   };
   version: string;
+}
+
+export interface BackupCheckStatus {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  state: "success" | "failed" | "stale" | "not_configured" | "never";
 }
 
 export interface OpenClawControlSettings {
@@ -218,6 +297,20 @@ export interface OpenClawOperation {
   createdAt: string;
   expiresAt: string;
   undoneAt: string | null;
+  failedAt: string | null;
+}
+
+export interface OpenClawOperationItem {
+  sequence: number;
+  entityType: string;
+  entityId: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
+export interface OpenClawOperationDetail extends OpenClawOperation {
+  result: unknown | null;
+  items: OpenClawOperationItem[];
 }
 
 export interface OpenClawDirectResult<T = unknown> {

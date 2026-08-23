@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Borrower, Loan, Subscription } from "../shared/types";
 import { api } from "../src/api";
 import { MattersPage } from "../src/pages/MattersPage";
@@ -12,6 +12,10 @@ import { MattersPage } from "../src/pages/MattersPage";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+beforeEach(() => {
+  vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 0, attentionCount: 0, dueCount: 0, upcomingCount: 0, upcoming: [], currencies: [] });
 });
 
 function renderPage(path = "/matters?tab=loans") {
@@ -96,11 +100,12 @@ describe("财务事项页面", () => {
 
   it("订阅页展示近期续费和记录续费入口", async () => {
     vi.spyOn(api, "subscriptions").mockResolvedValue({ items: [subscription], total: 1, page: 1, pageSize: 30 });
-    vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 1, attentionCount: 1, dueCount: 1, upcomingCount: 1, upcoming: [subscription], currencies: [{ currency: "USD", amountMinor: 1_000 }] });
+    vi.mocked(api.subscriptionSummary).mockResolvedValue({ activeCount: 1, attentionCount: 1, dueCount: 1, upcomingCount: 1, upcoming: [subscription], currencies: [{ currency: "USD", amountMinor: 1_000 }] });
     renderPage("/matters?tab=subscriptions");
     expect(await screen.findByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("$10.00")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /记录续费/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "订阅，1项需要留意" })).toHaveTextContent("1");
   });
 
   it("事项回收站使用独立查询，不把已删除内容混入正常列表", async () => {
@@ -109,5 +114,24 @@ describe("财务事项页面", () => {
     fireEvent.click(await screen.findByRole("button", { name: "回收站" }));
     await waitFor(() => expect(subscriptions).toHaveBeenLastCalledWith(expect.objectContaining({ status: "trash" })));
     expect(screen.getByText("订阅回收站")).toBeInTheDocument();
+  });
+
+  it("记录借款使用可搜索的单一借款人选择器并支持键盘关闭列表", async () => {
+    vi.spyOn(api, "borrowers").mockResolvedValue({ items: [borrower], total: 1, page: 1, pageSize: 30 });
+    vi.spyOn(api, "loans").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 30 });
+    vi.spyOn(api, "categories").mockResolvedValue([]);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 50 });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "记录借款" }));
+    const combobox = screen.getByRole("combobox", { name: "搜索或新建借款人" });
+    fireEvent.focus(combobox);
+    expect(combobox).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByText("或")).not.toBeInTheDocument();
+    fireEvent.change(combobox, { target: { value: "小林" } });
+    fireEvent.click(screen.getByRole("option", { name: /小林/ }));
+    expect(screen.getByText("已选择借款人")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "更换" }));
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "搜索或新建借款人" }), { key: "Escape" });
+    expect(screen.getByRole("combobox", { name: "搜索或新建借款人" })).toHaveAttribute("aria-expanded", "false");
   });
 });

@@ -45,7 +45,6 @@ try {
   $teamDomain = $CloudflareTeamDomain.Trim().Replace("https://", "").Replace("http://", "").TrimEnd("/")
 
   $values = @{
-    NODE_ENV = "production"
     AUTH_MODE = "cloudflare"
     CF_ACCESS_TEAM_DOMAIN = $teamDomain
     CF_ACCESS_AUD = $WebAudience.Trim()

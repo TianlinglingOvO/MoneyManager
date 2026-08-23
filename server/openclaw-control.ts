@@ -9,6 +9,7 @@ import type {
   OpenClawDirectResult,
   OpenClawMode,
   OpenClawOperation,
+  OpenClawOperationDetail,
   Proposal,
   Subscription,
   SubscriptionPayment,
@@ -17,10 +18,11 @@ import type {
 import { requestIdSchema } from "../shared/schemas";
 import type { LedgerRepository } from "./repository";
 import type { AppConfig } from "./config";
+import type { BudgetService, BudgetSnapshot } from "./budgets";
 import { AppError, ConflictError, NotFoundError } from "./errors";
 
 type EntityType = "transaction" | "category" | "proposal" | "setting"
-  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment";
+  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "budget";
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 function sql(value: unknown): SqlValue {
@@ -36,16 +38,18 @@ interface OperationRow {
   action: string;
   entity_type: string;
   entity_id: string | null;
-  status: "running" | "applied" | "undone";
+  status: "running" | "applied" | "undone" | "failed";
   undoable: number;
   summary: string;
   result_json: string | null;
   created_at: string;
   expires_at: string;
   undone_at: string | null;
+  failed_at: string | null;
 }
 
 interface OperationItemRow {
+  sequence: number;
   entity_type: EntityType;
   entity_id: string;
   before_json: string | null;
@@ -82,7 +86,7 @@ function stableValue(value: unknown): unknown {
   return value;
 }
 
-function requestHash(action: string, input: unknown): string {
+export function hashOpenClawRequest(action: string, input: unknown): string {
   return createHash("sha256").update(JSON.stringify(stableValue({ action, input }))).digest("hex");
 }
 
@@ -98,7 +102,8 @@ function mapOperation(row: OperationRow): OpenClawOperation {
     summary: row.summary,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
-    undoneAt: row.undone_at
+    undoneAt: row.undone_at,
+    failedAt: row.failed_at
   };
 }
 
@@ -209,7 +214,8 @@ export class OpenClawControlService {
   constructor(
     private readonly database: DatabaseSync,
     private readonly repository: LedgerRepository,
-    private readonly config?: AppConfig
+    private readonly config?: AppConfig,
+    private readonly budgets?: BudgetService
   ) {}
 
   settings(): OpenClawControlSettings {
@@ -217,7 +223,7 @@ export class OpenClawControlService {
       .get() as { value: OpenClawMode; updated_at: string } | undefined;
     return {
       mode: row?.value === "direct" ? "direct" : "confirm",
-      directCapabilities: ["transactions", "categories", "matters", "ai", "backup", "timezone", "undo"],
+      directCapabilities: ["transactions", "transactionBatch", "categories", "budgets", "matters", "ai", "backup", "timezone", "undo"],
       credentialsExposed: false,
       updatedAt: row?.updated_at ?? new Date(0).toISOString()
     };
@@ -238,11 +244,26 @@ export class OpenClawControlService {
   }
 
   listOperations(limit = 50): OpenClawOperation[] {
+    this.reconcileStaleRunningOperations();
     this.purgeExpiredOperations();
     const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
     const rows = this.database.prepare("SELECT * FROM openclaw_operations WHERE expires_at > ? ORDER BY created_at DESC LIMIT ?")
       .all(new Date().toISOString(), safeLimit) as unknown as OperationRow[];
     return rows.map(mapOperation);
+  }
+
+  reconcileStaleRunningOperations(maxAgeMs = 15 * 60 * 1000, now = new Date()): number {
+    const failedAt = now.toISOString();
+    const cutoff = new Date(now.getTime() - maxAgeMs).toISOString();
+    const result = this.database.prepare(`UPDATE openclaw_operations
+      SET status = 'failed', failed_at = ?, result_json = ?
+      WHERE status = 'running' AND created_at <= ?`)
+      .run(failedAt, JSON.stringify({ failureReason: "服务重启前未完成" }), cutoff);
+    const count = Number(result.changes);
+    if (count > 0) {
+      this.repository.audit("system", "openclaw.interrupted", "openclaw_operation", null, { count });
+    }
+    return count;
   }
 
   purgeExpiredOperations(): number {
@@ -257,6 +278,28 @@ export class OpenClawControlService {
     return mapOperation(row);
   }
 
+  getOperationDetail(id: string): OpenClawOperationDetail {
+    this.reconcileStaleRunningOperations();
+    this.purgeExpiredOperations();
+    const row = this.database.prepare("SELECT * FROM openclaw_operations WHERE id = ?")
+      .get(id) as unknown as OperationRow | undefined;
+    if (!row) throw new NotFoundError("OpenClaw 操作记录不存在");
+    const items = this.database.prepare(`SELECT sequence, entity_type, entity_id, before_json, after_json
+      FROM openclaw_operation_items WHERE operation_id = ? ORDER BY sequence`)
+      .all(id) as unknown as OperationItemRow[];
+    return {
+      ...mapOperation(row),
+      result: row.result_json ? JSON.parse(row.result_json) as unknown : null,
+      items: items.map((item) => ({
+        sequence: Number(item.sequence),
+        entityType: item.entity_type,
+        entityId: item.entity_id,
+        before: item.before_json ? JSON.parse(item.before_json) as Record<string, unknown> : null,
+        after: item.after_json ? JSON.parse(item.after_json) as Record<string, unknown> : null
+      }))
+    };
+  }
+
   execute<T>(input: {
     requestId: string;
     action: string;
@@ -269,12 +312,14 @@ export class OpenClawControlService {
     this.assertDirectMode();
     this.purgeExpiredOperations();
     const normalizedRequestId = requestIdSchema.parse(input.requestId);
-    const hash = requestHash(input.action, input.request);
+    const hash = hashOpenClawRequest(input.action, input.request);
     const existing = this.database.prepare("SELECT * FROM openclaw_operations WHERE request_id = ?")
       .get(normalizedRequestId) as unknown as OperationRow | undefined;
     if (existing) {
       if (existing.request_hash !== hash) throw new ConflictError("相同 requestId 已用于不同操作");
-      if (existing.status === "running" || !existing.result_json) throw new ConflictError("相同 requestId 的操作仍在处理中");
+      if (existing.status === "running") throw new ConflictError("相同 requestId 的操作仍在处理中");
+      if (existing.status === "failed") throw new ConflictError("相同 requestId 的操作此前失败，请使用新的 requestId 重试");
+      if (!existing.result_json) throw new ConflictError("相同 requestId 的操作结果不完整");
       return { operation: mapOperation(existing), result: JSON.parse(existing.result_json) as T, duplicate: true };
     }
 
@@ -321,12 +366,14 @@ export class OpenClawControlService {
     this.assertDirectMode();
     this.purgeExpiredOperations();
     const normalizedRequestId = requestIdSchema.parse(input.requestId);
-    const hash = requestHash(input.action, input.request);
+    const hash = hashOpenClawRequest(input.action, input.request);
     const existing = this.database.prepare("SELECT * FROM openclaw_operations WHERE request_id = ?")
       .get(normalizedRequestId) as unknown as OperationRow | undefined;
     if (existing) {
       if (existing.request_hash !== hash) throw new ConflictError("相同 requestId 已用于不同操作");
-      if (existing.status === "running" || !existing.result_json) throw new ConflictError("相同 requestId 的操作仍在处理中");
+      if (existing.status === "running") throw new ConflictError("相同 requestId 的操作仍在处理中");
+      if (existing.status === "failed") throw new ConflictError("相同 requestId 的操作此前失败，请使用新的 requestId 重试");
+      if (!existing.result_json) throw new ConflictError("相同 requestId 的操作结果不完整");
       return { operation: mapOperation(existing), result: JSON.parse(existing.result_json) as T, duplicate: true };
     }
     if (input.cooldownMs) {
@@ -356,7 +403,14 @@ export class OpenClawControlService {
       this.repository.audit("openclaw", "openclaw.direct", input.entityType, null, { action: input.action, operationId: id });
       return { operation: this.getOperation(id), result, duplicate: false };
     } catch (error) {
-      this.database.prepare("DELETE FROM openclaw_operations WHERE id = ? AND status = 'running'").run(id);
+      const failedAt = new Date().toISOString();
+      this.database.prepare(`UPDATE openclaw_operations
+        SET status = 'failed', failed_at = ?, result_json = ? WHERE id = ? AND status = 'running'`)
+        .run(failedAt, JSON.stringify({ failureReason: "外部操作执行失败" }), id);
+      this.repository.audit("openclaw", "openclaw.failed", input.entityType, null, {
+        action: input.action,
+        operationId: id
+      });
       throw error;
     }
   }
@@ -369,6 +423,10 @@ export class OpenClawControlService {
   repaymentSnapshot(repayment: LoanRepayment): Record<string, unknown> { return repaymentSnapshot(repayment); }
   subscriptionSnapshot(subscription: Subscription): Record<string, unknown> { return subscriptionSnapshot(subscription); }
   paymentSnapshot(payment: SubscriptionPayment): Record<string, unknown> { return paymentSnapshot(payment); }
+  budgetSnapshot(month: string): BudgetSnapshot | null {
+    if (!this.budgets) throw new ConflictError("预算服务尚未启用");
+    return this.budgets.snapshot(month);
+  }
   settingSnapshot(key: string): Record<string, unknown> | null {
     const row = this.database.prepare("SELECT value, updated_at FROM settings WHERE key = ?").get(key) as { value: string; updated_at: string } | undefined;
     return row ? { value: row.value, updatedAt: row.updated_at } : null;
@@ -386,6 +444,7 @@ export class OpenClawControlService {
       .get(operationId) as unknown as OperationRow | undefined;
     if (!operationRow) throw new NotFoundError("OpenClaw 操作记录不存在");
     if (operationRow.status === "undone") return mapOperation(operationRow);
+    if (operationRow.status === "failed") throw new ConflictError("这项操作已经失败，不能撤销");
     if (operationRow.status !== "applied") throw new ConflictError("这项操作尚未完成，不能撤销");
     if (!operationRow.undoable) throw new ConflictError("AI 分析和备份等操作不支持撤销");
     if (operationRow.expires_at <= new Date().toISOString()) throw new ConflictError("这项操作已经超过 30 天撤销期限");
@@ -419,6 +478,15 @@ export class OpenClawControlService {
     if (item.entity_type === "loan_repayment") return this.restoreLoanRepaymentSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription") return this.restoreSubscriptionSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription_payment") return this.restoreSubscriptionPaymentSnapshot(item.entity_id, before, after);
+    if (item.entity_type === "budget") {
+      if (!this.budgets) throw new ConflictError("预算服务尚未启用");
+      this.budgets.restoreSnapshot(
+        item.entity_id,
+        before as unknown as BudgetSnapshot | null,
+        after as unknown as BudgetSnapshot | null
+      );
+      return;
+    }
     this.restoreSettingSnapshot(item.entity_id, before, after);
   }
 
@@ -445,6 +513,8 @@ export class OpenClawControlService {
       if (!currentRow || currentRow.updated_at !== after.updatedAt) throw new ConflictError("分类后来已经改变，不能覆盖新内容");
       const used = this.database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE category_id = ?").get(id) as { count: number };
       if (Number(used.count) > 0) throw new ConflictError("新分类已经被账目使用，不能撤销创建");
+      const budgetUses = this.database.prepare("SELECT COUNT(*) AS count FROM category_monthly_budgets WHERE category_id = ?").get(id) as { count: number };
+      if (Number(budgetUses.count) > 0) throw new ConflictError("新分类已经被预算使用，不能撤销创建");
       this.database.prepare("DELETE FROM categories WHERE id = ?").run(id);
       return;
     }

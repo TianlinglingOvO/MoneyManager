@@ -8,6 +8,7 @@ import type {
   DashboardData,
   FinanceReport,
   OpenClawControlSettings,
+  OpenClawOperationDetail,
   OpenClawOperation,
   PermanentDeletionResult,
   Proposal,
@@ -21,6 +22,10 @@ import type {
   LoanRepayment,
   LoanSummary,
   MatterCurrency,
+  HealthExplanation,
+  HealthReport,
+  MonthlyBudget,
+  MonthlyBudgetInput,
   Subscription,
   SubscriptionPayment,
   SubscriptionSummary
@@ -163,10 +168,16 @@ export const api = {
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(input)
     }),
-  updateTransaction: (id: string, input: Record<string, unknown>) =>
-    request<Transaction>(`/api/v1/transactions/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  updateTransaction: (id: string, input: Record<string, unknown>, expectedUpdatedAt: string) =>
+    request<Transaction>(`/api/v1/transactions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...input, expectedUpdatedAt })
+    }),
   transaction: (id: string) => request<Transaction>(`/api/v1/transactions/${id}`),
-  deleteTransaction: (id: string) => request<Transaction>(`/api/v1/transactions/${id}`, { method: "DELETE" }),
+  deleteTransaction: (id: string, expectedUpdatedAt: string) => request<Transaction>(`/api/v1/transactions/${id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedUpdatedAt })
+  }),
   restoreTransaction: (id: string) => request<Transaction>(`/api/v1/transactions/${id}/restore`, { method: "POST" }),
   permanentlyDeleteTransaction: (id: string, expectedUpdatedAt: string) => request<PermanentDeletionResult>(`/api/v1/transactions/${id}/permanent`, {
     method: "DELETE",
@@ -176,6 +187,31 @@ export const api = {
     request<FinanceReport>(`/api/v1/reports/finance${queryString({ grain, anchor, kind })}`),
   dailyTotals: (filters: { start: string; end: string; kind?: "expense" | "income"; categoryId?: string; search?: string }) =>
     request<DailyTransactionTotal[]>(`/api/v1/reports/daily-totals${queryString(filters)}`),
+  budget: (month: string) => request<MonthlyBudget>(`/api/v1/budgets/${month}`),
+  updateBudget: (month: string, input: MonthlyBudgetInput, requestId = crypto.randomUUID()) =>
+    request<MonthlyBudget>(`/api/v1/budgets/${month}`, {
+      method: "PUT",
+      headers: { "Idempotency-Key": requestId },
+      body: JSON.stringify(input)
+    }),
+  deleteBudget: (month: string, expectedUpdatedAt: string, requestId = crypto.randomUUID()) =>
+    request<{ month: string; deleted: true }>(`/api/v1/budgets/${month}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": requestId },
+      body: JSON.stringify({ expectedUpdatedAt })
+    }),
+  healthReport: (month: string) =>
+    request<HealthReport>(`/api/v1/reports/health${queryString({ month })}`),
+  acknowledgeHealthIssue: (fingerprint: string, month: string) =>
+    request<HealthReport>(`/api/v1/reports/health/${fingerprint}/acknowledge`, {
+      method: "POST",
+      body: JSON.stringify({ month })
+    }),
+  explainHealth: (month: string) =>
+    request<HealthExplanation>("/api/v1/reports/health/explain", {
+      method: "POST",
+      body: JSON.stringify({ month })
+    }),
   proposals: (status = "pending") => request<Proposal[]>(`/api/v1/proposals${queryString({ status })}`),
   reviseProposal: (id: string, expectedRevision: number, changes: Record<string, unknown>) =>
     request<Proposal>(`/api/v1/proposals/${id}`, {
@@ -212,6 +248,7 @@ export const api = {
     method: "PATCH", body: JSON.stringify({ mode })
   }),
   openClawOperations: (limit = 50) => request<OpenClawOperation[]>(`/api/v1/openclaw/operations${queryString({ limit })}`),
+  openClawOperation: (id: string) => request<OpenClawOperationDetail>(`/api/v1/openclaw/operations/${id}`),
   undoOpenClawOperation: (id: string) => request<OpenClawOperation>(`/api/v1/openclaw/operations/${id}/undo`, { method: "POST" }),
 
   borrowers: (includeArchived = false) =>

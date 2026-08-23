@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const categories = sqliteTable("categories", {
@@ -45,11 +46,14 @@ export const proposals = sqliteTable("proposals", {
   source: text("source", { enum: ["openclaw", "system"] }).notNull(),
   status: text("status", { enum: ["pending", "approved", "rejected", "expired"] }).notNull(),
   revision: integer("revision").notNull().default(1),
+  requestId: text("request_id"),
+  requestHash: text("request_hash"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   resolvedAt: text("resolved_at")
 }, (table) => [
-  index("idx_proposals_status_created").on(table.status, table.createdAt)
+  index("idx_proposals_status_created").on(table.status, table.createdAt),
+  uniqueIndex("idx_proposals_request_id").on(table.requestId).where(sql`${table.requestId} IS NOT NULL`)
 ]);
 
 export const aiReports = sqliteTable("ai_reports", {
@@ -58,6 +62,7 @@ export const aiReports = sqliteTable("ai_reports", {
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
   question: text("question"),
+  includeNotes: integer("include_notes").notNull().default(0),
   dataHash: text("data_hash").notNull(),
   transactionCount: integer("transaction_count").notNull(),
   model: text("model").notNull(),
@@ -98,13 +103,14 @@ export const openClawOperations = sqliteTable("openclaw_operations", {
   action: text("action").notNull(),
   entityType: text("entity_type").notNull(),
   entityId: text("entity_id"),
-  status: text("status", { enum: ["running", "applied", "undone"] }).notNull(),
+  status: text("status", { enum: ["running", "applied", "undone", "failed"] }).notNull(),
   undoable: integer("undoable", { mode: "boolean" }).notNull().default(true),
   summary: text("summary").notNull(),
   resultJson: text("result_json"),
   createdAt: text("created_at").notNull(),
   expiresAt: text("expires_at").notNull(),
-  undoneAt: text("undone_at")
+  undoneAt: text("undone_at"),
+  failedAt: text("failed_at")
 }, (table) => [
   uniqueIndex("idx_openclaw_operations_request_id").on(table.requestId),
   index("idx_openclaw_operations_created").on(table.createdAt),
@@ -115,7 +121,7 @@ export const openClawOperationItems = sqliteTable("openclaw_operation_items", {
   id: text("id").primaryKey(),
   operationId: text("operation_id").notNull().references(() => openClawOperations.id, { onDelete: "cascade" }),
   sequence: integer("sequence").notNull(),
-  entityType: text("entity_type", { enum: ["transaction", "category", "proposal", "setting", "borrower", "loan", "loan_repayment", "subscription", "subscription_payment"] }).notNull(),
+  entityType: text("entity_type", { enum: ["transaction", "category", "proposal", "setting", "borrower", "loan", "loan_repayment", "subscription", "subscription_payment", "budget"] }).notNull(),
   entityId: text("entity_id").notNull(),
   beforeJson: text("before_json"),
   afterJson: text("after_json")
@@ -218,3 +224,29 @@ export const matterIdempotency = sqliteTable("matter_idempotency", {
   resultJson: text("result_json").notNull(),
   createdAt: text("created_at").notNull()
 }, (table) => [index("idx_matter_idempotency_created").on(table.createdAt)]);
+
+export const monthlyBudgets = sqliteTable("monthly_budgets", {
+  month: text("month").primaryKey(),
+  totalMinor: integer("total_minor"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const categoryMonthlyBudgets = sqliteTable("category_monthly_budgets", {
+  month: text("month").notNull().references(() => monthlyBudgets.month, { onDelete: "cascade" }),
+  categoryId: text("category_id").notNull().references(() => categories.id, { onDelete: "cascade" }),
+  amountMinor: integer("amount_minor").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  uniqueIndex("idx_category_monthly_budgets_unique").on(table.month, table.categoryId),
+  index("idx_category_monthly_budgets_category").on(table.categoryId, table.month)
+]);
+
+export const healthAcknowledgements = sqliteTable("health_acknowledgements", {
+  fingerprint: text("fingerprint").primaryKey(),
+  issueType: text("issue_type").notNull(),
+  acknowledgedAt: text("acknowledged_at").notNull()
+}, (table) => [
+  index("idx_health_acknowledgements_time").on(table.acknowledgedAt)
+]);

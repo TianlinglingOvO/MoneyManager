@@ -1,26 +1,48 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { motionDurations, useReducedMotion } from "../motion";
+
+export interface BottomSheetHandle {
+  close: (options?: { skipBeforeClose?: boolean }) => void;
+}
 
 interface BottomSheetProps {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
+  footer?: ReactNode;
   labelledBy?: string;
+  closeLabel?: string;
   className?: string;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  beforeClose?: () => boolean;
 }
 
+const focusableSelector = "button:not(:disabled):not([tabindex='-1']), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]";
+
 /**
- * A small, shared sheet shell for mobile filters and other short actions.
- * The sheet uses the browser history on mobile so Android's back gesture
- * closes it before navigating away from the page.
+ * Shared responsive overlay: a centered dialog on desktop and a bottom sheet
+ * on mobile. Android's back gesture closes the mobile sheet before routing.
  */
-export function BottomSheet({ open, title, onClose, children, labelledBy, className = "" }: BottomSheetProps) {
+export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(function BottomSheet({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  labelledBy,
+  closeLabel,
+  className = "",
+  initialFocusRef,
+  beforeClose
+}, forwardedRef) {
   const sheetRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const beforeCloseRef = useRef(beforeClose);
   const historyEntryActive = useRef(false);
   const [dragOffset, setDragOffset] = useState(0);
   const [closing, setClosing] = useState(false);
@@ -28,11 +50,13 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
   const dragStart = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
   const reducedMotion = useReducedMotion();
-  const titleId = labelledBy ?? "bottom-sheet-title";
+  const generatedTitleId = useId();
+  const titleId = labelledBy ?? generatedTitleId;
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    beforeCloseRef.current = beforeClose;
+  }, [beforeClose, onClose]);
 
   const finishClose = useCallback(() => {
     closingRef.current = false;
@@ -41,8 +65,16 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
     window.requestAnimationFrame(() => restoreFocusRef.current?.focus());
   }, []);
 
-  const close = useCallback((historyAlreadyPopped = false) => {
+  const requestClose = useCallback((historyAlreadyPopped = false, skipBeforeClose = false) => {
     if (closingRef.current) return;
+    if (!skipBeforeClose && beforeCloseRef.current && !beforeCloseRef.current()) {
+      setDragOffset(0);
+      if (historyAlreadyPopped && !historyEntryActive.current) {
+        window.history.pushState({ ...window.history.state, moneyManagerSheet: true }, "");
+        historyEntryActive.current = true;
+      }
+      return;
+    }
     closingRef.current = true;
     if (historyEntryActive.current && !historyAlreadyPopped) {
       historyEntryActive.current = false;
@@ -53,6 +85,10 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(finishClose, reducedMotion ? 0 : motionDurations.dialogExit);
   }, [finishClose, reducedMotion]);
+
+  useImperativeHandle(forwardedRef, () => ({
+    close: (options) => requestClose(false, options?.skipBeforeClose ?? false)
+  }), [requestClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -65,7 +101,7 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
       if (!historyEntryActive.current) return;
       historyEntryActive.current = false;
       setDragOffset(0);
-      close(true);
+      requestClose(true);
     };
     if (isMobile) {
       window.history.pushState({ ...window.history.state, moneyManagerSheet: true }, "");
@@ -75,13 +111,13 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        close();
+        requestClose();
         return;
       }
       if (event.key !== "Tab") return;
       const sheet = sheetRef.current;
       if (!sheet) return;
-      const focusable = Array.from(sheet.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]"));
+      const focusable = Array.from(sheet.querySelectorAll<HTMLElement>(focusableSelector));
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -94,8 +130,10 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
       }
     };
     document.addEventListener("keydown", onKeyDown);
-    const firstFocusable = sheetRef.current?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]");
-    window.requestAnimationFrame(() => firstFocusable?.focus());
+    window.requestAnimationFrame(() => {
+      const target = initialFocusRef?.current ?? closeButtonRef.current ?? sheetRef.current?.querySelector<HTMLElement>(focusableSelector);
+      target?.focus();
+    });
     return () => {
       document.body.classList.remove("modal-open");
       document.removeEventListener("keydown", onKeyDown);
@@ -106,7 +144,7 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
         window.history.back();
       }
     };
-  }, [close, open]);
+  }, [initialFocusRef, open, requestClose]);
 
   if (!open) return null;
 
@@ -122,14 +160,14 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
     const shouldClose = dragOffset >= 96;
     dragStart.current = null;
     setDragOffset(0);
-    if (shouldClose) close();
+    if (shouldClose) requestClose();
   };
 
   return createPortal((
     <div
       className={`modal-backdrop bottom-sheet-backdrop ${closing ? "is-closing" : ""}`}
       role="presentation"
-      onMouseDown={(event) => { if (event.currentTarget === event.target) close(); }}
+      onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose(); }}
     >
       <section
         ref={sheetRef}
@@ -139,13 +177,14 @@ export function BottomSheet({ open, title, onClose, children, labelledBy, classN
         aria-labelledby={titleId}
         style={{ "--sheet-drag": `${dragOffset}px` } as CSSProperties}
       >
-        <button className="bottom-sheet__handle" type="button" aria-label="向下拖动关闭" onPointerDown={onDragStart} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}><span /></button>
+        <button className="bottom-sheet__handle" type="button" tabIndex={-1} aria-label="向下拖动关闭" onPointerDown={onDragStart} onPointerMove={onDragMove} onPointerUp={onDragEnd} onPointerCancel={onDragEnd}><span /></button>
         <header className="bottom-sheet__header">
           <h2 id={titleId}>{title}</h2>
-          <button className="icon-button" type="button" onClick={() => close()} aria-label="关闭筛选"><X size={19} /></button>
+          <button ref={closeButtonRef} className="icon-button" type="button" onClick={() => requestClose()} aria-label={closeLabel ?? `关闭${title}`}><X size={19} /></button>
         </header>
-        {children}
+        <div className="bottom-sheet__body">{children}</div>
+        {footer ? <footer className="bottom-sheet__footer">{footer}</footer> : null}
       </section>
     </div>
   ), document.body);
-}
+});

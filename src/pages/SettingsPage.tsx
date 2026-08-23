@@ -25,15 +25,18 @@ import {
   Save,
   ShieldCheck,
   Smartphone,
+  Target,
   Trash2,
   Wallpaper,
   X
 } from "lucide-react";
-import type { AppearanceBackgroundPreset, AppearancePreferences, AppearancePreset, Category, TransactionKind } from "@shared/types";
+import type { AppearanceBackgroundPreset, AppearancePreferences, AppearancePreset, BackupCheckStatus, Category, TransactionKind } from "@shared/types";
 import { APP_VERSION } from "@shared/app-metadata";
 import { api } from "../api";
 import { useAppearance } from "../appearance";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
+import { BudgetSheet } from "../components/BudgetSheet";
+import { useLedgerClock } from "../ledger-clock";
 import { refreshApplication } from "../pwa-update";
 
 const colors = ["#D66A4C", "#B66A8C", "#D49B45", "#2E7D61", "#4E87A6", "#5963A6", "#9A6FB0", "#7A7A73"];
@@ -51,6 +54,18 @@ const backgroundPresets: Array<{ value: AppearanceBackgroundPreset; name: string
   { value: "linen", name: "织纹", description: "克制的纵横纹理" },
   { value: "mist", name: "薄雾", description: "柔和的环境光晕" }
 ];
+
+function backupStateLabel(status: BackupCheckStatus): string {
+  if (status.state === "success") return "正常";
+  if (status.state === "failed") return "最近失败";
+  if (status.state === "stale") return "已过期";
+  if (status.state === "not_configured") return "未配置";
+  return "尚未执行";
+}
+
+function backupTime(value: string | null): string {
+  return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+}
 
 function AppearanceSection() {
   const { appearance, updateAppearance, isSaving, deviceBackground } = useAppearance();
@@ -288,14 +303,21 @@ function CategoryDispositionDialog({ category, targets, onClose }: { category: C
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
+  const { today } = useLedgerClock();
+  const currentMonth = today.slice(0, 7);
   const [kind, setKind] = useState<TransactionKind>("expense");
   const [editing, setEditing] = useState<Category | undefined>();
   const [managing, setManaging] = useState<Category | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [budgetOpen, setBudgetOpen] = useState(false);
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 60_000 });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const openClawSettings = useQuery({ queryKey: ["openclaw", "settings"], queryFn: api.openClawSettings });
   const categories = useQuery({ queryKey: ["categories", "settings", true], queryFn: () => api.categories(undefined, true) });
+  const budget = useQuery({
+    queryKey: ["budget", currentMonth],
+    queryFn: () => api.budget(currentMonth)
+  });
   const currentTimezone = useMemo(() => settings.data?.rows.find((row) => row.key === "timezone")?.value ?? Intl.DateTimeFormat().resolvedOptions().timeZone, [settings.data]);
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai");
   useEffect(() => setTimezone(currentTimezone), [currentTimezone]);
@@ -324,6 +346,20 @@ export function SettingsPage() {
       <header className="page-heading"><h1>设置</h1><p>管理外观、分类、备份和本机服务。</p></header>
 
       <AppearanceSection />
+
+      <section className="content-card budget-settings-section">
+        <div className="section-title section-title--row">
+          <div><h2>月度预算</h2><p>预算只用于提醒，不会阻止记账，也不会自动结转。</p></div>
+          <button className="secondary-button" type="button" onClick={() => setBudgetOpen(true)}>
+            <Target size={17} />管理本月预算
+          </button>
+        </div>
+        <div className="budget-settings-summary">
+          <span>{currentMonth.replace("-", " 年 ")} 月</span>
+          <strong>{budget.data?.totalMinor == null ? "未设置月总预算" : `¥${(budget.data.totalMinor / 100).toFixed(2)}`}</strong>
+          <small>{budget.data?.categories.length ?? 0} 个分类预算</small>
+        </div>
+      </section>
 
       <section className="content-card status-section">
         <div className="section-title section-title--row"><div><h2>运行状态</h2><p>页面会自动同步账目并检查新版本，无需清除 Cookie。</p></div><button className="secondary-button" onClick={() => void refreshApplication()}><RefreshCw size={17} />检查并刷新</button></div>
@@ -362,8 +398,12 @@ export function SettingsPage() {
       <div className="settings-two-column">
         <section className="content-card backup-section">
           <div className="section-title"><h2>备份与导出</h2></div>
-          <p>正式数据库保存在 SSD。手动备份会先做完整性检查，再生成一致快照。</p>
-          {status.data?.backup.lastLocalPath && <code className="path-code">{status.data.backup.lastLocalPath}</code>}
+          <p>正式数据库保存在 SSD。快照会同时检查 SQLite 完整性与外键关系，状态中不会暴露本机路径或凭据。</p>
+          {status.data?.backup && <div className="backup-status-grid">{[
+            { label: "本地快照", value: status.data.backup.local },
+            { label: "Google Drive 加密上传", value: status.data.backup.remote },
+            { label: "恢复验证", value: status.data.backup.restoreVerification }
+          ].map((item) => <article className={`is-${item.value.state}`} key={item.label}><span>{item.label}</span><strong>{backupStateLabel(item.value)}</strong><small>最近尝试：{backupTime(item.value.lastAttemptAt)}</small><small>最近成功：{backupTime(item.value.lastSuccessAt)}</small></article>)}</div>}
           {backup.data && <div className="backup-success"><CheckCircle2 size={17} />{backup.data.remoteMessage}</div>}
           {backup.isError && <p className="form-error">{backup.error instanceof Error ? backup.error.message : "备份失败"}</p>}
           <div className="button-stack"><button className="primary-button" disabled={backup.isPending} onClick={() => backup.mutate()}>{backup.isPending ? <LoaderCircle className="spin" size={17} /> : <HardDrive size={17} />}立即备份</button><a className="secondary-button" href="/api/v1/export.json"><Download size={17} />导出完整 JSON</a><a className="secondary-button" href="/api/v1/export.csv"><Download size={17} />导出 CSV</a></div>
@@ -390,6 +430,13 @@ export function SettingsPage() {
 
       {dialogOpen && <CategoryDialog category={editing} kind={kind} onClose={() => { setDialogOpen(false); setEditing(undefined); }} />}
       {managing && <CategoryDispositionDialog category={managing} targets={visibleCategories.filter((item) => item.id !== managing.id && !item.isArchived)} onClose={() => setManaging(undefined)} />}
+      <BudgetSheet
+        open={budgetOpen}
+        month={currentMonth}
+        budget={budget.data}
+        categories={categories.data ?? []}
+        onClose={() => setBudgetOpen(false)}
+      />
     </div>
   );
 }

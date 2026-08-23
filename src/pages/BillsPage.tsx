@@ -310,11 +310,17 @@ export function BillsPage() {
               </>
             )}
           </section>
-          <BottomSheet open={filtersOpen} title="账单筛选" onClose={() => setFiltersOpen(false)} className="bills-filter-sheet">
+          <BottomSheet
+            open={filtersOpen}
+            title="账单筛选"
+            closeLabel="关闭账单筛选"
+            onClose={() => setFiltersOpen(false)}
+            className="bills-filter-sheet"
+            footer={<button type="button" className="primary-button filter-sheet__done" onClick={() => setFiltersOpen(false)}>完成筛选</button>}
+          >
             <div className="bottom-sheet__content filter-sheet-content">
               {filterControls}
               {mode === "ledger" && <div className="filter-sheet__export">{exportActions}</div>}
-              <button type="button" className="primary-button filter-sheet__done" onClick={() => setFiltersOpen(false)}>完成筛选</button>
             </div>
           </BottomSheet>
         </div>

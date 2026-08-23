@@ -216,7 +216,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError("请选择有效日期", "VALIDATION_ERROR", 400);
       const input = { kind, amountMinor: parsedMinor, categoryId, localDate: date, note: note.trim() || null };
       if (proposal) return api.reviseProposal(proposal.id, proposal.revision, input);
-      if (transaction) return api.updateTransaction(transaction.id, input);
+      if (transaction) return api.updateTransaction(transaction.id, input, transaction.updatedAt);
       return api.createTransaction(input, crypto.randomUUID());
     },
     onSuccess: async () => {
@@ -295,7 +295,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
   }, [open, requestClose, save, saved]);
 
   const remove = useMutation({
-    mutationFn: () => api.deleteTransaction(transaction!.id),
+    mutationFn: () => api.deleteTransaction(transaction!.id, transaction!.updatedAt),
     onSuccess: async () => { await queryClient.invalidateQueries(); requestClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "删除失败")
   });

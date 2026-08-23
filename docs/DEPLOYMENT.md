@@ -36,11 +36,12 @@ npm.cmd run build
 
 ```powershell
 npm.cmd run backup:snapshot -- pre-deploy
+npm.cmd run backup:verify-restore
 ```
 
 该命令使用 SQLite 一致性快照，并同时执行完整性与外键检查；快照保存在 `backups/local/`。
 
-当前事项模块对应数据库迁移版本 6。不要手工创建借款或订阅表；新生产构建第一次启动时会在迁移前再生成快照，然后自动创建借款人、借款、还款、订阅、付款及相关索引。迁移不会把事项混入原有收支统计。
+SMB 2.2.0 使用数据库迁移版本 8。不要手工增加提案幂等列或重建 OpenClaw 操作表；生产构建首次启动会先生成并验证迁移前快照，再自动补齐结构。旧提案保持可用，现有账目、事项、预算和操作历史不会被清除。
 
 ## 2. Cloudflare Tunnel
 

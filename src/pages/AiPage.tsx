@@ -64,7 +64,7 @@ export function AiPage() {
   const currentSignature = JSON.stringify({ periodStart, periodEnd, mode, question: mode === "custom" ? question.trim() : "" });
   const isPreviousResult = Boolean(result && resultSignature && resultSignature !== currentSignature);
   const canAnalyze = (preview.data?.transactionCount ?? 0) > 0 && (mode !== "custom" || question.trim().length > 0);
-  const fields = useMemo(() => preview.data?.fields.join("、") ?? "日期、类型、分类、金额和备注", [preview.data]);
+  const fields = useMemo(() => preview.data?.fields.join("、") ?? "日期、类型、分类和金额", [preview.data]);
   const selectPeriod = (preset: AnalysisPeriodPreset | "custom") => {
     setPeriodPreset(preset);
     if (preset === "custom") return;
@@ -97,7 +97,7 @@ export function AiPage() {
               {periodPreset === "custom" && <div className="ai-period-fields"><label><span>开始日期</span><input type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} /></label><label><span>结束日期</span><input type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} /></label></div>}
               <div className="analysis-modes">{modes.map((item) => <button className={mode === item.value ? "is-active" : ""} key={item.value} onClick={() => setMode(item.value)}>{item.label}</button>)}</div>
               {mode === "custom" && <label className="custom-question"><span>你想问什么？</span><textarea maxLength={500} rows={4} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：哪些消费是最近才明显增加的？" /></label>}
-              <div className="privacy-preview"><LockKeyhole size={19} /><div><strong>即将发送 {preview.data?.transactionCount ?? 0} 笔账目</strong><p>包含：{fields}。不包含内部 ID、密钥或登录信息。</p></div></div>
+              <div className="privacy-preview"><LockKeyhole size={19} /><div><strong>即将发送 {preview.data?.transactionCount ?? 0} 笔账目</strong><p>包含：{fields}。不发送账目备注、内部 ID、密钥或登录信息。</p></div></div>
               {analyze.isError && <div className="inline-error"><AlertTriangle size={18} />{analyze.error instanceof Error ? analyze.error.message : "分析失败"}</div>}
               <button className="primary-button ai-submit" disabled={!canAnalyze || analyze.isPending} onClick={() => analyze.mutate()}>{analyze.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}{analyze.isPending ? "正在整理账本…" : "生成分析"}</button>
             </div>

@@ -38,8 +38,16 @@ describe("数据库升级", () => {
     expect(upgraded.prepare("SELECT is_archived FROM categories WHERE id = 'used-default'").get()).toEqual({ is_archived: 1 });
     expect(upgraded.prepare("SELECT id FROM categories WHERE id = 'unused-default'").get()).toBeUndefined();
     expect(upgraded.prepare("SELECT id FROM categories WHERE id = 'custom'").get()).toEqual({ id: "custom" });
-    expect(upgraded.prepare("SELECT revision, updated_at FROM proposals WHERE id = 'old-proposal'").get())
-      .toEqual({ revision: 1, updated_at: now });
+    expect(upgraded.prepare("SELECT revision, updated_at, request_id, request_hash FROM proposals WHERE id = 'old-proposal'").get())
+      .toEqual({ revision: 1, updated_at: now, request_id: null, request_hash: null });
+    expect((upgraded.prepare("SELECT include_notes FROM ai_reports LIMIT 1").get() as { include_notes?: number } | undefined)).toBeUndefined();
+    expect((upgraded.prepare("PRAGMA synchronous").get() as { synchronous: number }).synchronous).toBe(2);
+    upgraded.prepare(`INSERT INTO openclaw_operations(
+      id, request_id, request_hash, action, entity_type, status, undoable, summary, created_at, expires_at, failed_at
+    ) VALUES ('failed-operation', 'failed-request', 'hash', 'test', 'database', 'failed', 0, '测试失败状态', ?, ?, ?)`)
+      .run(now, "2099-01-01T00:00:00.000Z", now);
+    expect(upgraded.prepare("SELECT status, failed_at FROM openclaw_operations WHERE id = 'failed-operation'").get())
+      .toEqual({ status: "failed", failed_at: now });
     expect(readdirSync(backupLocalDir).some((name) => name.startsWith("money-pre-migration-"))).toBe(true);
     upgraded.close();
   });
