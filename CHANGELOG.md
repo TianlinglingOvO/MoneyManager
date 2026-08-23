@@ -17,6 +17,10 @@ All notable SMB changes are recorded here. The version in `package.json` is cano
 - Added OpenClaw account, funds summary, transfer, adjustment, refund, and refund-undo tools with exact account resolution, idempotent request IDs, snapshots, and reversible operations.
 - Added the responsive Funds page, activation wizard, account management, movement history, transfer editor, ledger account labels, and refund actions.
 
+### Known 2.3.0 limitation
+
+- Funds activation currently stores only the ledger date. The health check can therefore report pre-existing transactions from the activation day as missing an account, and it emits one finding per transaction. Do not attach those historical records blindly when their effect is already included in opening balances; the activation baseline and grouped review flow are scheduled for 2.3.x maintenance.
+
 ## 2.2.1 — 2026-08-23
 
 ### Borrower picker

@@ -26,7 +26,7 @@ SMB 2.3.0 是 Sutady 的私人账本。它在 Windows 笔记本上运行，通�
 - 资金追踪启用前的历史账目不会被追溯；启用后的普通收支绑定账户，余额由初始余额与追加式资金流水计算，不维护第二份余额真相。
 - OpenClaw 可精确查询和管理账户、转账、校准与退款；所有直接写入继续使用幂等 requestId，歧义账户名称会被拒绝。
 
-“事项”的实际操作、启用资金前后的联动规则和 OpenClaw 权限见 [借款与订阅使用指南](docs/MATTERS.md)。
+“事项”的实际操作、启用资金前后的联动规则和 OpenClaw 权限见 [借款与订阅使用指南](docs/MATTERS.md)。账户启用、资金影响、退款和体检提示见 [资金追踪使用与维护指南](docs/FUNDS.md)。
 
 ## 洞察与账单
 
@@ -77,12 +77,12 @@ npm.cmd run backup:verify-restore
 
 ## 正式部署
 
-完整步骤见 [部署指南](docs/DEPLOYMENT.md)，借款与订阅见 [事项使用指南](docs/MATTERS.md)，备份解密与恢复见 [恢复指南](docs/RECOVERY.md)。正式启用前需要你亲自完成三件事：Cloudflare 账号授权、Google Drive 授权，以及在本机安全输入 DeepSeek API Key。
+完整步骤见 [部署指南](docs/DEPLOYMENT.md)，账户与余额见 [资金追踪指南](docs/FUNDS.md)，借款与订阅见 [事项使用指南](docs/MATTERS.md)，备份解密与恢复见 [恢复指南](docs/RECOVERY.md)。正式启用前需要你亲自完成三件事：Cloudflare 账号授权、Google Drive 授权，以及在本机安全输入 DeepSeek API Key。
 
 ## 目录
 
 - `src/`：手机与电脑共用的 React PWA。
-- `server/`：Node API、MCP、DeepSeek、财务事项与备份服务。
+- `server/`：Node API、MCP、DeepSeek、资金、财务事项与备份服务。
 - `db/`：SQLite 表结构与迁移。
 - `tests/`：金额、日期、事项、界面、AI 和 MCP 测试。
 - `scripts/`：初始化、自启动、备份密钥和恢复脚本。
