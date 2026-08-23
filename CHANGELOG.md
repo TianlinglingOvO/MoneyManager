@@ -2,6 +2,13 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.2.1 — 2026-08-23
+
+### Borrower picker
+
+- Changed the borrower search results from an absolutely positioned overlay to an inline, independently scrolling panel.
+- Preserved keyboard dismissal, archived-borrower recovery, fixed sheet actions, and responsive desktop/Android behavior.
+
 ## 2.2.0 — 2026-08-23
 
 ### Trustworthy OpenClaw loop

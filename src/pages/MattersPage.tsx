@@ -169,7 +169,92 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
   return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} closeLabel={editing ? "关闭编辑借款" : "关闭记录借款"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="loan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>}>
     <form id="loan-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记录别人从你这里借走的钱，之后可以在对应借款下分次登记还款。</p>
-      {editing ? <label className="matter-field"><span>借款人</span><div className="borrower-picker__selected is-locked"><strong>{selectedBorrower?.name ?? editing.borrowerName}</strong><small>已有借款不能更换借款人</small></div></label> : <div className="matter-field borrower-picker"><span>借款人</span>{selectedBorrower ? <div className="borrower-picker__selected"><span><strong>{selectedBorrower.name}</strong><small>已选择借款人</small></span><button type="button" className="text-button" onClick={() => { setBorrowerId(""); setBorrowerPickerOpen(true); window.requestAnimationFrame(() => borrowerSearchRef.current?.focus()); }}>更换</button></div> : <div className="borrower-picker__control"><Search size={17} aria-hidden="true" /><input ref={borrowerSearchRef} role="combobox" aria-label="搜索或新建借款人" aria-expanded={borrowerPickerOpen} aria-controls="borrower-options" aria-autocomplete="list" value={borrowerSearch} onFocus={() => setBorrowerPickerOpen(true)} onChange={(event) => { setBorrowerSearch(event.target.value); setBorrowerPickerOpen(true); }} onKeyDown={(event) => { if (event.key === "Escape" && borrowerPickerOpen) { event.preventDefault(); event.stopPropagation(); setBorrowerPickerOpen(false); } }} placeholder="搜索已有借款人，或输入新名称" />{borrowerPickerOpen && <div id="borrower-options" className="borrower-picker__options" role="listbox" aria-label="借款人选项">{matchingBorrowers.map((borrower) => <div className="borrower-picker__option" key={borrower.id}>{borrower.isArchived ? <><span><strong>{borrower.name}</strong><small>已停用</small></span><button type="button" className="secondary-button" onClick={() => restoreBorrower.mutate(borrower)} disabled={restoreBorrower.isPending}>恢复后选择</button></> : <button type="button" role="option" aria-selected="false" onClick={() => { setBorrowerId(borrower.id); setBorrowerSearch(""); setBorrowerPickerOpen(false); }}><span className="matter-person-card__avatar">{borrower.name.slice(0, 1)}</span><span><strong>{borrower.name}</strong><small>待收回 {money(borrower.outstandingMinor)}</small></span></button>}</div>)}{normalizedBorrowerSearch && !exactBorrower && <button type="button" className="borrower-picker__create" role="option" aria-selected="false" onClick={() => setBorrowerPickerOpen(false)}><Plus size={17} /><span><strong>新建“{normalizedBorrowerSearch}”</strong><small>保存借款时一并创建</small></span></button>}{matchingBorrowers.length === 0 && !normalizedBorrowerSearch && <p>输入姓名以搜索或新建借款人。</p>}</div>}</div>}{exactBorrower && !borrowerId && <small className={exactBorrower.isArchived ? "form-warning" : "form-hint"}>{exactBorrower.isArchived ? "同名借款人已停用，请先恢复。" : "已有同名借款人，选择后会沿用现有记录。"}</small>}</div>}
+      {editing ? (
+        <label className="matter-field">
+          <span>借款人</span>
+          <div className="borrower-picker__selected is-locked">
+            <strong>{selectedBorrower?.name ?? editing.borrowerName}</strong>
+            <small>已有借款不能更换借款人</small>
+          </div>
+        </label>
+      ) : (
+        <div className="matter-field borrower-picker">
+          <span>借款人</span>
+          {selectedBorrower ? (
+            <div className="borrower-picker__selected">
+              <span><strong>{selectedBorrower.name}</strong><small>已选择借款人</small></span>
+              <button type="button" className="text-button" onClick={() => {
+                setBorrowerId("");
+                setBorrowerPickerOpen(true);
+                window.requestAnimationFrame(() => borrowerSearchRef.current?.focus());
+              }}>更换</button>
+            </div>
+          ) : (
+            <>
+              <div className="borrower-picker__control">
+                <Search size={17} aria-hidden="true" />
+                <input
+                  ref={borrowerSearchRef}
+                  role="combobox"
+                  aria-label="搜索或新建借款人"
+                  aria-expanded={borrowerPickerOpen}
+                  aria-controls="borrower-options"
+                  aria-autocomplete="list"
+                  value={borrowerSearch}
+                  onFocus={() => setBorrowerPickerOpen(true)}
+                  onChange={(event) => {
+                    setBorrowerSearch(event.target.value);
+                    setBorrowerPickerOpen(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && borrowerPickerOpen) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setBorrowerPickerOpen(false);
+                    }
+                  }}
+                  placeholder="搜索已有借款人，或输入新名称"
+                />
+              </div>
+              {borrowerPickerOpen && (
+                <div id="borrower-options" className="borrower-picker__options" role="listbox" aria-label="借款人选项">
+                  {matchingBorrowers.map((borrower) => (
+                    <div className="borrower-picker__option" key={borrower.id}>
+                      {borrower.isArchived ? (
+                        <>
+                          <span><strong>{borrower.name}</strong><small>已停用</small></span>
+                          <button type="button" className="secondary-button" onClick={() => restoreBorrower.mutate(borrower)} disabled={restoreBorrower.isPending}>恢复后选择</button>
+                        </>
+                      ) : (
+                        <button type="button" role="option" aria-selected="false" onClick={() => {
+                          setBorrowerId(borrower.id);
+                          setBorrowerSearch("");
+                          setBorrowerPickerOpen(false);
+                        }}>
+                          <span className="matter-person-card__avatar">{borrower.name.slice(0, 1)}</span>
+                          <span><strong>{borrower.name}</strong><small>待收回 {money(borrower.outstandingMinor)}</small></span>
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {normalizedBorrowerSearch && !exactBorrower && (
+                    <button type="button" className="borrower-picker__create" role="option" aria-selected="false" onClick={() => setBorrowerPickerOpen(false)}>
+                      <Plus size={17} />
+                      <span><strong>新建“{normalizedBorrowerSearch}”</strong><small>保存借款时一并创建</small></span>
+                    </button>
+                  )}
+                  {matchingBorrowers.length === 0 && !normalizedBorrowerSearch && <p>输入姓名以搜索或新建借款人。</p>}
+                </div>
+              )}
+            </>
+          )}
+          {exactBorrower && !borrowerId && (
+            <small className={exactBorrower.isArchived ? "form-warning" : "form-hint"}>
+              {exactBorrower.isArchived ? "同名借款人已停用，请先恢复。" : "已有同名借款人，选择后会沿用现有记录。"}
+            </small>
+          )}
+        </div>
+      )}
       <div className="matter-form-grid"><label className="matter-field"><span>借出金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="300.00" /></label><label className="matter-field"><span>借出日期</span><input required type="date" value={lentDate} onChange={(event) => { setLentDate(event.target.value); setLinkDate(event.target.value); }} /></label></div>
       <label className="matter-field"><span>用途</span><input maxLength={120} value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="例如：生活费、给女朋友买花" /></label>
       <label className="matter-field"><span>备注 <small>选填</small></span><textarea maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可以补充约定或说明" /></label>

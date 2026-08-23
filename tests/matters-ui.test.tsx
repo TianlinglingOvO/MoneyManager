@@ -126,6 +126,9 @@ describe("财务事项页面", () => {
     const combobox = screen.getByRole("combobox", { name: "搜索或新建借款人" });
     fireEvent.focus(combobox);
     expect(combobox).toHaveAttribute("aria-expanded", "true");
+    const options = screen.getByRole("listbox");
+    expect(options.parentElement).toHaveClass("borrower-picker");
+    expect(options.previousElementSibling).toHaveClass("borrower-picker__control");
     expect(screen.queryByText("或")).not.toBeInTheDocument();
     fireEvent.change(combobox, { target: { value: "小林" } });
     fireEvent.click(screen.getByRole("option", { name: /小林/ }));
