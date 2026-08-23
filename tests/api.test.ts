@@ -228,11 +228,11 @@ describe("HTTP API", () => {
   it("允许浏览器显示仅保存在本机的 blob 背景图片", async () => {
     const app = createApp(context.config, context.database).app;
     const response = await request(app).get("/health").expect(200);
-    expect(response.body).toMatchObject({ status: "ok", version: "2.2.1" });
+    expect(response.body).toMatchObject({ status: "ok", version: "2.3.0" });
     expect(response.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
 
     const status = await request(app).get("/api/v1/status").expect(200);
-    expect(status.body.data.version).toBe("2.2.1");
+    expect(status.body.data.version).toBe("2.3.0");
   });
 
   it("网页账目修改和删除拒绝旧版本，并拒绝跨站写请求", async () => {

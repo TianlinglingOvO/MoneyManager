@@ -1,4 +1,9 @@
 import type {
+  Account,
+  AccountAdjustment,
+  AccountMovementList,
+  FundsSummary,
+  Transfer,
   AiAnalysis,
   AppearancePreferences,
   Category,
@@ -286,5 +291,40 @@ export const api = {
   createSubscriptionPayment: (id: string, input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<SubscriptionPayment>(`/api/v1/subscriptions/${id}/payments`, { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
   deleteSubscriptionPayment: (subscriptionId: string, paymentId: string, expectedUpdatedAt?: string) => request<SubscriptionPayment>(`/api/v1/subscriptions/${subscriptionId}/payments/${paymentId}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }) }),
-  restoreSubscriptionPayment: (subscriptionId: string, paymentId: string) => request<SubscriptionPayment>(`/api/v1/subscriptions/${subscriptionId}/payments/${paymentId}/restore`, { method: "POST" })
+  restoreSubscriptionPayment: (subscriptionId: string, paymentId: string) => request<SubscriptionPayment>(`/api/v1/subscriptions/${subscriptionId}/payments/${paymentId}/restore`, { method: "POST" }),
+  fundsSummary: () => request<FundsSummary>("/api/v1/funds/summary"),
+  activateFunds: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
+    request<FundsSummary>("/api/v1/funds/activate", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
+  accounts: (includeArchived = false) => request<Account[]>(`/api/v1/accounts${queryString({ includeArchived })}`),
+  createAccount: (input: Record<string, unknown>) =>
+    request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
+  updateAccount: (id: string, input: Record<string, unknown>) =>
+    request<Account>(`/api/v1/accounts/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  archiveAccount: (id: string, expectedUpdatedAt: string) =>
+    request<Account>(`/api/v1/accounts/${id}/archive`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt }) }),
+  restoreAccount: (id: string, expectedUpdatedAt: string) =>
+    request<Account>(`/api/v1/accounts/${id}/restore`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt }) }),
+  deleteAccount: (id: string, expectedUpdatedAt: string) =>
+    request<void>(`/api/v1/accounts/${id}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }) }),
+  accountMovements: (filters: { accountId?: string; sourceType?: string; page?: number; pageSize?: number } = {}) =>
+    request<AccountMovementList>(`/api/v1/funds/movements${queryString(filters)}`),
+  transfers: (includeDeleted = false) => request<Transfer[]>(`/api/v1/transfers${queryString({ includeDeleted })}`),
+  createTransfer: (input: Record<string, unknown>) =>
+    request<Transfer>("/api/v1/transfers", { method: "POST", body: JSON.stringify(input) }),
+  updateTransfer: (id: string, input: Record<string, unknown>) =>
+    request<Transfer>(`/api/v1/transfers/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteTransfer: (id: string, expectedUpdatedAt: string, requestId = crypto.randomUUID()) =>
+    request<Transfer>(`/api/v1/transfers/${id}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt, requestId }) }),
+  restoreTransfer: (id: string, expectedUpdatedAt: string, requestId = crypto.randomUUID()) =>
+    request<Transfer>(`/api/v1/transfers/${id}/restore`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt, requestId }) }),
+  adjustAccount: (input: Record<string, unknown>) =>
+    request<AccountAdjustment>("/api/v1/funds/adjustments", { method: "POST", body: JSON.stringify(input) }),
+  refundTransaction: (id: string, expectedUpdatedAt: string, accountId?: string | null, requestId = crypto.randomUUID()) =>
+    request<Transaction>(`/api/v1/transactions/${id}/refund`, {
+      method: "POST", body: JSON.stringify({ expectedUpdatedAt, accountId, requestId })
+    }),
+  undoTransactionRefund: (id: string, expectedUpdatedAt: string, requestId = crypto.randomUUID()) =>
+    request<Transaction>(`/api/v1/transactions/${id}/refund/undo`, {
+      method: "POST", body: JSON.stringify({ expectedUpdatedAt, requestId })
+    })
 };

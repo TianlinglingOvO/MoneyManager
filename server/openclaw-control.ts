@@ -15,14 +15,16 @@ import type {
   SubscriptionPayment,
   Transaction
 } from "../shared/types";
+import type { Account, AccountAdjustment, Transfer } from "../shared/types";
 import { requestIdSchema } from "../shared/schemas";
 import type { LedgerRepository } from "./repository";
 import type { AppConfig } from "./config";
 import type { BudgetService, BudgetSnapshot } from "./budgets";
 import { AppError, ConflictError, NotFoundError } from "./errors";
+import type { FundsService } from "./funds";
 
 type EntityType = "transaction" | "category" | "proposal" | "setting"
-  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "budget";
+  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "budget" | "account" | "transfer" | "account_adjustment";
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 function sql(value: unknown): SqlValue {
@@ -117,6 +119,9 @@ function transactionSnapshot(transaction: Transaction): Record<string, unknown> 
     localDate: transaction.localDate,
     note: transaction.note,
     source: transaction.source,
+    accountId: transaction.accountId,
+    refundedAt: transaction.refundedAt,
+    refundAccountId: transaction.refundAccountId,
     createdAt: transaction.createdAt,
     updatedAt: transaction.updatedAt,
     deletedAt: transaction.deletedAt
@@ -173,7 +178,7 @@ function loanSnapshot(loan: Loan): Record<string, unknown> {
   return {
     id: loan.id, borrowerId: loan.borrowerId, principalMinor: loan.principalMinor,
     localDate: loan.localDate, purpose: loan.purpose, note: loan.note,
-    ledgerLink: loan.ledgerLink, createdAt: loan.createdAt,
+    ledgerLink: loan.ledgerLink, accountId: loan.accountId, createdAt: loan.createdAt,
     updatedAt: loan.updatedAt, deletedAt: loan.deletedAt
   };
 }
@@ -181,7 +186,7 @@ function loanSnapshot(loan: Loan): Record<string, unknown> {
 function repaymentSnapshot(repayment: LoanRepayment): Record<string, unknown> {
   return {
     id: repayment.id, loanId: repayment.loanId, amountMinor: repayment.amountMinor,
-    localDate: repayment.localDate, note: repayment.note, ledgerLink: repayment.ledgerLink,
+    localDate: repayment.localDate, note: repayment.note, ledgerLink: repayment.ledgerLink, accountId: repayment.accountId,
     createdAt: repayment.createdAt, updatedAt: repayment.updatedAt,
     deletedAt: repayment.deletedAt
   };
@@ -204,18 +209,45 @@ function paymentSnapshot(payment: SubscriptionPayment): Record<string, unknown> 
     id: payment.id, subscriptionId: payment.subscriptionId, amountMinor: payment.amountMinor,
     currency: payment.currency, localDate: payment.localDate, note: payment.note,
     paymentType: payment.paymentType, ledgerLink: payment.ledgerLink,
+    refundedAt: payment.refundedAt,
     nextBillingDateBefore: payment.nextBillingDateBefore, nextBillingDateAfter: payment.nextBillingDateAfter,
     createdAt: payment.createdAt, updatedAt: payment.updatedAt,
     deletedAt: payment.deletedAt
   };
 }
+function accountSnapshot(account: Account): Record<string, unknown> {
+  return {
+    id: account.id, name: account.name, icon: account.icon, aliases: account.aliases,
+    openingBalanceMinor: account.openingBalanceMinor, openedOn: account.openedOn,
+    isArchived: account.isArchived, createdAt: account.createdAt, updatedAt: account.updatedAt
+  };
+}
+
+function transferSnapshot(transfer: Transfer): Record<string, unknown> {
+  return {
+    id: transfer.id, fromAccountId: transfer.fromAccountId, toAccountId: transfer.toAccountId,
+    debitedMinor: transfer.debitedMinor, creditedMinor: transfer.creditedMinor,
+    feeTransactionId: transfer.feeTransactionId, localDate: transfer.localDate, note: transfer.note,
+    createdAt: transfer.createdAt, updatedAt: transfer.updatedAt, deletedAt: transfer.deletedAt
+  };
+}
+
+function adjustmentSnapshot(adjustment: AccountAdjustment): Record<string, unknown> {
+  return {
+    id: adjustment.id, accountId: adjustment.accountId, targetBalanceMinor: adjustment.targetBalanceMinor,
+    deltaMinor: adjustment.deltaMinor, localDate: adjustment.localDate, note: adjustment.note,
+    createdAt: adjustment.createdAt, updatedAt: adjustment.updatedAt
+  };
+}
+
 
 export class OpenClawControlService {
   constructor(
     private readonly database: DatabaseSync,
     private readonly repository: LedgerRepository,
     private readonly config?: AppConfig,
-    private readonly budgets?: BudgetService
+    private readonly budgets?: BudgetService,
+    private readonly funds?: FundsService
   ) {}
 
   settings(): OpenClawControlSettings {
@@ -223,7 +255,7 @@ export class OpenClawControlService {
       .get() as { value: OpenClawMode; updated_at: string } | undefined;
     return {
       mode: row?.value === "direct" ? "direct" : "confirm",
-      directCapabilities: ["transactions", "transactionBatch", "categories", "budgets", "matters", "ai", "backup", "timezone", "undo"],
+      directCapabilities: ["transactions", "transactionBatch", "categories", "budgets", "matters", "funds", "ai", "backup", "timezone", "undo"],
       credentialsExposed: false,
       updatedAt: row?.updated_at ?? new Date(0).toISOString()
     };
@@ -427,6 +459,9 @@ export class OpenClawControlService {
     if (!this.budgets) throw new ConflictError("预算服务尚未启用");
     return this.budgets.snapshot(month);
   }
+  accountSnapshot(account: Account): Record<string, unknown> { return accountSnapshot(account); }
+  transferSnapshot(transfer: Transfer): Record<string, unknown> { return transferSnapshot(transfer); }
+  adjustmentSnapshot(adjustment: AccountAdjustment): Record<string, unknown> { return adjustmentSnapshot(adjustment); }
   settingSnapshot(key: string): Record<string, unknown> | null {
     const row = this.database.prepare("SELECT value, updated_at FROM settings WHERE key = ?").get(key) as { value: string; updated_at: string } | undefined;
     return row ? { value: row.value, updatedAt: row.updated_at } : null;
@@ -455,6 +490,7 @@ export class OpenClawControlService {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       for (const item of items) this.restoreItem(item);
+      this.funds?.reconcileAllSources(operationId);
       const now = new Date().toISOString();
       this.database.prepare("UPDATE openclaw_operations SET status = 'undone', undone_at = ? WHERE id = ? AND status = 'applied'")
         .run(now, operationId);
@@ -478,6 +514,9 @@ export class OpenClawControlService {
     if (item.entity_type === "loan_repayment") return this.restoreLoanRepaymentSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription") return this.restoreSubscriptionSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription_payment") return this.restoreSubscriptionPaymentSnapshot(item.entity_id, before, after);
+    if (item.entity_type === "account") return this.restoreAccountSnapshot(item.entity_id, before, after);
+    if (item.entity_type === "transfer") return this.restoreTransferSnapshot(item.entity_id, before, after);
+    if (item.entity_type === "account_adjustment") return this.restoreAdjustmentSnapshot(item.entity_id, before, after);
     if (item.entity_type === "budget") {
       if (!this.budgets) throw new ConflictError("预算服务尚未启用");
       this.budgets.restoreSnapshot(
@@ -488,6 +527,51 @@ export class OpenClawControlService {
       return;
     }
     this.restoreSettingSnapshot(item.entity_id, before, after);
+  }
+
+  private restoreAccountSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
+    if (!this.funds) throw new ConflictError("资金服务尚未启用");
+    const current = this.funds.getAccount(id);
+    if (!before && after) {
+      if (current.updatedAt !== after.updatedAt) throw new ConflictError("账户后来已经改变，不能撤销创建");
+      const defaults = this.funds.summary();
+      if ([defaults.defaultExpenseAccountId, defaults.defaultIncomeAccountId].includes(id)) throw new ConflictError("账户已经成为默认账户，不能撤销创建");
+      const related = this.database.prepare(`SELECT
+        (SELECT COUNT(*) FROM account_movements WHERE account_id = ?) +
+        (SELECT COUNT(*) FROM transactions WHERE account_id = ? OR refund_account_id = ?) +
+        (SELECT COUNT(*) FROM loans WHERE account_id = ?) +
+        (SELECT COUNT(*) FROM loan_repayments WHERE account_id = ?) +
+        (SELECT COUNT(*) FROM transfers WHERE from_account_id = ? OR to_account_id = ?) +
+        (SELECT COUNT(*) FROM account_adjustments WHERE account_id = ?) AS count`).get(id, id, id, id, id, id, id, id) as { count: number };
+      if (Number(related.count) > 0) throw new ConflictError("账户后来已经产生资金记录，不能撤销创建");
+      this.database.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+      return;
+    }
+    if (!before || !after || current.updatedAt !== after.updatedAt) throw new ConflictError("账户后来已经改变，不能覆盖新内容");
+    let restored = this.funds.updateAccount(id, {
+      name: String(before.name),
+      icon: String(before.icon),
+      aliases: Array.isArray(before.aliases) ? before.aliases.map(String) : [],
+      expectedUpdatedAt: current.updatedAt
+    });
+    if (Boolean(before.isArchived) && !restored.isArchived) restored = this.funds.archiveAccount(id, { expectedUpdatedAt: restored.updatedAt });
+    if (!before.isArchived && restored.isArchived) this.funds.restoreAccount(id, { expectedUpdatedAt: restored.updatedAt });
+  }
+
+  private restoreTransferSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
+    if (!this.funds) throw new ConflictError("资金服务尚未启用");
+    if (before || !after) throw new ConflictError("转账恢复快照不完整");
+    const current = this.funds.getTransfer(id);
+    if (current.updatedAt !== after.updatedAt || current.deletedAt !== after.deletedAt) throw new ConflictError("转账后来已经改变，不能撤销");
+    this.funds.deleteTransfer(id, { expectedUpdatedAt: current.updatedAt, requestId: `undo-transfer:${id}` });
+  }
+
+  private restoreAdjustmentSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
+    if (!this.funds) throw new ConflictError("资金服务尚未启用");
+    if (before || !after) throw new ConflictError("校准恢复快照不完整");
+    const current = this.database.prepare("SELECT updated_at FROM account_adjustments WHERE id = ?").get(id) as { updated_at: string } | undefined;
+    if (!current || current.updated_at !== after.updatedAt) throw new ConflictError("余额校准后来已经改变，不能撤销");
+    this.funds.undoAdjustment(id);
   }
 
   private restoreTransactionSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
@@ -502,9 +586,9 @@ export class OpenClawControlService {
     const current = this.repository.getTransaction(id, true);
     if (current.updatedAt !== after.updatedAt || current.deletedAt !== after.deletedAt) throw new ConflictError("账目后来已经改变，不能覆盖新内容");
     this.database.prepare(`UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?,
-      local_date = ?, note = ?, source = ?, updated_at = ?, deleted_at = ? WHERE id = ?`)
+      local_date = ?, note = ?, source = ?, account_id = ?, refunded_at = ?, refund_account_id = ?, updated_at = ?, deleted_at = ? WHERE id = ?`)
       .run(sql(before.kind), sql(before.amountMinor), sql(before.categoryId), sql(before.localDate), sql(before.localDate), sql(before.note),
-        sql(before.source), sql(before.updatedAt), sql(before.deletedAt), id);
+        sql(before.source), sql(before.accountId), sql(before.refundedAt), sql(before.refundAccountId), sql(before.updatedAt), sql(before.deletedAt), id);
   }
 
   private restoreCategorySnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
@@ -578,23 +662,23 @@ export class OpenClawControlService {
 
   private restoreLoanSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
     this.restoreMatterRecord("loans", id, before, after,
-      ["borrower_id", "principal_minor", "local_date", "purpose", "note", "ledger_link_mode", "ledger_transaction_id", "created_at", "updated_at", "deleted_at"],
+      ["borrower_id", "principal_minor", "local_date", "purpose", "note", "ledger_link_mode", "ledger_transaction_id", "account_id", "created_at", "updated_at", "deleted_at"],
       (snapshot) => {
         const [mode, transactionId] = ledgerLinkValues(snapshot);
         return [sql(snapshotField(snapshot, "borrowerId")), sql(snapshotField(snapshot, "principalMinor")),
           sql(snapshotField(snapshot, "localDate")), sql(snapshotField(snapshot, "purpose")), sql(snapshotField(snapshot, "note")),
-          mode, transactionId, sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")),
+          mode, transactionId, sql(snapshotField(snapshot, "accountId")), sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")),
           sql(snapshotField(snapshot, "deletedAt"))];
       });
   }
 
   private restoreLoanRepaymentSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
     this.restoreMatterRecord("loan_repayments", id, before, after,
-      ["loan_id", "amount_minor", "local_date", "note", "ledger_link_mode", "ledger_transaction_id", "created_at", "updated_at", "deleted_at"],
+      ["loan_id", "amount_minor", "local_date", "note", "ledger_link_mode", "ledger_transaction_id", "account_id", "created_at", "updated_at", "deleted_at"],
       (snapshot) => {
         const [mode, transactionId] = ledgerLinkValues(snapshot);
         return [sql(snapshotField(snapshot, "loanId")), sql(snapshotField(snapshot, "amountMinor")),
-          sql(snapshotField(snapshot, "localDate")), sql(snapshotField(snapshot, "note")), mode, transactionId,
+          sql(snapshotField(snapshot, "localDate")), sql(snapshotField(snapshot, "note")), mode, transactionId, sql(snapshotField(snapshot, "accountId")),
           sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")), sql(snapshotField(snapshot, "deletedAt"))];
       });
   }
@@ -611,13 +695,13 @@ export class OpenClawControlService {
 
   private restoreSubscriptionPaymentSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
     this.restoreMatterRecord("subscription_payments", id, before, after,
-      ["subscription_id", "amount_minor", "currency", "local_date", "note", "payment_type", "ledger_link_mode", "ledger_transaction_id", "next_billing_date_before", "next_billing_date_after", "created_at", "updated_at", "deleted_at"],
+      ["subscription_id", "amount_minor", "currency", "local_date", "note", "payment_type", "ledger_link_mode", "ledger_transaction_id", "next_billing_date_before", "next_billing_date_after", "refunded_at", "created_at", "updated_at", "deleted_at"],
       (snapshot) => {
         const [mode, transactionId] = ledgerLinkValues(snapshot);
         return [sql(snapshotField(snapshot, "subscriptionId")), sql(snapshotField(snapshot, "amountMinor")), sql(snapshotField(snapshot, "currency")),
           sql(snapshotField(snapshot, "localDate")), sql(snapshotField(snapshot, "note")), sql(snapshotField(snapshot, "paymentType")),
           mode, transactionId, sql(snapshotField(snapshot, "nextBillingDateBefore")), sql(snapshotField(snapshot, "nextBillingDateAfter")),
-          sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")), sql(snapshotField(snapshot, "deletedAt"))];
+          sql(snapshotField(snapshot, "refundedAt")), sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")), sql(snapshotField(snapshot, "deletedAt"))];
       });
   }
 

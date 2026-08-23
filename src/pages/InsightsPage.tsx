@@ -104,6 +104,7 @@ export function InsightsPage() {
   });
   const loanSummaryQuery = useQuery({ queryKey: ["matters", "loans", "summary"], queryFn: api.loanSummary, staleTime: 60_000 });
   const subscriptionSummaryQuery = useQuery({ queryKey: ["matters", "subscriptions", "summary"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
+  const fundsSummaryQuery = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary, staleTime: 30_000 });
   const report = reportQuery.data;
   const budgetMonth = report?.range.start.slice(0, 7) ?? anchor.slice(0, 7);
   const showPlanning = grain === "month" && kind === "expense";
@@ -233,6 +234,14 @@ export function InsightsPage() {
           </section>}
 
           {(loanSummaryQuery.data || subscriptionSummaryQuery.data) && <section className="insight-matters-strip" aria-label="财务事项摘要">
+          {fundsSummaryQuery.data && <section className="insight-funds-strip" aria-label="资金摘要">
+            <Link to="/funds" className="insight-matter-card insight-matter-card--funds">
+              <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
+              <span><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><em>{fundsSummaryQuery.data.enabled ? `${fundsSummaryQuery.data.accountCount} 个可用账户 · 查看资金` : "填写现实余额后开始追踪"}</em></span>
+              <ChevronRight size={17} />
+            </Link>
+          </section>}
+
             <Link to="/matters?tab=loans" className="insight-matter-card insight-matter-card--loan">
               <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
               <span><small>待收款</small><strong>{money(loanSummaryQuery.data?.outstandingMinor ?? 0)}</strong><em>{loanSummaryQuery.data?.borrowerCount ?? 0} 位借款人 · 查看借款</em></span>

@@ -29,6 +29,18 @@ import {
   transactionUpdateRequestSchema,
   transactionQuerySchema
 } from "../shared/schemas";
+import {
+  accountCreateSchema,
+  accountMovementQuerySchema,
+  accountPatchSchema,
+  accountVersionSchema,
+  adjustmentInputSchema,
+  fundsActivationSchema,
+  fundsMutationSchema,
+  transferInputSchema,
+  transferPatchSchema,
+  transactionRefundSchema
+} from "../shared/schemas";
 import type { AppConfig } from "./config";
 import { createUserAuth } from "./auth";
 import { AppError } from "./errors";
@@ -42,6 +54,7 @@ import { MattersRepository, attachMatterRoutes } from "./matters";
 import { APP_VERSION } from "../shared/app-metadata";
 import { BudgetService } from "./budgets";
 import { HealthService } from "./health";
+import { FundsService } from "./funds";
 
 function localDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -75,20 +88,23 @@ export interface AppServices {
   matters: MattersRepository;
   budgets: BudgetService;
   health: HealthService;
+  funds: FundsService;
 }
 
 export function createApp(config: AppConfig, database: DatabaseSync): { app: express.Express; services: AppServices } {
   const app = express();
   const repository = new LedgerRepository(database);
+  const funds = new FundsService(database, repository, () => localDate(config.timezone));
+  repository.attachFundsService(funds);
   repository.purgeExpiredTrash();
   const ai = new AiService(database, repository, config);
   const budgets = new BudgetService(database, repository, () => config.timezone);
   const health = new HealthService(database, repository, budgets, ai);
   const backup = new BackupService(database, repository, config);
-  const openclaw = new OpenClawControlService(database, repository, config, budgets);
+  const openclaw = new OpenClawControlService(database, repository, config, budgets, funds);
   openclaw.reconcileStaleRunningOperations();
   const appearance = new AppearanceService(database, repository);
-  const matters = new MattersRepository(database, repository, config.timezone);
+  const matters = new MattersRepository(database, repository, config.timezone, funds);
   const userAuth = createUserAuth(config);
   const distPath = path.resolve(process.cwd(), "dist");
   const indexPath = path.join(distPath, "index.html");
@@ -190,7 +206,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
   });
 
-  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health);
+  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health, funds);
 
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -247,6 +263,161 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     } catch (error) { next(error); }
   });
 
+  app.post("/api/v1/funds/activate", (request, response, next) => {
+    try {
+      const result = funds.activate(fundsActivationSchema.parse(request.body), requestIdempotencyKey(request));
+      response.status(201).json({ data: result });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/funds/summary", (_request, response, next) => {
+    try {
+      response.json({ data: funds.summary() });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/accounts", (request, response, next) => {
+    try {
+      const includeArchived = z.coerce.boolean().default(false).parse(request.query.includeArchived ?? false);
+      response.json({ data: funds.listAccounts(includeArchived) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/accounts", (request, response, next) => {
+    try {
+      response.status(201).json({ data: funds.createAccount(accountCreateSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/accounts/:id", (request, response, next) => {
+    try {
+      response.json({ data: funds.updateAccount(String(request.params.id), accountPatchSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/accounts/:id/archive", (request, response, next) => {
+    try {
+      response.json({ data: funds.archiveAccount(String(request.params.id), accountVersionSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/accounts/:id/restore", (request, response, next) => {
+    try {
+      response.json({ data: funds.restoreAccount(String(request.params.id), accountVersionSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v1/accounts/:id", (request, response, next) => {
+    try {
+      funds.deleteUnusedAccount(String(request.params.id), accountVersionSchema.parse(request.body));
+      response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/funds/movements", (request, response, next) => {
+    try {
+      response.json({ data: funds.listMovements(accountMovementQuerySchema.parse(request.query)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/funds/movements.csv", (_request, response, next) => {
+    try {
+      const exported = funds.exportData() as {
+        funds: {
+          accounts: Array<Record<string, unknown>>;
+          movements: Array<Record<string, unknown>>;
+        };
+      };
+      const names = new Map(exported.funds.accounts.map((account) => [String(account.id), String(account.name)]));
+      const header = ["日期", "账户", "变化金额（元）", "来源类型", "来源 ID", "创建时间"];
+      const lines = exported.funds.movements.map((movement) => [
+        movement.localDate,
+        names.get(String(movement.accountId)) ?? "",
+        (Number(movement.deltaMinor) / 100).toFixed(2),
+        movement.sourceType,
+        movement.sourceId,
+        movement.createdAt
+      ].map(csvCell).join(","));
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="money-manager-funds-${localDate(config.timezone)}.csv"`);
+      response.send(`\uFEFF${header.map(csvCell).join(",")}\r\n${lines.join("\r\n")}`);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/transfers.csv", (_request, response, next) => {
+    try {
+      const exported = funds.exportData() as {
+        funds: {
+          accounts: Array<Record<string, unknown>>;
+          transfers: Array<Record<string, unknown>>;
+        };
+      };
+      const names = new Map(exported.funds.accounts.map((account) => [String(account.id), String(account.name)]));
+      const header = ["日期", "转出账户", "转入账户", "扣款金额（元）", "到账金额（元）", "手续费（元）", "备注", "删除时间"];
+      const lines = exported.funds.transfers.map((transfer) => [
+        transfer.localDate,
+        names.get(String(transfer.fromAccountId)) ?? "",
+        names.get(String(transfer.toAccountId)) ?? "",
+        (Number(transfer.debitedMinor) / 100).toFixed(2),
+        (Number(transfer.creditedMinor) / 100).toFixed(2),
+        ((Number(transfer.debitedMinor) - Number(transfer.creditedMinor)) / 100).toFixed(2),
+        transfer.note ?? "",
+        transfer.deletedAt ?? ""
+      ].map(csvCell).join(","));
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="money-manager-transfers-${localDate(config.timezone)}.csv"`);
+      response.send(`\uFEFF${header.map(csvCell).join(",")}\r\n${lines.join("\r\n")}`);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/transfers", (request, response, next) => {
+    try {
+      const includeDeleted = z.coerce.boolean().default(false).parse(request.query.includeDeleted ?? false);
+      response.json({ data: funds.listTransfers(includeDeleted) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transfers", (request, response, next) => {
+    try {
+      response.status(201).json({ data: funds.createTransfer(transferInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v1/transfers/:id", (request, response, next) => {
+    try {
+      response.json({ data: funds.updateTransfer(String(request.params.id), transferPatchSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v1/transfers/:id", (request, response, next) => {
+    try {
+      response.json({ data: funds.deleteTransfer(String(request.params.id), fundsMutationSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transfers/:id/restore", (request, response, next) => {
+    try {
+      response.json({ data: funds.restoreTransfer(String(request.params.id), fundsMutationSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/funds/adjustments", (request, response, next) => {
+    try {
+      response.status(201).json({ data: funds.adjustAccount(adjustmentInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transactions/:id/refund", (request, response, next) => {
+    try {
+      response.json({ data: funds.refundTransaction(String(request.params.id), transactionRefundSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/transactions/:id/refund/undo", (request, response, next) => {
+    try {
+      response.json({ data: funds.undoTransactionRefund(String(request.params.id), transactionRefundSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
   app.get("/api/v1/transactions", (request, response, next) => {
     try {
       const query = transactionQuerySchema.parse(request.query);
@@ -420,6 +591,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.json"`);
       Object.assign(data, matters.exportData());
       Object.assign(data, { budgets: budgets.exportData() });
+      Object.assign(data, funds.exportData());
       response.send(JSON.stringify(data, null, 2));
     } catch (error) { next(error); }
   });
@@ -568,5 +740,5 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });
   });
 
-  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health } };
+  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health, funds } };
 }

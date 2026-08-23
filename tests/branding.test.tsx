@@ -26,7 +26,7 @@ function pngDimensions(filePath: string): { width: number; height: number; color
 
 describe("SMB 2.0 品牌", () => {
   it("以 package.json 作为唯一版本来源并保留内部包名", () => {
-    expect(packageMetadata).toMatchObject({ name: "sutady-money-manager", version: "2.2.1" });
+    expect(packageMetadata).toMatchObject({ name: "sutady-money-manager", version: "2.3.0" });
     expect(APP_VERSION).toBe(packageMetadata.version);
   });
 

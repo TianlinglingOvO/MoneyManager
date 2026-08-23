@@ -29,6 +29,7 @@ import {
   subscriptionPaymentInputSchema,
   subscriptionPaymentPatchSchema
 } from "../shared/schemas";
+import type { FundsService } from "./funds";
 import { ConflictError, NotFoundError } from "./errors";
 import { LedgerRepository } from "./repository";
 
@@ -74,6 +75,7 @@ interface LoanRow {
   ledger_link_mode: "none" | "existing" | "create";
   ledger_transaction_id: string | null;
   created_at: string;
+  account_id: string | null;
   updated_at: string;
   deleted_at: string | null;
   repaid_minor?: number;
@@ -88,6 +90,7 @@ interface RepaymentRow {
   ledger_link_mode: "none" | "existing" | "create";
   ledger_transaction_id: string | null;
   created_at: string;
+  account_id: string | null;
   updated_at: string;
   deleted_at: string | null;
 }
@@ -121,6 +124,7 @@ interface PaymentRow {
   payment_type: "initial" | "renewal" | "manual";
   ledger_link_mode: "none" | "existing" | "create";
   ledger_transaction_id: string | null;
+  refunded_at: string | null;
   next_billing_date_before: string | null;
   next_billing_date_after: string | null;
   created_at: string;
@@ -166,7 +170,8 @@ export class MattersRepository {
   constructor(
     private readonly database: DatabaseSync,
     private readonly ledger: LedgerRepository,
-    private readonly timezone = "Asia/Shanghai"
+    private readonly timezone = "Asia/Shanghai",
+    private readonly funds: FundsService | null = null
   ) {}
 
   private transaction<T>(work: () => T): T {
@@ -233,7 +238,8 @@ export class MattersRepository {
       amountMinor: ledgerAmount,
       categoryId: input.categoryId!,
       localDate,
-      note: null
+      note: null,
+      accountId: input.accountId
     }, { source: "user", actor: "user", idempotencyKey: `matter-ledger:${randomUUID()}` });
     return { mode: "create", transactionId: transaction.id, amountMinor: transaction.amountMinor };
   }
@@ -352,6 +358,7 @@ export class MattersRepository {
       localDate: row.local_date,
       note: row.note,
       ledgerLink: mapLink(row.ledger_link_mode, row.ledger_transaction_id, null, currency),
+      accountId: row.account_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       deletedAt: row.deleted_at
@@ -377,6 +384,7 @@ export class MattersRepository {
       note: row.note,
       status: repaid >= Number(row.principal_minor) ? "settled" : "active",
       ledgerLink: mapLink(row.ledger_link_mode, row.ledger_transaction_id, Number(row.principal_minor), "CNY"),
+      accountId: row.account_id,
       repayments: repaymentRows.map((item) => this.repaymentFromRow(item)),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -413,17 +421,77 @@ export class MattersRepository {
     return this.loanFromRow(row, includeDeleted);
   }
 
+  private resolveMatterAccount(kind: "expense" | "income", localDate: string, requested?: string | null): string | null {
+    return this.funds ? this.funds.resolveTransactionAccount(kind, localDate, requested) : requested ?? null;
+  }
+
+  private reconcileLoanFunds(id: string, requestId?: string | null): void {
+    if (!this.funds) return;
+    const row = this.database.prepare("SELECT id, principal_minor, local_date, account_id, deleted_at FROM loans WHERE id = ?").get(id) as {
+      id: string; principal_minor: number; local_date: string; account_id: string | null; deleted_at: string | null;
+    } | undefined;
+    if (!row) {
+      this.funds.reconcileSource("loan", id, new Map(), todayInTimezone(this.timezone), requestId);
+      return;
+    }
+    const startedOn = this.funds.startedOn();
+    const active = !row.deleted_at && Boolean(startedOn) && row.local_date >= startedOn!;
+    this.funds.reconcileSource(
+      "loan",
+      id,
+      this.funds.desiredLoanImpact(row.account_id, Number(row.principal_minor), active),
+      row.local_date,
+      requestId
+    );
+    const repaymentRows = this.database.prepare("SELECT id FROM loan_repayments WHERE loan_id = ?").all(id) as unknown as Array<{ id: string }>;
+    repaymentRows.forEach((repayment) => this.reconcileRepaymentFunds(repayment.id, requestId));
+  }
+
+  private reconcileRepaymentFunds(id: string, requestId?: string | null): void {
+    if (!this.funds) return;
+    const row = this.database.prepare(`SELECT r.id, r.amount_minor, r.local_date, r.account_id, r.deleted_at, l.deleted_at AS loan_deleted_at
+      FROM loan_repayments r JOIN loans l ON l.id = r.loan_id WHERE r.id = ?`).get(id) as {
+        id: string; amount_minor: number; local_date: string; account_id: string | null;
+        deleted_at: string | null; loan_deleted_at: string | null;
+      } | undefined;
+    if (!row) {
+      this.funds.reconcileSource("loan_repayment", id, new Map(), todayInTimezone(this.timezone), requestId);
+      return;
+    }
+    const startedOn = this.funds.startedOn();
+    const active = !row.deleted_at && !row.loan_deleted_at && Boolean(startedOn) && row.local_date >= startedOn!;
+    this.funds.reconcileSource(
+      "loan_repayment",
+      id,
+      this.funds.desiredRepaymentImpact(row.account_id, Number(row.amount_minor), active),
+      row.local_date,
+      requestId
+    );
+  }
+
   createLoan(rawInput: LoanInput, options: IdempotencyOptions = {}): Loan {
     const input = loanInputSchema.parse(rawInput);
     return this.executeIdempotent(options, "loan.create", input, () => {
       const borrower = this.getBorrower(input.borrowerId, false);
       if (borrower.isArchived) throw new ConflictError("停用的借款人不能新增借款");
-      const link = this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.principalMinor, "CNY", input.localDate);
+      const accountId = this.resolveMatterAccount("expense", input.localDate, input.accountId);
+      if (accountId && input.ledgerLink?.mode && input.ledgerLink.mode !== "none") {
+        throw new ConflictError("启用资金追踪后的借款不能再创建普通支出账目");
+      }
+      const link = accountId
+        ? { mode: "none" as const, transactionId: null, amountMinor: null }
+        : this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.principalMinor, "CNY", input.localDate);
       const now = new Date().toISOString();
       const id = randomUUID();
-      this.database.prepare(`INSERT INTO loans(id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, input.borrowerId, input.principalMinor, input.localDate, input.purpose?.trim() || null, input.note?.trim() || null, link.mode, link.transactionId, now, now);
-      this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink"]);
+      this.database.prepare(`INSERT INTO loans(
+        id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode,
+        ledger_transaction_id, account_id, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+        id, input.borrowerId, input.principalMinor, input.localDate, input.purpose?.trim() || null,
+        input.note?.trim() || null, link.mode, link.transactionId, accountId, now, now
+      );
+      this.reconcileLoanFunds(id, options.idempotencyKey);
+      this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink", "accountId"]);
       return this.getLoan(id);
     });
   }
@@ -450,16 +518,27 @@ export class MattersRepository {
         }
       }
       if (borrower.isArchived) throw new ConflictError("同名借款人已停用，请先恢复后再选择");
-      const link = this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.principalMinor, "CNY", input.localDate);
+      const accountId = this.resolveMatterAccount("expense", input.localDate, input.accountId);
+      if (accountId && input.ledgerLink?.mode && input.ledgerLink.mode !== "none") {
+        throw new ConflictError("启用资金追踪后的借款不能再创建普通支出账目");
+      }
+      const link = accountId
+        ? { mode: "none" as const, transactionId: null, amountMinor: null }
+        : this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.principalMinor, "CNY", input.localDate);
       const now = new Date().toISOString();
       const id = randomUUID();
-      this.database.prepare(`INSERT INTO loans(id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, borrower.id, input.principalMinor, input.localDate, input.purpose?.trim() || null, input.note?.trim() || null, link.mode, link.transactionId, now, now);
-      this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink"]);
+      this.database.prepare(`INSERT INTO loans(
+        id, borrower_id, principal_minor, local_date, purpose, note, ledger_link_mode,
+        ledger_transaction_id, account_id, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+        id, borrower.id, input.principalMinor, input.localDate, input.purpose?.trim() || null,
+        input.note?.trim() || null, link.mode, link.transactionId, accountId, now, now
+      );
+      this.reconcileLoanFunds(id, options.idempotencyKey);
+      this.audit(options.actor ?? "user", "loan.create", "loan", id, ["borrowerId", "principalMinor", "localDate", "purpose", "note", "ledgerLink", "accountId"]);
       return this.getLoan(id);
     });
   }
-
   updateLoan(id: string, rawPatch: LoanPatch, options: IdempotencyOptions = {}): Loan {
     const input = loanPatchSchema.parse(rawPatch);
     const current = this.getLoan(id, false);
@@ -467,9 +546,21 @@ export class MattersRepository {
     return this.executeIdempotent(options, "loan.update", { id, input }, () => {
       const principal = input.principalMinor ?? current.principalMinor;
       if (principal < current.repaidMinor) throw new ConflictError("借款本金不能低于已经归还的金额");
+      const localDate = input.localDate ?? current.localDate;
+      const accountId = this.resolveMatterAccount("expense", localDate, input.accountId === undefined ? current.accountId : input.accountId);
+      if (accountId && current.ledgerLink.mode !== "none") throw new ConflictError("关联普通账目的旧借款不能直接改为资金账户");
       const now = new Date().toISOString();
-      this.database.prepare("UPDATE loans SET principal_minor = ?, local_date = ?, purpose = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .run(principal, input.localDate ?? current.localDate, input.purpose === undefined ? current.purpose : input.purpose?.trim() || null, input.note === undefined ? current.note : input.note?.trim() || null, now, id);
+      this.database.prepare("UPDATE loans SET principal_minor = ?, local_date = ?, purpose = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+        .run(
+          principal,
+          localDate,
+          input.purpose === undefined ? current.purpose : input.purpose?.trim() || null,
+          input.note === undefined ? current.note : input.note?.trim() || null,
+          accountId,
+          now,
+          id
+        );
+      this.reconcileLoanFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.update", "loan", id, Object.keys(input).filter((key) => key !== "expectedUpdatedAt"));
       return this.getLoan(id);
     });
@@ -481,6 +572,7 @@ export class MattersRepository {
     return this.executeIdempotent(options, "loan.delete", { id, expectedUpdatedAt }, () => {
       const now = new Date().toISOString();
       this.database.prepare("UPDATE loans SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, now, id);
+      this.reconcileLoanFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.delete", "loan", id);
       return this.getLoan(id);
     });
@@ -492,13 +584,14 @@ export class MattersRepository {
       if (!current.deletedAt) return current;
       const borrower = this.getBorrower(current.borrowerId, false);
       if (borrower.isArchived) throw new ConflictError("请先恢复这位借款人");
+      if (current.accountId) this.funds?.restoreHistoricalAccount(current.accountId);
       const now = new Date().toISOString();
       this.database.prepare("UPDATE loans SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(now, id);
+      this.reconcileLoanFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.restore", "loan", id);
       return this.getLoan(id);
     });
   }
-
   listRepayments(loanId: string, includeDeleted = false): LoanRepayment[] {
     const loan = this.getLoan(loanId, includeDeleted);
     return loan.repayments;
@@ -509,13 +602,25 @@ export class MattersRepository {
     return this.executeIdempotent(options, "loan.repayment.create", { loanId, input }, () => {
       const loan = this.getLoan(loanId, false);
       if (input.amountMinor > loan.outstandingMinor) throw new ConflictError("还款金额不能超过剩余未还金额");
-      const link = this.getLedgerLinkTransaction(input.ledgerLink, "income", input.amountMinor, "CNY", input.localDate);
+      const accountId = this.resolveMatterAccount("income", input.localDate, input.accountId);
+      if (accountId && input.ledgerLink?.mode && input.ledgerLink.mode !== "none") {
+        throw new ConflictError("启用资金追踪后的还款不能再创建普通收入账目");
+      }
+      const link = accountId
+        ? { mode: "none" as const, transactionId: null, amountMinor: null }
+        : this.getLedgerLinkTransaction(input.ledgerLink, "income", input.amountMinor, "CNY", input.localDate);
       const now = new Date().toISOString();
       const id = randomUUID();
-      this.database.prepare(`INSERT INTO loan_repayments(id, loan_id, amount_minor, local_date, note, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, loanId, input.amountMinor, input.localDate, input.note?.trim() || null, link.mode, link.transactionId, now, now);
+      this.database.prepare(`INSERT INTO loan_repayments(
+        id, loan_id, amount_minor, local_date, note, ledger_link_mode, ledger_transaction_id,
+        account_id, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+        id, loanId, input.amountMinor, input.localDate, input.note?.trim() || null,
+        link.mode, link.transactionId, accountId, now, now
+      );
       this.database.prepare("UPDATE loans SET updated_at = ? WHERE id = ?").run(now, loanId);
-      this.audit(options.actor ?? "user", "loan.repayment.create", "loan_repayment", id, ["amountMinor", "localDate", "note", "ledgerLink"]);
+      this.reconcileRepaymentFunds(id, options.idempotencyKey);
+      this.audit(options.actor ?? "user", "loan.repayment.create", "loan_repayment", id, ["amountMinor", "localDate", "note", "ledgerLink", "accountId"]);
       return this.getRepayment(id);
     });
   }
@@ -535,10 +640,14 @@ export class MattersRepository {
       const loan = this.getLoan(current.loanId, false);
       const amount = input.amountMinor ?? current.amountMinor;
       if (amount > loan.outstandingMinor + current.amountMinor) throw new ConflictError("还款金额不能超过剩余未还金额");
+      const localDate = input.localDate ?? current.localDate;
+      const accountId = this.resolveMatterAccount("income", localDate, input.accountId === undefined ? current.accountId : input.accountId);
+      if (accountId && current.ledgerLink.mode !== "none") throw new ConflictError("关联普通账目的旧还款不能直接改为资金账户");
       const now = new Date().toISOString();
-      this.database.prepare("UPDATE loan_repayments SET amount_minor = ?, local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .run(amount, input.localDate ?? current.localDate, input.note === undefined ? current.note : input.note?.trim() || null, now, id);
+      this.database.prepare("UPDATE loan_repayments SET amount_minor = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+        .run(amount, localDate, input.note === undefined ? current.note : input.note?.trim() || null, accountId, now, id);
       this.database.prepare("UPDATE loans SET updated_at = ? WHERE id = ?").run(now, loan.id);
+      this.reconcileRepaymentFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.repayment.update", "loan_repayment", id, Object.keys(input).filter((key) => key !== "expectedUpdatedAt"));
       return this.getRepayment(id);
     });
@@ -551,6 +660,7 @@ export class MattersRepository {
       const now = new Date().toISOString();
       this.database.prepare("UPDATE loan_repayments SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, now, id);
       this.database.prepare("UPDATE loans SET updated_at = ? WHERE id = ?").run(now, current.loanId);
+      this.reconcileRepaymentFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.repayment.delete", "loan_repayment", id);
       return this.getRepayment(id);
     });
@@ -562,14 +672,15 @@ export class MattersRepository {
       if (!current.deletedAt) return current;
       const loan = this.getLoan(current.loanId, false);
       if (current.amountMinor > loan.outstandingMinor) throw new ConflictError("恢复还款后会超过借款余额");
+      if (current.accountId) this.funds?.restoreHistoricalAccount(current.accountId);
       const now = new Date().toISOString();
       this.database.prepare("UPDATE loan_repayments SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(now, id);
       this.database.prepare("UPDATE loans SET updated_at = ? WHERE id = ?").run(now, loan.id);
+      this.reconcileRepaymentFunds(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "loan.repayment.restore", "loan_repayment", id);
       return this.getRepayment(id);
     });
   }
-
   private paymentFromRow(row: PaymentRow): SubscriptionPayment {
     const actualCnyAmountMinor = row.ledger_link_mode === "create" ? this.linkedTransactionAmount(row.ledger_transaction_id) : null;
     return {
@@ -587,7 +698,8 @@ export class MattersRepository {
       nextBillingDateAfter: row.next_billing_date_after,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      deletedAt: row.deleted_at
+      deletedAt: row.deleted_at,
+      refundedAt: row.refunded_at
     };
   }
 
@@ -611,8 +723,9 @@ export class MattersRepository {
     const deleted = includeDeleted ? "" : " AND deleted_at IS NULL";
     const payments = this.database.prepare(`SELECT * FROM subscription_payments WHERE subscription_id = ?${deleted} ORDER BY local_date DESC, created_at DESC`)
       .all(row.id) as unknown as PaymentRow[];
-    const last = payments[0]?.local_date ?? null;
     const mappedPayments = payments.map((payment) => this.paymentFromRow(payment));
+    const activePayments = mappedPayments.filter((payment) => !payment.deletedAt && !payment.refundedAt);
+    const last = activePayments[0]?.localDate ?? null;
     const renewalState = this.subscriptionState(row, today);
     return {
       id: row.id,
@@ -631,7 +744,7 @@ export class MattersRepository {
       url: row.website,
       note: row.note,
       lastPaymentDate: last,
-      lastPayment: mappedPayments[0] ?? null,
+      lastPayment: activePayments[0] ?? null,
       priceMinor: Number(row.recurring_amount_minor),
       initialPriceMinor: mappedPayments.find((payment) => payment.paymentType === "initial")?.amountMinor ?? null,
       cycleDays: row.custom_days == null ? null : Number(row.custom_days),
@@ -731,7 +844,14 @@ export class MattersRepository {
   private createPaymentInternal(subscriptionId: string, input: PaymentInput | (PaymentInput & { currency: MatterCurrency }), actor: Actor): SubscriptionPayment {
     const subscription = this.getSubscription(subscriptionId, false);
     if (input.currency !== subscription.currency) throw new ConflictError("付款币种必须与订阅一致");
+    const trackingStarted = this.funds?.startedOn();
+    if (trackingStarted && input.localDate >= trackingStarted && (!input.ledgerLink || input.ledgerLink.mode === "none")) {
+      throw new ConflictError("资金追踪启用后的订阅付款必须选择支出分类和支付账户");
+    }
     const link = this.getLedgerLinkTransaction(input.ledgerLink, "expense", input.amountMinor, input.currency, input.localDate);
+    if (trackingStarted && input.localDate >= trackingStarted && link.transactionId && !this.ledger.getTransaction(link.transactionId, false).accountId) {
+      throw new ConflictError("订阅付款关联的支出账目缺少资金账户");
+    }
     const now = new Date().toISOString();
     const id = randomUUID();
     const beforeDate = subscription.nextBillingDate;
@@ -760,6 +880,11 @@ export class MattersRepository {
     if (!row) throw new NotFoundError("订阅付款记录不存在");
     return this.paymentFromRow(row);
   }
+  getPaymentByTransactionId(transactionId: string): SubscriptionPayment | null {
+    const row = this.database.prepare(`SELECT * FROM subscription_payments
+      WHERE ledger_transaction_id = ? AND deleted_at IS NULL`).get(transactionId) as unknown as PaymentRow | undefined;
+    return row ? this.paymentFromRow(row) : null;
+  }
 
   updatePayment(id: string, rawPatch: PaymentPatch, options: IdempotencyOptions = {}): SubscriptionPayment {
     const input = subscriptionPaymentPatchSchema.parse(rawPatch);
@@ -769,6 +894,15 @@ export class MattersRepository {
       const subscription = this.getSubscription(current.subscriptionId, false);
       const currency = input.currency ?? current.currency;
       if (currency !== subscription.currency) throw new ConflictError("付款币种必须与订阅一致");
+      if (current.ledgerLink.mode === "create" && current.ledgerLink.transactionId) {
+        const linked = this.ledger.getTransaction(current.ledgerLink.transactionId, false);
+        const changes: Record<string, unknown> = {};
+        if (input.localDate !== undefined) changes.localDate = input.localDate;
+        if (currency === "CNY" && input.amountMinor !== undefined) changes.amountMinor = input.amountMinor;
+        if (Object.keys(changes).length > 0) {
+          this.ledger.updateTransaction(linked.id, changes, options.actor === "openclaw" ? "openclaw" : "user");
+        }
+      }
       const now = new Date().toISOString();
       this.database.prepare("UPDATE subscription_payments SET amount_minor = ?, currency = ?, local_date = ?, note = ?, payment_type = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
         .run(input.amountMinor ?? current.amountMinor, currency, input.localDate ?? current.localDate, input.note === undefined ? current.note : input.note?.trim() || null, input.paymentType ?? current.paymentType, now, id);
@@ -785,6 +919,10 @@ export class MattersRepository {
       const now = new Date().toISOString();
       this.database.prepare("UPDATE subscription_payments SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, now, id);
       const subscription = this.getSubscription(current.subscriptionId, false);
+      if (current.ledgerLink.mode === "create" && current.ledgerLink.transactionId) {
+        const transaction = this.ledger.getTransaction(current.ledgerLink.transactionId, false);
+        this.ledger.softDeleteTransaction(transaction.id, options.actor === "openclaw" ? "openclaw" : "user");
+      }
       const shouldRewind = Boolean(current.nextBillingDateBefore && current.nextBillingDateAfter
         && subscription.nextBillingDate === current.nextBillingDateAfter
         && current.nextBillingDateBefore !== current.nextBillingDateAfter);
@@ -805,6 +943,10 @@ export class MattersRepository {
       const shouldAdvance = Boolean(current.nextBillingDateBefore && current.nextBillingDateAfter
         && subscription.nextBillingDate === current.nextBillingDateBefore
         && current.nextBillingDateBefore !== current.nextBillingDateAfter);
+      if (current.ledgerLink.mode === "create" && current.ledgerLink.transactionId) {
+        const transaction = this.ledger.getTransaction(current.ledgerLink.transactionId, true);
+        if (transaction.deletedAt) this.ledger.restoreTransaction(transaction.id, options.actor === "openclaw" ? "openclaw" : "user");
+      }
       this.database.prepare("UPDATE subscriptions SET next_billing_date = ?, updated_at = ? WHERE id = ?")
         .run(shouldAdvance ? (current.nextBillingDateAfter ?? subscription.nextBillingDate) : subscription.nextBillingDate, now, subscription.id);
       this.audit(options.actor ?? "user", "subscription.payment.restore", "subscription_payment", id);

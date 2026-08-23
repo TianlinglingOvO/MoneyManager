@@ -7,6 +7,8 @@ import { BackupService } from "../server/backup";
 import { OpenClawControlService } from "../server/openclaw-control";
 import { BudgetService } from "../server/budgets";
 import { HealthService } from "../server/health";
+import { FundsService } from "../server/funds";
+import { MattersRepository } from "../server/matters";
 import type { TestContext } from "./helpers";
 import { createTestContext, expenseCategory } from "./helpers";
 
@@ -38,7 +40,7 @@ describe("OpenClaw MCP", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.2.1" });
+      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.3.0" });
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "direct_add_transaction",
@@ -152,4 +154,103 @@ describe("OpenClaw MCP", () => {
       await server.close();
     }
   });
+  it("资金工具使用精确账户解析、direct 权限和 requestId 幂等", async () => {
+    const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
+    const ai = new AiService(context.database, context.repository, context.config);
+    const funds = new FundsService(context.database, context.repository, () => "2026-08-23");
+    context.repository.attachFundsService(funds);
+    const matters = new MattersRepository(context.database, context.repository, context.config.timezone, funds);
+    const health = new HealthService(context.database, context.repository, budgets, ai);
+    const openclaw = new OpenClawControlService(context.database, context.repository, context.config, budgets, funds);
+    openclaw.setMode("direct");
+    funds.activate({
+      accounts: [
+        { name: "微信", icon: "微", openingBalanceMinor: 100_000, aliases: ["零钱"] },
+        { name: "支付宝", icon: "支", openingBalanceMinor: 50_000, aliases: [] }
+      ],
+      defaultExpenseAccountName: "微信",
+      defaultIncomeAccountName: "微信"
+    }, "funds-mcp-activate");
+
+    const server = createLedgerMcpServer(context.repository, context.config, {
+      ai,
+      backup: new BackupService(context.database, context.repository, context.config),
+      openclaw,
+      matters,
+      budgets,
+      health,
+      funds
+    });
+    const client = new Client({ name: "test-funds", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const tools = await client.listTools();
+      const names = tools.tools.map((tool) => tool.name);
+      for (const name of [
+        "list_accounts",
+        "get_funds_summary",
+        "direct_create_account",
+        "direct_update_account",
+        "direct_archive_account",
+        "direct_restore_account",
+        "direct_transfer_funds",
+        "direct_adjust_account_balance",
+        "direct_refund_transaction",
+        "direct_undo_transaction_refund"
+      ]) expect(names).toContain(name);
+
+      const requestId = "funds-adjust-mcp-001";
+      const first = await client.callTool({
+        name: "direct_adjust_account_balance",
+        arguments: { requestId, account: "零钱", targetBalance: 1200, localDate: "2026-08-23" }
+      });
+      const replay = await client.callTool({
+        name: "direct_adjust_account_balance",
+        arguments: { requestId, account: "零钱", targetBalance: 1200, localDate: "2026-08-23" }
+      });
+      const firstContent = (first as { content: Array<{ type: "text"; text: string }> }).content;
+      const replayContent = (replay as { content: Array<{ type: "text"; text: string }> }).content;
+      const firstPayload = JSON.parse(firstContent[0]!.text) as { duplicate: boolean };
+      const replayPayload = JSON.parse(replayContent[0]!.text) as { duplicate: boolean };
+      expect(firstPayload.duplicate).toBe(false);
+      expect(replayPayload.duplicate).toBe(true);
+      expect(Number((context.database.prepare("SELECT COUNT(*) AS count FROM account_adjustments").get() as { count: number }).count)).toBe(1);
+      expect(funds.resolveAccountId("零钱")).toBe(funds.listAccounts()[0]!.id);
+
+      const category = expenseCategory(context);
+      await client.callTool({
+        name: "direct_transfer_funds",
+        arguments: {
+          requestId: "funds-transfer-mcp-001",
+          fromAccount: "微信",
+          toAccount: "支付宝",
+          debitedAmount: 100,
+          creditedAmount: 99.5,
+          feeCategoryId: category.id,
+          localDate: "2026-08-23"
+        }
+      });
+      expect(funds.getAccount(funds.resolveAccountId("微信")).balanceMinor).toBe(110_000);
+      expect(funds.getAccount(funds.resolveAccountId("支付宝")).balanceMinor).toBe(59_950);
+
+      const borrower = matters.createBorrower({ name: "账户测试借款人" });
+      await client.callTool({
+        name: "direct_create_loan",
+        arguments: {
+          requestId: "funds-loan-mcp-001",
+          borrowerId: borrower.id,
+          amount: 10,
+          localDate: "2026-08-23",
+          account: "支付宝"
+        }
+      });
+      expect(matters.listLoans({ borrowerId: borrower.id }).items[0]?.accountId).toBe(funds.resolveAccountId("支付宝"));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
 });

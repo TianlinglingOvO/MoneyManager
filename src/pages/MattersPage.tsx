@@ -113,6 +113,16 @@ function LedgerLinkFields({ mode, setMode, kind, setKind, amount, setAmount, cat
     </div>
   );
 }
+function FundsAccountField({ accounts, value, onChange, label }: { accounts: Array<{ id: string; icon: string; name: string; balanceMinor: number }>; value: string; onChange: (value: string) => void; label: string }) {
+  return <label className="matter-field">
+    <span>{label}</span>
+    <select value={value} onChange={(event) => onChange(event.target.value)} required>
+      <option value="">选择资金账户</option>
+      {accounts.map((account) => <option key={account.id} value={account.id}>{account.icon} {account.name} · {money(account.balanceMinor)}</option>)}
+    </select>
+  </label>;
+}
+
 
 function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean; onClose: () => void; borrowers: Borrower[]; editing?: Loan; today: string }) {
   const queryClient = useQueryClient();
@@ -129,9 +139,13 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
   const [linkAmount, setLinkAmount] = useState("");
   const [linkCategory, setLinkCategory] = useState("");
   const [linkDate, setLinkDate] = useState(lentDate);
+  const [accountId, setAccountId] = useState(editing?.accountId ?? "");
   const [error, setError] = useState("");
   const categories = useQuery({ queryKey: ["categories", "all", false], queryFn: () => api.categories(undefined, false) });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date" }) });
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
+  const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && lentDate >= funds.data.startedOn);
+  const selectedAccountId = accountId || funds.data?.defaultExpenseAccountId || "";
   const selectedBorrower = borrowers.find((item) => item.id === borrowerId);
   const normalizedBorrowerSearch = borrowerSearch.trim().replace(/\s+/g, " ");
   const matchingBorrowers = borrowers.filter((item) => item.name.toLocaleLowerCase().includes(normalizedBorrowerSearch.toLocaleLowerCase()));
@@ -152,13 +166,15 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
       const amountMinor = parseAmountMinor(amount);
       if (!borrowerId && !normalizedBorrowerSearch) throw new Error("请选择或新建借款人");
       if (!amountMinor) throw new Error("请输入有效借款金额");
-      const ledgerLink = linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: parseAmountMinor(linkAmount) ?? amountMinor, categoryId: linkCategory };
-      const input = { ...(borrowerId ? { borrowerId } : { newBorrowerName: normalizedBorrowerSearch }), principalMinor: amountMinor, localDate: lentDate, purpose: purpose.trim() || null, note: note.trim() || null, ledgerLink };
+      if (fundsRequired && !selectedAccountId) throw new Error("请选择借出资金账户");
+      const ledgerLink = fundsRequired ? undefined : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: parseAmountMinor(linkAmount) ?? amountMinor, categoryId: linkCategory };
+      const input = { ...(borrowerId ? { borrowerId } : { newBorrowerName: normalizedBorrowerSearch }), principalMinor: amountMinor, localDate: lentDate, purpose: purpose.trim() || null, note: note.trim() || null, ledgerLink, accountId: fundsRequired ? selectedAccountId : null };
       if (editing) return api.updateLoan(editing.id, {
         principalMinor: amountMinor,
         localDate: lentDate,
         purpose: purpose.trim() || null,
         note: note.trim() || null,
+        accountId: fundsRequired ? selectedAccountId : null,
         expectedUpdatedAt: editing.updatedAt
       });
       return api.createLoan(input);
@@ -258,7 +274,8 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
       <div className="matter-form-grid"><label className="matter-field"><span>借出金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="300.00" /></label><label className="matter-field"><span>借出日期</span><input required type="date" value={lentDate} onChange={(event) => { setLentDate(event.target.value); setLinkDate(event.target.value); }} /></label></div>
       <label className="matter-field"><span>用途</span><input maxLength={120} value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="例如：生活费、给女朋友买花" /></label>
       <label className="matter-field"><span>备注 <small>选填</small></span><textarea maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可以补充约定或说明" /></label>
-      {!editing && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind={linkKind} setKind={setLinkKind} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={linkDate} setDate={setLinkDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
+      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="借出资金账户" />}
+      {!editing && !fundsRequired && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind={linkKind} setKind={setLinkKind} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={linkDate} setDate={setLinkDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 
     </form>
@@ -273,15 +290,20 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
   const [linkMode, setLinkMode] = useState<LedgerLinkMode>("none");
   const [linkAmount, setLinkAmount] = useState("");
   const [linkCategory, setLinkCategory] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [error, setError] = useState("");
   const categories = useQuery({ queryKey: ["categories", "income", false], queryFn: () => api.categories("income", false) });
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
+  const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && repaidDate >= funds.data.startedOn);
+  const selectedAccountId = accountId || funds.data?.defaultIncomeAccountId || "";
   const save = useMutation({
     mutationFn: async () => {
       if (!loan) throw new Error("没有选择借款");
       const amountMinor = parseAmountMinor(amount);
       if (!amountMinor || amountMinor > loan.outstandingMinor) throw new Error("还款金额不能超过未还余额");
-      const ledgerLink = linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: amountMinor, categoryId: linkCategory };
-      return api.createLoanRepayment(loan.id, { amountMinor, localDate: repaidDate, note: note.trim() || null, ledgerLink });
+      if (fundsRequired && !selectedAccountId) throw new Error("请选择还款到账账户");
+      const ledgerLink = fundsRequired ? undefined : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: amountMinor, categoryId: linkCategory };
+      return api.createLoanRepayment(loan.id, { amountMinor, localDate: repaidDate, note: note.trim() || null, ledgerLink, accountId: fundsRequired ? selectedAccountId : null });
     },
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["loan", loan?.id] }); setAmount(""); setNote(""); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
@@ -292,7 +314,8 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
       <p className="matter-form-intro">{loan?.borrowerName ?? "这笔借款"} · 未还 {money(loan?.outstandingMinor ?? 0)}</p>
       <div className="matter-form-grid"><label className="matter-field"><span>还款金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label><label className="matter-field"><span>还款日期</span><input required type="date" value={repaidDate} onChange={(event) => setRepaidDate(event.target.value)} /></label></div>
       <label className="matter-field"><span>备注 <small>选填</small></span><input maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：微信转账" /></label>
-      <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="income" setKind={() => undefined} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={repaidDate} setDate={setRepaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />
+      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="还款到账账户" />}
+      {!fundsRequired && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="income" setKind={() => undefined} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={repaidDate} setDate={setRepaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 
     </form>
@@ -388,6 +411,9 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
   const [plan, setPlan] = useState(editing?.plan ?? "");
   const [price, setPrice] = useState(editing ? (editing.recurringAmountMinor / 100).toFixed(2) : "");
   const [initialPrice, setInitialPrice] = useState("");
+  const [initialActualCny, setInitialActualCny] = useState("");
+  const [initialCategory, setInitialCategory] = useState("");
+  const [initialAccountId, setInitialAccountId] = useState("");
   const [currency, setCurrency] = useState<MatterCurrency>(editing?.currency ?? "USD");
   const [cycle, setCycle] = useState<"month" | "year" | "custom">(editing?.cycle ?? "month");
   const [cycleDays, setCycleDays] = useState(editing?.customDays?.toString() ?? "30");
@@ -397,6 +423,11 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
   const [url, setUrl] = useState(editing?.website ?? "");
   const [note, setNote] = useState(editing?.note ?? "");
   const [error, setError] = useState("");
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
+  const expenseCategories = useQuery({ queryKey: ["categories", "expense", false], queryFn: () => api.categories("expense", false) });
+  const initialPaymentMinor = parseAmountMinor(initialPrice);
+  const initialFundsRequired = Boolean(initialPaymentMinor && funds.data?.enabled && funds.data.startedOn && startDate >= funds.data.startedOn);
+  const selectedInitialAccountId = initialAccountId || funds.data?.defaultExpenseAccountId || "";
   const save = useMutation({
     mutationFn: () => {
       const priceMinor = parseAmountMinor(price);
@@ -406,7 +437,14 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
       const base = { name: name.trim(), plan: plan.trim() || null, recurringAmountMinor: priceMinor, currency, cycle, customDays: cycle === "custom" ? Number(cycleDays) : null, startDate, nextBillingDate: nextRenewalDate, reminderDays: parsedReminderDays, website: url.trim() || null, note: note.trim() || null };
       if (editing) return api.updateSubscription(editing.id, { ...base, expectedUpdatedAt: editing.updatedAt });
       const firstPayment = parseAmountMinor(initialPrice);
-      return api.createSubscription({ ...base, initialPayment: firstPayment ? { amountMinor: firstPayment, currency, localDate: startDate, paymentType: "initial" } : undefined });
+      if (initialFundsRequired && !initialCategory) throw new Error("请选择首期订阅支出分类");
+      if (initialFundsRequired && !selectedInitialAccountId) throw new Error("请选择首期扣款账户");
+      const initialLedgerAmount = currency === "USD" ? parseAmountMinor(initialActualCny) : firstPayment;
+      if (initialFundsRequired && !initialLedgerAmount) throw new Error("请填写首期实际人民币扣款金额");
+      const ledgerLink = initialFundsRequired
+        ? { mode: "create", categoryId: initialCategory, ledgerAmountMinor: initialLedgerAmount!, accountId: selectedInitialAccountId }
+        : undefined;
+      return api.createSubscription({ ...base, initialPayment: firstPayment ? { amountMinor: firstPayment, currency, localDate: startDate, paymentType: "initial", ledgerLink } : undefined });
     },
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
@@ -417,6 +455,13 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
       <div className="matter-form-grid"><label className="matter-field"><span>订阅名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="OpenAI、opencode…" /></label><label className="matter-field"><span>套餐 <small>选填</small></span><input value={plan} onChange={(event) => setPlan(event.target.value)} placeholder="Pro" /></label></div>
       <div className="matter-form-grid"><label className="matter-field"><span>常规续费价格</span><input required inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder="10.00" /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => setCurrency(event.target.value as MatterCurrency)}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
       <div className="matter-form-grid"><label className="matter-field"><span>首期价格 <small>选填</small></span><input inputMode="decimal" value={initialPrice} onChange={(event) => setInitialPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder={currency === "USD" ? "5.00" : ""} /></label><label className="matter-field"><span>提醒提前天数</span><input type="number" min="0" max="60" value={reminderDays} onChange={(event) => setReminderDays(event.target.value)} /></label></div>
+      {initialFundsRequired && <>
+        <div className="matter-form-grid">
+          {currency === "USD" && <label className="matter-field"><span>首期实际扣款人民币</span><input required inputMode="decimal" value={initialActualCny} onChange={(event) => setInitialActualCny(event.target.value.replace(/[^\d.]/g, ""))} placeholder="例如 36.00" /></label>}
+          <label className="matter-field"><span>首期支出分类</span><select required value={initialCategory} onChange={(event) => setInitialCategory(event.target.value)}><option value="">选择分类</option>{(expenseCategories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>
+        </div>
+        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedInitialAccountId} onChange={setInitialAccountId} label="首期扣款账户" />
+      </>}
       <div className="matter-field"><span>续费周期</span><div className="matter-cycle-buttons"><button type="button" className={cycle === "month" ? "is-active" : ""} onClick={() => setCycle("month")}>每月</button><button type="button" className={cycle === "year" ? "is-active" : ""} onClick={() => setCycle("year")}>每年</button><button type="button" className={cycle === "custom" ? "is-active" : ""} onClick={() => setCycle("custom")}>自定义</button></div></div>
       {cycle === "custom" && <label className="matter-field"><span>每隔多少天</span><input type="number" min="1" value={cycleDays} onChange={(event) => setCycleDays(event.target.value)} /></label>}
       <div className="matter-form-grid"><label className="matter-field"><span>开始日期</span><input required type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label className="matter-field"><span>下次续费日期</span><input required type="date" value={nextRenewalDate} onChange={(event) => setNextRenewalDate(event.target.value)} /></label></div>
@@ -438,22 +483,30 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const categories = useQuery({ queryKey: ["categories", "expense", false], queryFn: () => api.categories("expense", false) });
+  const [linkMode, setLinkMode] = useState<LedgerLinkMode>("none");
+  const [linkAmount, setLinkAmount] = useState("");
+  const [linkCategory, setLinkCategory] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
+  const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && paidDate >= funds.data.startedOn);
+  const selectedAccountId = accountId || funds.data?.defaultExpenseAccountId || "";
   const save = useMutation({
     mutationFn: () => {
       if (!subscription) throw new Error("没有选择订阅");
       const amountMinor = parseAmountMinor(amount);
       if (!amountMinor) throw new Error("请输入有效付款金额");
-      const ledgerLink = linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", categoryId: linkCategory, ledgerAmountMinor: currency === "USD" ? parseAmountMinor(actualCny) ?? undefined : amountMinor };
-      if (linkMode === "create" && !linkCategory) throw new Error("请选择订阅支出的分类");
-      if (linkMode === "create" && currency === "USD" && !parseAmountMinor(actualCny)) throw new Error("请填写实际扣款人民币金额");
+      const actualLedgerAmount = currency === "USD" ? parseAmountMinor(actualCny) : amountMinor;
+      if ((fundsRequired || linkMode === "create") && !linkCategory) throw new Error("请选择订阅支出的分类");
+      if ((fundsRequired || linkMode === "create") && !actualLedgerAmount) throw new Error("请填写实际扣款人民币金额");
+      if (fundsRequired && !selectedAccountId) throw new Error("请选择订阅扣款账户");
+      const ledgerLink = fundsRequired
+        ? { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount!, accountId: selectedAccountId }
+        : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount! };
       return api.createSubscriptionPayment(subscription.id, { amountMinor, currency, localDate: paidDate, paymentType: "renewal", note: note.trim() || null, ledgerLink });
     },
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); setNote(""); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  const [linkMode, setLinkMode] = useState<LedgerLinkMode>("none");
-  const [linkAmount, setLinkAmount] = useState("");
-  const [linkCategory, setLinkCategory] = useState("");
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-subscription"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "expense" }) });
   return <BottomSheet open={open} title="记录一次续费" closeLabel="关闭记录续费" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-payment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>}>
     <form id="subscription-payment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
@@ -462,7 +515,10 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
       {currency === "USD" && <label className="matter-field"><span>实际扣款人民币 <small>用于账单</small></span><input inputMode="decimal" value={actualCny} onChange={(event) => setActualCny(event.target.value.replace(/[^\d.]/g, ""))} placeholder="例如 72.00" /></label>}
       <div className="matter-form-grid"><label className="matter-field"><span>付款日期</span><input required type="date" value={paidDate} onChange={(event) => setPaidDate(event.target.value)} /></label><label className="matter-field"><span>预计下次续费</span><input type="date" value={nextRenewalDate} readOnly /></label></div>
       <label className="matter-field"><span>备注 <small>选填</small></span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="首月优惠已结束" /></label>
-      <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="expense" setKind={() => undefined} amount={linkAmount || actualCny} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={paidDate} setDate={setPaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} currency={currency} />
+      {fundsRequired ? <>
+        <label className="matter-field"><span>订阅支出分类</span><select required value={linkCategory} onChange={(event) => setLinkCategory(event.target.value)}><option value="">选择分类</option>{(categories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>
+        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="订阅扣款账户" />
+      </> : <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="expense" setKind={() => undefined} amount={linkAmount || actualCny} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={paidDate} setDate={setPaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} currency={currency} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 
     </form>

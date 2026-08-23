@@ -79,6 +79,8 @@ export function BillsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState(initialState.search);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [permanentlyDeleting, setPermanentlyDeleting] = useState<Transaction>();
+  const [refunding, setRefunding] = useState<Transaction>();
+  const [refundAccountId, setRefundAccountId] = useState("");
   const returnTo = useRef(initialState.returnTo);
   const searchInput = useRef<HTMLInputElement>(null);
 
@@ -148,6 +150,7 @@ export function BillsPage() {
     enabled: mode === "ledger"
   });
   const categories = useQuery({ queryKey: ["categories", "all", true], queryFn: () => api.categories(undefined, true) });
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
   useEffect(() => {
     if (!categoryId || !categories.data) return;
     const category = categories.data.find((item) => item.id === categoryId);
@@ -194,6 +197,33 @@ export function BillsPage() {
       await queryClient.invalidateQueries();
     }
   });
+  const refund = useMutation({
+    mutationFn: ({ transaction, accountId }: { transaction: Transaction; accountId?: string }) =>
+      transaction.refundedAt
+        ? api.undoTransactionRefund(transaction.id, transaction.updatedAt)
+        : api.refundTransaction(transaction.id, transaction.updatedAt, accountId),
+    onSuccess: async () => {
+      setRefunding(undefined);
+      setRefundAccountId("");
+      await queryClient.invalidateQueries();
+    }
+  });
+  const requestRefund = (transaction: Transaction) => {
+    if (transaction.refundedAt) {
+      if (window.confirm("撤销这笔账的退款状态？它会重新计入收支并扣回资金。")) {
+        refund.mutate({ transaction });
+      }
+      return;
+    }
+    if (transaction.accountId) {
+      if (window.confirm("确认这笔账已全额退款？原账会保留，但不再计入收支和预算。")) {
+        refund.mutate({ transaction });
+      }
+      return;
+    }
+    setRefundAccountId(funds.data?.defaultIncomeAccountId ?? funds.data?.accounts[0]?.id ?? "");
+    setRefunding(transaction);
+  };
 
   const movePeriod = (direction: -1 | 1) => {
     const value = new Date(`${anchor}T12:00:00`);
@@ -304,6 +334,7 @@ export function BillsPage() {
                   onEdit={mode === "ledger" ? openEntry : undefined}
                   onRestore={mode === "trash" ? (transaction) => restore.mutate(transaction.id) : undefined}
                   onPermanentDelete={mode === "trash" ? setPermanentlyDeleting : undefined}
+                  onRefund={mode === "ledger" && funds.data?.enabled ? requestRefund : undefined}
                   emptyText={mode === "trash" ? "回收站是空的" : "这个期间还没有账目"}
                 />
                 {transactions.hasNextPage && <button className="secondary-button load-more-button" disabled={transactions.isFetchingNextPage} onClick={() => transactions.fetchNextPage()}>{transactions.isFetchingNextPage ? "正在加载…" : `加载更多（还剩 ${transactionTotal - transactionItems.length} 笔）`}</button>}
@@ -321,6 +352,25 @@ export function BillsPage() {
             <div className="bottom-sheet__content filter-sheet-content">
               {filterControls}
               {mode === "ledger" && <div className="filter-sheet__export">{exportActions}</div>}
+            </div>
+          </BottomSheet>
+          <BottomSheet
+            open={Boolean(refunding)}
+            title="确认全额退款"
+            closeLabel="关闭退款账户选择"
+            onClose={() => { if (!refund.isPending) setRefunding(undefined); }}
+            footer={<button type="button" className="primary-button" disabled={!refundAccountId || refund.isPending} onClick={() => refunding && refund.mutate({ transaction: refunding, accountId: refundAccountId })}>{refund.isPending ? "正在退款…" : "确认全额退款"}</button>}
+          >
+            <div className="bottom-sheet__content refund-account-sheet">
+              <p>这笔旧账发生在资金追踪启用前，请选择退款实际进入的账户。原账会保留并标记为“已退款”。</p>
+              <div className="refund-account-list" role="radiogroup" aria-label="退款到账账户">
+                {(funds.data?.accounts ?? []).map((account) => (
+                  <button type="button" key={account.id} className={refundAccountId === account.id ? "is-active" : ""} role="radio" aria-checked={refundAccountId === account.id} onClick={() => setRefundAccountId(account.id)}>
+                    <span>{account.icon}</span><strong>{account.name}</strong><small>{money(account.balanceMinor)}</small>
+                  </button>
+                ))}
+              </div>
+              {refund.isError && <p className="form-error" role="alert">{refund.error instanceof Error ? refund.error.message : "退款失败"}</p>}
             </div>
           </BottomSheet>
         </div>

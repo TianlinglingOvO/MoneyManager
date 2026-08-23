@@ -13,6 +13,7 @@ import { hashOpenClawRequest, type OpenClawControlService } from "./openclaw-con
 import type { MattersRepository } from "./matters";
 import type { BudgetService } from "./budgets";
 import type { HealthService } from "./health";
+import type { FundsService } from "./funds";
 import { createMcpAuth } from "./auth";
 import { categoryDispositionSchema, categoryInputSchema, categoryPatchSchema, requestIdSchema, transactionPatchSchema } from "../shared/schemas";
 
@@ -49,6 +50,7 @@ export function createLedgerMcpServer(
     matters?: MattersRepository;
     budgets?: BudgetService;
     health?: HealthService;
+    funds?: FundsService;
   }
 ): McpServer {
   const server = new McpServer({ name: "sutady-money-manager", version: APP_VERSION });
@@ -250,7 +252,7 @@ export function createLedgerMcpServer(
 
   if (services) {
     registerDirectTools(server, repository, config, services);
-    if (services.matters) registerMatterTools(server, repository, config, services.openclaw, services.matters);
+    if (services.matters) registerMatterTools(server, repository, config, services.openclaw, services.matters, services.funds);
   }
 
   return server;
@@ -266,15 +268,316 @@ function registerDirectTools(
     openclaw: OpenClawControlService;
     matters?: MattersRepository;
     budgets?: BudgetService;
+    funds?: FundsService;
   }
 ): void {
-  const { ai, backup, openclaw, budgets } = services;
+  const { ai, backup, openclaw, matters, budgets, funds } = services;
   const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
+  const resolveRequestedAccount = (value?: string | null): string | null | undefined => {
+    if (value === undefined || value === null || value.trim() === "") return value ?? undefined;
+    if (!funds) throw new Error("资金服务尚未启用");
+    return z.string().uuid().safeParse(value).success ? value : funds.resolveAccountId(value);
+  };
   server.registerTool("get_openclaw_control_status", {
     description: "查看 SMB 当前是需要网页确认还是允许 OpenClaw 直接操作。只返回能力和状态，永不返回密钥。",
     inputSchema: {}
   }, async () => textResult({ ...openclaw.settings(), deepseekConfigured: Boolean(config.deepseekApiKey), backupRemoteConfigured: Boolean(config.backupAgeRecipient && config.rcloneRemote) }));
+
+  if (funds) {
+    const accountReference = z.string().trim().min(1).max(80);
+    const resolveAccount = (value: string): string => (
+      z.string().uuid().safeParse(value).success ? value : funds.resolveAccountId(value)
+    );
+
+    server.registerTool("list_accounts", {
+      description: "列出 SMB 的人民币资金账户、余额和版本。账户名称或别名存在歧义时，后续写入必须使用账户 ID。",
+      inputSchema: { includeArchived: z.boolean().optional().default(false) }
+    }, async ({ includeArchived }) => {
+      const result = funds.listAccounts(includeArchived);
+      repository.audit("openclaw", "mcp.list_accounts", "account", null, { count: result.length });
+      return textResult(result);
+    });
+
+    server.registerTool("get_funds_summary", {
+      description: "读取资金追踪状态、人民币总资金、默认账户和账户余额，不会修改资金。",
+      inputSchema: {}
+    }, async () => {
+      const result = funds.summary();
+      repository.audit("openclaw", "mcp.get_funds_summary", "funds", "primary", { accountCount: result.accountCount });
+      return textResult(result);
+    });
+
+    server.registerTool("direct_create_account", {
+      description: "direct 模式下新建人民币资金账户。名称与别名必须明确且不能与有效账户冲突。",
+      inputSchema: {
+        requestId,
+        name: z.string().trim().min(1).max(40),
+        icon: z.string().trim().min(1).max(8),
+        openingBalance: z.number().min(-1_000_000_000).max(1_000_000_000).default(0),
+        aliases: z.array(z.string().trim().min(1).max(40)).max(20).optional().default([])
+      }
+    }, async ({ requestId: idempotency, name, icon, openingBalance, aliases }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "account.create",
+      entityType: "account",
+      summary: "OpenClaw 新建资金账户",
+      request: { name, icon, openingBalance, aliases },
+      run: () => {
+        const account = funds.createAccount({
+          name,
+          icon,
+          openingBalanceMinor: amountToMinor(openingBalance),
+          aliases
+        });
+        return {
+          result: account,
+          entityId: account.id,
+          snapshots: [{ entityType: "account" as const, entityId: account.id, before: null, after: openclaw.accountSnapshot(account) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_update_account", {
+      description: "direct 模式下修改资金账户名称、图标或别名。必须传入最近查询到的 updatedAt。",
+      inputSchema: {
+        requestId,
+        account: accountReference,
+        expectedUpdatedAt: z.string().datetime(),
+        name: z.string().trim().min(1).max(40).optional(),
+        icon: z.string().trim().min(1).max(8).optional(),
+        aliases: z.array(z.string().trim().min(1).max(40)).max(20).optional()
+      }
+    }, async ({ requestId: idempotency, account: reference, expectedUpdatedAt, ...changes }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "account.update",
+      entityType: "account",
+      summary: "OpenClaw 修改资金账户",
+      request: { account: reference, expectedUpdatedAt, ...changes },
+      run: () => {
+        const accountId = resolveAccount(reference);
+        const before = funds.getAccount(accountId);
+        const after = funds.updateAccount(accountId, { ...changes, expectedUpdatedAt });
+        return {
+          result: after,
+          entityId: accountId,
+          snapshots: [{ entityType: "account" as const, entityId: accountId, before: openclaw.accountSnapshot(before), after: openclaw.accountSnapshot(after) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_archive_account", {
+      description: "direct 模式下停用余额为零、非默认且没有未处理关联的账户。必须传入最新版 updatedAt。",
+      inputSchema: { requestId, account: accountReference, expectedUpdatedAt: z.string().datetime() }
+    }, async ({ requestId: idempotency, account: reference, expectedUpdatedAt }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "account.archive",
+      entityType: "account",
+      summary: "OpenClaw 停用资金账户",
+      request: { account: reference, expectedUpdatedAt },
+      run: () => {
+        const accountId = resolveAccount(reference);
+        const before = funds.getAccount(accountId);
+        const after = funds.archiveAccount(accountId, { expectedUpdatedAt });
+        return {
+          result: after,
+          entityId: accountId,
+          snapshots: [{ entityType: "account" as const, entityId: accountId, before: openclaw.accountSnapshot(before), after: openclaw.accountSnapshot(after) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_restore_account", {
+      description: "direct 模式下恢复停用账户。停用账户必须使用 ID 精确指定，并传入最新版 updatedAt。",
+      inputSchema: { requestId, accountId: z.string().uuid(), expectedUpdatedAt: z.string().datetime() }
+    }, async ({ requestId: idempotency, accountId, expectedUpdatedAt }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "account.restore",
+      entityType: "account",
+      summary: "OpenClaw 恢复资金账户",
+      request: { accountId, expectedUpdatedAt },
+      run: () => {
+        const before = funds.getAccount(accountId);
+        const after = funds.restoreAccount(accountId, { expectedUpdatedAt });
+        return {
+          result: after,
+          entityId: accountId,
+          snapshots: [{ entityType: "account" as const, entityId: accountId, before: openclaw.accountSnapshot(before), after: openclaw.accountSnapshot(after) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_transfer_funds", {
+      description: "direct 模式下在两个人民币账户间转账。实际扣款不得小于到账金额，差额记作手续费支出；没有默认手续费分类时必须先询问用户。",
+      inputSchema: {
+        requestId,
+        fromAccount: accountReference,
+        toAccount: accountReference,
+        debitedAmount: z.number().positive().max(1_000_000_000),
+        creditedAmount: z.number().positive().max(1_000_000_000),
+        feeCategoryId: z.string().uuid().optional().nullable(),
+        localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        note: z.string().trim().max(240).optional().nullable()
+      }
+    }, async ({ requestId: idempotency, fromAccount, toAccount, debitedAmount, creditedAmount, feeCategoryId, localDate, note }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "transfer.create",
+      entityType: "transfer",
+      summary: "OpenClaw 账户转账",
+      request: { fromAccount, toAccount, debitedAmount, creditedAmount, feeCategoryId, localDate, note },
+      run: () => {
+        const transfer = funds.createTransfer({
+          fromAccountId: resolveAccount(fromAccount),
+          toAccountId: resolveAccount(toAccount),
+          debitedMinor: amountToMinor(debitedAmount),
+          creditedMinor: amountToMinor(creditedAmount),
+          feeCategoryId,
+          localDate: localDate ?? currentLocalDate(config.timezone),
+          note,
+          requestId: idempotency
+        });
+        return {
+          result: { transfer, accounts: funds.listAccounts() },
+          entityId: transfer.id,
+          snapshots: [{ entityType: "transfer" as const, entityId: transfer.id, before: null, after: openclaw.transferSnapshot(transfer) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_adjust_account_balance", {
+      description: "direct 模式下按用户明确提供的现实余额校准账户。校准只产生资金调整，不计入收入、支出或预算。",
+      inputSchema: {
+        requestId,
+        account: accountReference,
+        targetBalance: z.number().min(-1_000_000_000).max(1_000_000_000),
+        localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        note: z.string().trim().max(240).optional().nullable()
+      }
+    }, async ({ requestId: idempotency, account: reference, targetBalance, localDate, note }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "account.adjust",
+      entityType: "account_adjustment",
+      summary: "OpenClaw 校准账户余额",
+      request: { account: reference, targetBalance, localDate, note },
+      run: () => {
+        const adjustment = funds.adjustAccount({
+          accountId: resolveAccount(reference),
+          targetBalanceMinor: amountToMinor(targetBalance),
+          localDate: localDate ?? currentLocalDate(config.timezone),
+          note,
+          requestId: idempotency
+        });
+        return {
+          result: { adjustment, account: funds.getAccount(adjustment.accountId) },
+          entityId: adjustment.id,
+          snapshots: [{ entityType: "account_adjustment" as const, entityId: adjustment.id, before: null, after: openclaw.adjustmentSnapshot(adjustment) }]
+        };
+      }
+    })));
+
+    server.registerTool("direct_refund_transaction", {
+      description: "direct 模式下对一笔账执行全额退款。旧账没有原账户时必须明确提供实际收退款账户；不能重复退款。",
+      inputSchema: {
+        requestId,
+        transactionId: z.string().uuid(),
+        expectedUpdatedAt: z.string().datetime(),
+        account: accountReference.optional()
+      }
+    }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, account: reference }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "transaction.refund",
+      entityType: "transaction",
+      summary: "OpenClaw 全额退款账目",
+      request: { transactionId, expectedUpdatedAt, account: reference },
+      run: () => {
+        const before = repository.getTransaction(transactionId, false);
+        const beforePayment = matters?.getPaymentByTransactionId(transactionId) ?? null;
+        const beforeSubscription = beforePayment ? matters?.getSubscription(beforePayment.subscriptionId) ?? null : null;
+        const after = funds.refundTransaction(transactionId, {
+          expectedUpdatedAt,
+          requestId: idempotency,
+          accountId: reference ? resolveAccount(reference) : null
+        });
+        const afterPayment = matters?.getPaymentByTransactionId(transactionId) ?? null;
+        const afterSubscription = afterPayment ? matters?.getSubscription(afterPayment.subscriptionId) ?? null : null;
+        const snapshots: Array<{
+          entityType: "transaction" | "subscription_payment" | "subscription";
+          entityId: string;
+          before: Record<string, unknown> | null;
+          after: Record<string, unknown> | null;
+        }> = [{
+          entityType: "transaction",
+          entityId: transactionId,
+          before: openclaw.transactionSnapshot(before),
+          after: openclaw.transactionSnapshot(after)
+        }];
+        if (beforePayment && afterPayment) snapshots.push({
+          entityType: "subscription_payment",
+          entityId: beforePayment.id,
+          before: openclaw.paymentSnapshot(beforePayment),
+          after: openclaw.paymentSnapshot(afterPayment)
+        });
+        if (beforeSubscription && afterSubscription) snapshots.push({
+          entityType: "subscription",
+          entityId: beforeSubscription.id,
+          before: openclaw.subscriptionSnapshot(beforeSubscription),
+          after: openclaw.subscriptionSnapshot(afterSubscription)
+        });
+        return {
+          result: { transaction: after, funds: funds.summary() },
+          entityId: transactionId,
+          snapshots
+        };
+      }
+    })));
+
+    server.registerTool("direct_undo_transaction_refund", {
+      description: "direct 模式下撤销一笔全额退款。必须传入退款后账目的最新版 updatedAt。",
+      inputSchema: { requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().datetime() }
+    }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt }) => textResult(openclaw.execute({
+      requestId: idempotency,
+      action: "transaction.refund.undo",
+      entityType: "transaction",
+      summary: "OpenClaw 撤销账目退款",
+      request: { transactionId, expectedUpdatedAt },
+      run: () => {
+        const before = repository.getTransaction(transactionId, false);
+        const beforePayment = matters?.getPaymentByTransactionId(transactionId) ?? null;
+        const beforeSubscription = beforePayment ? matters?.getSubscription(beforePayment.subscriptionId) ?? null : null;
+        const after = funds.undoTransactionRefund(transactionId, { expectedUpdatedAt, requestId: idempotency, accountId: null });
+        const afterPayment = matters?.getPaymentByTransactionId(transactionId) ?? null;
+        const afterSubscription = afterPayment ? matters?.getSubscription(afterPayment.subscriptionId) ?? null : null;
+        const snapshots: Array<{
+          entityType: "transaction" | "subscription_payment" | "subscription";
+          entityId: string;
+          before: Record<string, unknown> | null;
+          after: Record<string, unknown> | null;
+        }> = [{
+          entityType: "transaction",
+          entityId: transactionId,
+          before: openclaw.transactionSnapshot(before),
+          after: openclaw.transactionSnapshot(after)
+        }];
+        if (beforePayment && afterPayment) snapshots.push({
+          entityType: "subscription_payment",
+          entityId: beforePayment.id,
+          before: openclaw.paymentSnapshot(beforePayment),
+          after: openclaw.paymentSnapshot(afterPayment)
+        });
+        if (beforeSubscription && afterSubscription) snapshots.push({
+          entityType: "subscription",
+          entityId: beforeSubscription.id,
+          before: openclaw.subscriptionSnapshot(beforeSubscription),
+          after: openclaw.subscriptionSnapshot(afterSubscription)
+        });
+        return {
+          result: { transaction: after, funds: funds.summary() },
+          entityId: transactionId,
+          snapshots
+        };
+      }
+    })));
+  }
 
   server.registerTool("direct_add_transaction", {
     description: "在 direct 模式下立即新增账目，不进入待确认。必须使用唯一 requestId，重复调用安全返回原结果。",
@@ -284,7 +587,8 @@ function registerDirectTools(
       amount: z.number().positive().max(1_000_000_000),
       categoryId: z.string().uuid(),
       localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      note: z.string().max(240).optional()
+      note: z.string().max(240).optional(),
+      account: z.string().trim().min(1).max(80).optional()
     }
   }, async (input) => {
     const request = { ...input, localDate: input.localDate ?? currentLocalDate(config.timezone) };
@@ -293,7 +597,8 @@ function registerDirectTools(
       run: () => {
         const transaction = repository.createTransaction({
           kind: input.kind, amountMinor: amountToMinor(input.amount), categoryId: input.categoryId,
-          localDate: request.localDate, note: input.note ?? null
+          localDate: request.localDate, note: input.note ?? null,
+          accountId: resolveRequestedAccount(input.account)
         }, { source: "openclaw", actor: "openclaw", idempotencyKey: `openclaw:${input.requestId}` });
         return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: null, after: openclaw.transactionSnapshot(transaction) }] };
       }
@@ -310,7 +615,8 @@ function registerDirectTools(
         amount: z.number().positive().max(1_000_000_000),
         categoryId: z.string().uuid(),
         localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-        note: z.string().max(240).nullable().optional()
+        note: z.string().max(240).nullable().optional(),
+        account: z.string().trim().min(1).max(80).optional()
       }).strict()).min(1).max(20)
     }
   }, async ({ requestId: idempotency, transactions }) => {
@@ -326,7 +632,8 @@ function registerDirectTools(
           amountMinor: amountToMinor(item.amount),
           categoryId: item.categoryId,
           localDate: item.localDate,
-          note: item.note ?? null
+          note: item.note ?? null,
+          accountId: resolveRequestedAccount(item.account)
         }, {
           source: "openclaw",
           actor: "openclaw",
@@ -353,10 +660,15 @@ function registerDirectTools(
       requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().min(1),
       kind: z.enum(["expense", "income"]).optional(), amount: z.number().positive().max(1_000_000_000).optional(),
       categoryId: z.string().uuid().optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      note: z.string().max(240).nullable().optional()
+      note: z.string().max(240).nullable().optional(),
+      account: z.string().trim().min(1).max(80).optional()
     }
   }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, amount, ...fields }) => {
     const changes: Record<string, unknown> = { ...fields };
+    if (fields.account !== undefined) {
+      changes.accountId = resolveRequestedAccount(fields.account);
+      delete changes.account;
+    }
     if (amount !== undefined) changes.amountMinor = amountToMinor(amount);
     const output = openclaw.execute({
       requestId: idempotency, action: "transaction.update", entityType: "transaction", summary: "OpenClaw 修改账目",
@@ -679,11 +991,18 @@ function registerMatterTools(
   repository: LedgerRepository,
   _config: AppConfig,
   openclaw: OpenClawControlService,
-  matters: MattersRepository
+  matters: MattersRepository,
+  funds?: FundsService
 ): void {
   const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
   const expectedUpdatedAt = z.string().datetime();
   const amount = z.number().positive().max(1_000_000_000).describe("金额，元，最多两位小数");
+  const accountReference = z.string().trim().min(1).max(100).optional();
+  const resolveAccount = (reference: string | undefined): string | undefined => {
+    if (!reference) return undefined;
+    if (!funds) throw new Error("资金服务未启用");
+    return funds.resolveAccountId(reference);
+  };
   const matterPage = { status: z.enum(["active", "trash", "all"]).optional().default("active"), search: z.string().max(80).optional(), page: z.number().int().positive().optional().default(1), pageSize: z.number().int().min(1).max(100).optional().default(30) };
 
   // Read-only tools are intentionally available in both confirm and direct
@@ -821,11 +1140,11 @@ function registerMatterTools(
 
   server.registerTool("direct_create_loan", {
     description: "direct 模式下立即新增一笔别人欠你的借款。可选关联或同时创建支出账目。",
-    inputSchema: { requestId, borrowerId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() }
-  }, async ({ requestId: idempotency, amount: value, ...input }) => textResult(openclaw.execute({
+    inputSchema: { requestId, borrowerId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional(), account: accountReference, ledgerLink: z.record(z.string(), z.unknown()).optional() }
+  }, async ({ requestId: idempotency, amount: value, account, ...input }) => textResult(openclaw.execute({
     requestId: idempotency, action: "loan.create", entityType: "loan", summary: "OpenClaw 新增借款", request: { amount: value, ...input },
     run: () => {
-      const result = matters.createLoan({ ...input, principalMinor: amountToMinor(value) } as never, { actor: "openclaw" });
+      const result = matters.createLoan({ ...input, principalMinor: amountToMinor(value), accountId: resolveAccount(account) } as never, { actor: "openclaw" });
       const snapshots: MatterSnapshot[] = [{ entityType: "loan", entityId: result.id, before: null, after: openclaw.loanSnapshot(result) }];
       appendLinkedTransaction(snapshots, repository, openclaw, result.ledgerLink, new Set());
       return { result, entityId: result.id, snapshots };
@@ -834,13 +1153,13 @@ function registerMatterTools(
 
   server.registerTool("direct_update_loan", {
     description: "direct 模式下修改借款金额、日期、用途或备注；金额不能低于已还金额。",
-    inputSchema: { requestId, loanId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional() }
-  }, async ({ requestId: idempotency, loanId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    inputSchema: { requestId, loanId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), purpose: z.string().max(120).nullable().optional(), note: z.string().max(240).nullable().optional(), account: accountReference }
+  }, async ({ requestId: idempotency, loanId, expectedUpdatedAt: expected, amount: value, account, ...changes }) => textResult(openclaw.execute({
     requestId: idempotency, action: "loan.update", entityType: "loan", summary: "OpenClaw 修改借款", request: { loanId, expectedUpdatedAt: expected, amount: value, ...changes },
     run: () => {
       const before = matters.getLoan(loanId, false);
       if (before.updatedAt !== expected) throw new Error("借款已经变化，请重新查询后再修改");
-      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { principalMinor: amountToMinor(value) }) };
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { principalMinor: amountToMinor(value) }), ...(account === undefined ? {} : { accountId: resolveAccount(account) }) };
       const result = matters.updateLoan(loanId, patch as never, { actor: "openclaw" });
       return { result, entityId: result.id, snapshots: [{ entityType: "loan" as const, entityId: result.id, before: openclaw.loanSnapshot(before), after: openclaw.loanSnapshot(result) }] };
     }
@@ -872,15 +1191,15 @@ function registerMatterTools(
     }
   })));
 
-  const repaymentInput = { requestId, loanId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(240).nullable().optional(), ledgerLink: z.record(z.string(), z.unknown()).optional() };
+  const repaymentInput = { requestId, loanId: z.string().uuid(), amount, localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().max(240).nullable().optional(), account: accountReference, ledgerLink: z.record(z.string(), z.unknown()).optional() };
   server.registerTool("direct_record_loan_repayment", {
     description: "direct 模式下记录一笔还款，不能超过该借款剩余金额，可选创建收入账目。",
     inputSchema: repaymentInput
-  }, async ({ requestId: idempotency, loanId, amount: value, ...input }) => textResult(openclaw.execute({
+  }, async ({ requestId: idempotency, loanId, amount: value, account, ...input }) => textResult(openclaw.execute({
     requestId: idempotency, action: "loan.repayment.create", entityType: "loan_repayment", summary: "OpenClaw 记录借款还款", request: { loanId, amount: value, ...input },
     run: () => {
       const beforeLoan = matters.getLoan(loanId, false);
-      const result = matters.createRepayment(loanId, { ...input, amountMinor: amountToMinor(value) } as never, { actor: "openclaw" });
+      const result = matters.createRepayment(loanId, { ...input, amountMinor: amountToMinor(value), accountId: resolveAccount(account) } as never, { actor: "openclaw" });
       const afterLoan = matters.getLoan(loanId, false);
       const snapshots: MatterSnapshot[] = [
         { entityType: "loan", entityId: loanId, before: openclaw.loanSnapshot(beforeLoan), after: openclaw.loanSnapshot(afterLoan) },
@@ -893,14 +1212,14 @@ function registerMatterTools(
 
   server.registerTool("direct_update_loan_repayment", {
     description: "direct 模式下修改还款金额、日期或备注；必须传入当前 updatedAt。",
-    inputSchema: { requestId, repaymentId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), note: z.string().max(240).nullable().optional() }
-  }, async ({ requestId: idempotency, repaymentId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    inputSchema: { requestId, repaymentId: z.string().uuid(), expectedUpdatedAt, amount: amount.optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), note: z.string().max(240).nullable().optional(), account: accountReference }
+  }, async ({ requestId: idempotency, repaymentId, expectedUpdatedAt: expected, amount: value, account, ...changes }) => textResult(openclaw.execute({
     requestId: idempotency, action: "loan.repayment.update", entityType: "loan_repayment", summary: "OpenClaw 修改还款", request: { repaymentId, expectedUpdatedAt: expected, amount: value, ...changes },
     run: () => {
       const before = matters.getRepayment(repaymentId, false);
       if (before.updatedAt !== expected) throw new Error("还款记录已经变化，请重新查询后再修改");
       const beforeLoan = matters.getLoan(before.loanId, false);
-      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { amountMinor: amountToMinor(value) }) };
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { amountMinor: amountToMinor(value) }), ...(account === undefined ? {} : { accountId: resolveAccount(account) }) };
       const result = matters.updateRepayment(repaymentId, patch as never, { actor: "openclaw" });
       const afterLoan = matters.getLoan(before.loanId, false);
       return { result, entityId: result.id, snapshots: [
@@ -1079,7 +1398,8 @@ export function attachMcpRoutes(
   config: AppConfig,
   matters?: MattersRepository,
   budgets?: BudgetService,
-  health?: HealthService
+  health?: HealthService,
+  funds?: FundsService
 ): void {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const auth = createMcpAuth(config);
@@ -1096,7 +1416,7 @@ export function attachMcpRoutes(
             transports.set(newSessionId, transport!);
           }
         });
-        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health });
+        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health, funds });
         server.server.onclose = () => {
           if (transport?.sessionId) transports.delete(transport.sessionId);
         };

@@ -7,7 +7,7 @@ import type { Proposal, Transaction, TransactionKind } from "@shared/types";
 import { api, ApiError } from "../api";
 import { useLedgerClock } from "../ledger-clock";
 import { motionDurations, useReducedMotion } from "../motion";
-import { parseAmountMinor } from "../utils";
+import { money, parseAmountMinor } from "../utils";
 
 interface QuickEntryProps {
   open: boolean;
@@ -23,6 +23,7 @@ interface TransactionDraft {
   amountMinor: number;
   categoryId: string;
   localDate: string;
+  accountId: string | null;
   note: string | null;
 }
 
@@ -32,7 +33,8 @@ function asDraft(value: Record<string, unknown>): TransactionDraft {
     amountMinor: Number(value.amountMinor),
     categoryId: String(value.categoryId),
     localDate: String(value.localDate),
-    note: typeof value.note === "string" ? value.note : null
+    note: typeof value.note === "string" ? value.note : null,
+    accountId: typeof value.accountId === "string" ? value.accountId : null,
   };
 }
 
@@ -42,6 +44,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
   const [kind, setKind] = useState<TransactionKind>("expense");
   const [amount, setAmount] = useState("");
   const [categoryId, setCategoryId] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [date, setDate] = useState(today);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
@@ -68,8 +71,10 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     retry: false
   });
   const categories = useQuery({ queryKey: ["categories", kind], queryFn: () => api.categories(kind) });
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary, enabled: open });
+  const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && date >= funds.data.startedOn);
 
-  const draftSignature = JSON.stringify({ kind, amount, categoryId, date, note });
+  const draftSignature = JSON.stringify({ kind, amount, categoryId, accountId, date, note });
   const isDirty = !saved && Boolean(initialDraft.current) && draftSignature !== initialDraft.current;
   dirtyRef.current = isDirty;
 
@@ -165,7 +170,8 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
         amountMinor: transaction.amountMinor,
         categoryId: transaction.categoryId,
         localDate: transaction.localDate,
-        note: transaction.note
+        note: transaction.note,
+        accountId: transaction.accountId,
       };
     }
 
@@ -174,6 +180,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     setCategoryId(draft?.categoryId ?? "");
     setDate(draft?.localDate ?? today);
     setNote(draft?.note ?? "");
+    setAccountId(draft?.accountId ?? "");
     setError("");
     setSaved(false);
     initialDraft.current = JSON.stringify({
@@ -181,6 +188,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       amount: draft ? (draft.amountMinor / 100).toFixed(2) : "",
       categoryId: draft?.categoryId ?? "",
       date: draft?.localDate ?? today,
+      accountId: draft?.accountId ?? "",
       note: draft?.note ?? ""
     });
   }, [open, proposal, proposalTarget.data, today, transaction]);
@@ -198,6 +206,19 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     }
   }, [categories.data, categories.isSuccess, categoryId, open]);
 
+  useEffect(() => {
+    if (!open || !fundsRequired || !funds.data) return;
+    const available = funds.data.accounts;
+    if (available.some((item) => item.id === accountId)) return;
+    const defaultId = kind === "expense" ? funds.data.defaultExpenseAccountId : funds.data.defaultIncomeAccountId;
+    const nextAccountId = defaultId ?? available[0]?.id ?? "";
+    setAccountId(nextAccountId);
+    if (initialDraft.current) {
+      const initial = JSON.parse(initialDraft.current) as Record<string, unknown>;
+      if (!initial.accountId) initialDraft.current = JSON.stringify({ ...initial, accountId: nextAccountId });
+    }
+  }, [accountId, funds.data, fundsRequired, kind, open]);
+
   const parsedMinor = useMemo(() => parseAmountMinor(amount), [amount]);
   const dateShortcuts = useMemo(() => {
     const todayDate = new Date(`${today}T12:00:00`);
@@ -214,8 +235,9 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       if (parsedMinor === null) throw new ApiError("请输入大于 0 且最多两位小数的金额", "VALIDATION_ERROR", 400);
       if (!categoryId) throw new ApiError("请选择分类", "VALIDATION_ERROR", 400);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new ApiError("请选择有效日期", "VALIDATION_ERROR", 400);
-      const input = { kind, amountMinor: parsedMinor, categoryId, localDate: date, note: note.trim() || null };
+      const input = { kind, amountMinor: parsedMinor, categoryId, accountId: fundsRequired ? accountId : null, localDate: date, note: note.trim() || null };
       if (proposal) return api.reviseProposal(proposal.id, proposal.revision, input);
+      if (fundsRequired && !accountId) throw new ApiError("请选择资金账户", "VALIDATION_ERROR", 400);
       if (transaction) return api.updateTransaction(transaction.id, input, transaction.updatedAt);
       return api.createTransaction(input, crypto.randomUUID());
     },
@@ -366,6 +388,13 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
                 )}
               </div>
             </div>
+
+            {fundsRequired && <label className="entry-account-field">
+              <span>资金账户</span>
+              <select value={accountId} onChange={(event) => setAccountId(event.target.value)} aria-label="资金账户">
+                {(funds.data?.accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.icon} {account.name} · {money(account.balanceMinor)}</option>)}
+              </select>
+            </label>}
 
             <div className="entry-fields">
               <div className="entry-date-control">

@@ -42,6 +42,18 @@ describe("数据库升级", () => {
       .toEqual({ revision: 1, updated_at: now, request_id: null, request_hash: null });
     expect((upgraded.prepare("SELECT include_notes FROM ai_reports LIMIT 1").get() as { include_notes?: number } | undefined)).toBeUndefined();
     expect((upgraded.prepare("PRAGMA synchronous").get() as { synchronous: number }).synchronous).toBe(2);
+    expect(upgraded.prepare("SELECT version, name FROM schema_migrations WHERE version = 9").get())
+      .toEqual({ version: 9, name: "lightweight_funds" });
+    expect(upgraded.prepare("PRAGMA table_info(transactions)").all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "account_id" }),
+        expect.objectContaining({ name: "refunded_at" }),
+        expect.objectContaining({ name: "refund_account_id" })
+      ]));
+    expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('accounts', 'account_aliases', 'account_movements', 'transfers', 'account_adjustments') ORDER BY name").all())
+      .toEqual([
+        { name: "account_adjustments" }, { name: "account_aliases" }, { name: "account_movements" }, { name: "accounts" }, { name: "transfers" }
+      ]);
     upgraded.prepare(`INSERT INTO openclaw_operations(
       id, request_id, request_hash, action, entity_type, status, undoable, summary, created_at, expires_at, failed_at
     ) VALUES ('failed-operation', 'failed-request', 'hash', 'test', 'database', 'failed', 0, '测试失败状态', ?, ?, ?)`)

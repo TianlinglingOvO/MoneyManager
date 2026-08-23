@@ -1483,3 +1483,121 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @keyframes breakdown-panel-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes bill-panel-in { from { opacity: 0; transform: translateY(5px); } }
+/* Lightweight funds tracking */
+.funds-page { display: grid; gap: 26px; }
+.funds-heading-actions { display: flex; align-items: center; gap: 10px; }
+.funds-activation { display: grid; gap: 20px; max-width: 980px; padding: 26px; }
+.funds-activation__intro { display: flex; align-items: flex-start; gap: 14px; }
+.funds-activation__intro h2,
+.funds-activation__intro p { margin: 0; }
+.funds-activation__intro h2 { font-family: var(--font-display); font-size: 24px; }
+.funds-activation__intro p { margin-top: 6px; color: var(--muted); line-height: 1.65; }
+.funds-hero-icon { width: 46px; height: 46px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); }
+.funds-activation__accounts { display: grid; gap: 10px; }
+.funds-activation-row { display: grid; grid-template-columns: 54px minmax(160px, 1fr) minmax(180px, .8fr) 44px; align-items: end; gap: 10px; }
+.funds-activation-row > input,
+.funds-activation-row label input,
+.funds-defaults select { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-control); }
+.funds-activation-row > input,
+.funds-activation-row label input { padding: 0 12px; }
+.funds-activation-row label,
+.funds-defaults label { display: grid; gap: 6px; color: var(--muted); font-size: var(--text-caption); font-weight: 700; }
+.funds-activation-row .account-icon-input { padding: 0; text-align: center; }
+.funds-defaults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.funds-defaults select { padding: 0 12px; }
+.funds-activate-button { min-width: 160px; justify-self: end; }
+
+.funds-summary { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(180px, .8fr) minmax(150px, .55fr); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-card); background: color-mix(in srgb, var(--surface-card) 94%, transparent); box-shadow: var(--shadow); }
+.funds-summary > article,
+.funds-summary > button { min-height: 126px; padding: 22px 24px; border: 0; border-right: 1px solid var(--line); text-align: left; background: transparent; }
+.funds-summary > article { display: grid; align-content: center; gap: 7px; }
+.funds-summary > article > span,
+.funds-summary > article > small { color: var(--muted); font-size: var(--text-caption); }
+.funds-summary > article > strong { font-family: var(--font-number); font-size: 24px; font-variant-numeric: tabular-nums; }
+.funds-summary__total .money-value { color: var(--text-primary); font-size: clamp(32px, 4vw, 50px); }
+.funds-summary > button { display: grid; place-items: center; align-content: center; gap: 9px; color: var(--accent-text, var(--accent-strong)); cursor: pointer; transition: background-color var(--motion-micro) ease, transform var(--motion-micro) ease; }
+.funds-summary > button:hover { background: var(--surface-selected); }
+.funds-summary > button:active { transform: scale(.98); }
+.funds-summary > :last-child { border-right: 0; }
+
+.funds-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.funds-account-card { min-width: 0; display: grid; grid-template-columns: 46px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface-card) 92%, transparent); }
+.funds-account-card.is-archived { opacity: .68; }
+.funds-account-card__icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 13px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); font-weight: 800; }
+.funds-account-card > div:nth-child(2) { min-width: 0; display: grid; gap: 4px; }
+.funds-account-card > div:nth-child(2) strong,
+.funds-account-card > div:nth-child(2) small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funds-account-card > div:nth-child(2) small { color: var(--muted); font-size: var(--text-caption); }
+.funds-account-card .money-value { font-size: 20px; }
+.funds-account-card__actions { display: flex; align-items: center; gap: 4px; }
+.funds-account-card__actions .icon-button { width: 40px; height: 40px; }
+
+.funds-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.funds-movement-list,
+.funds-transfer-list { display: grid; }
+.funds-movement-row,
+.funds-transfer-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 58px; padding: 9px 2px; border-bottom: 1px solid var(--line); }
+.funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto 40px 40px; }
+.funds-movement-row:last-child,
+.funds-transfer-row:last-child { border-bottom: 0; }
+.funds-movement-row > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; }
+.funds-movement-row > span.is-in { color: var(--income); background: var(--green-soft); }
+.funds-movement-row > span.is-out { color: var(--expense); background: var(--orange-soft); }
+.funds-movement-row > div,
+.funds-transfer-row > div { min-width: 0; display: grid; gap: 3px; }
+.funds-movement-row small,
+.funds-transfer-row small { overflow: hidden; color: var(--muted); font-size: var(--text-caption); text-overflow: ellipsis; white-space: nowrap; }
+.funds-movement-row b,
+.funds-transfer-row b { font-family: var(--font-number); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.funds-transfer-row.is-deleted { opacity: .62; text-decoration: line-through; }
+.funds-sheet { width: min(620px, calc(100vw - 64px)); }
+.funds-sheet .bottom-sheet__footer > .primary-button { width: 100%; }
+.entry-account-field { display: grid; gap: 7px; }
+.entry-account-field select { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-control); }
+.transaction-refunded { display: inline-flex; align-items: center; width: fit-content; padding: 2px 7px; border-radius: 999px; color: var(--expense); background: var(--orange-soft); font-size: 11px; font-weight: 750; }
+.transaction-refund-button { min-height: 32px; padding: 0 8px; border: 0; border-radius: 9px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); cursor: pointer; }
+.refund-account-sheet { display: grid; gap: 14px; }
+.refund-account-list { display: grid; gap: 8px; }
+.refund-account-list button { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-primary); background: var(--surface-control); cursor: pointer; }
+.refund-account-list button:hover { border-color: var(--accent); background: var(--surface-selected); }
+.insight-funds-strip { margin-top: 12px; }
+
+@media (max-width: 900px) {
+  .funds-page { gap: 20px; }
+  .funds-heading-actions { width: 100%; }
+  .funds-heading-actions > button { min-height: 44px; flex: 1; }
+  .funds-activation { padding: 18px; }
+  .funds-activation-row { grid-template-columns: 48px minmax(0, 1fr) 44px; align-items: center; }
+  .funds-activation-row label { grid-column: 1 / -1; }
+  .funds-defaults,
+  .funds-account-grid,
+  .funds-columns { grid-template-columns: 1fr; }
+  .funds-activate-button { width: 100%; justify-self: stretch; }
+  .funds-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .funds-summary > article,
+  .funds-summary > button { min-height: 108px; padding: 17px; }
+  .funds-summary__total { grid-column: 1 / -1; border-right: 0 !important; border-bottom: 1px solid var(--line); }
+  .funds-summary > article:nth-child(2) { border-bottom: 0; }
+  .funds-account-card { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .funds-account-card .money-value { grid-column: 2; justify-self: start; }
+  .funds-account-card__actions { grid-column: 3; grid-row: 1 / span 2; display: grid; }
+  .funds-account-card__actions .icon-button,
+  .funds-transfer-row .icon-button { width: 44px; height: 44px; }
+  .funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto 44px 44px; }
+  .funds-sheet { width: 100%; }
+}
+
+@media (max-width: 520px) {
+  .funds-summary { grid-template-columns: 1fr; }
+  .funds-summary > article,
+  .funds-summary > button { border-right: 0; border-bottom: 1px solid var(--line); }
+  .funds-summary > :last-child { border-bottom: 0; }
+  .funds-summary__total { grid-column: auto; }
+  .funds-account-card { grid-template-columns: 44px minmax(0, 1fr); }
+  .funds-account-card .money-value { grid-column: 2; }
+  .funds-account-card__actions { grid-column: 1 / -1; grid-row: auto; display: flex; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 8px; }
+  .funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .funds-transfer-row > .icon-button { grid-row: 2; }
+  .funds-transfer-row > .icon-button:nth-last-child(2) { grid-column: 1; justify-self: end; }
+  .funds-transfer-row > .icon-button:last-child { grid-column: 2; }
+}

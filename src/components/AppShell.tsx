@@ -8,6 +8,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Landmark,
   Settings,
   Sparkles,
   WalletCards
@@ -23,6 +24,7 @@ const desktopPrimaryItems = [
   { to: "/", label: "洞察", icon: ChartNoAxesCombined, end: true },
   { to: "/bills", label: "账单", icon: BookOpenText },
   { to: "/matters?tab=loans", label: "事项", icon: WalletCards },
+  { to: "/funds", label: "资金", icon: Landmark },
   { to: "/ai", label: "AI", icon: Sparkles }
 ];
 
@@ -55,7 +57,7 @@ export function AppShell() {
   const primaryItems = desktopPrimaryItems.map((item) => item.label === "事项"
     ? { ...item, to: matterBadge > 0 ? "/matters?tab=subscriptions" : "/matters?tab=loans" }
     : item);
-  const mobilePrimaryItems = primaryItems.slice(0, 3);
+  const mobilePrimaryItems = primaryItems.filter((item) => ["洞察", "账单", "事项"].includes(item.label));
 
   useEffect(() => localStorage.setItem(sidebarStorageKey, String(collapsed)), [collapsed]);
 

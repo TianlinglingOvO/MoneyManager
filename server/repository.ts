@@ -30,6 +30,7 @@ import {
 } from "../shared/schemas";
 import { calculateFinanceReport, rangeForQuery } from "./periods";
 import { AppError, ConflictError, NotFoundError, ProposalRevisionConflictError } from "./errors";
+import type { FundsService } from "./funds";
 
 type TransactionInput = z.infer<typeof transactionInputSchema>;
 type TransactionPatch = z.infer<typeof transactionPatchSchema>;
@@ -72,6 +73,11 @@ interface TransactionRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  account_id: string | null;
+  refunded_at: string | null;
+  refund_account_id: string | null;
+  account_name?: string | null;
+  account_icon?: string | null;
   category_name?: string;
   category_icon?: string;
   category_color?: string;
@@ -106,8 +112,10 @@ const categorySelect = `SELECT categories.*,
 
 const transactionSelect = `SELECT t.id, t.kind, t.amount_minor, t.currency, t.category_id,
   t.local_date, t.note, t.source, t.created_at, t.updated_at, t.deleted_at,
-  c.name AS category_name, c.icon AS category_icon, c.color AS category_color
-  FROM transactions t JOIN categories c ON c.id = t.category_id`;
+  t.account_id, t.refunded_at, t.refund_account_id,
+  c.name AS category_name, c.icon AS category_icon, c.color AS category_color,
+  a.name AS account_name, a.icon AS account_icon
+  FROM transactions t JOIN categories c ON c.id = t.category_id LEFT JOIN accounts a ON a.id = t.account_id`;
 
 function mapCategory(row: CategoryRow): Category {
   return {
@@ -137,6 +145,10 @@ function mapTransaction(row: TransactionRow): Transaction {
       icon: row.category_icon ?? "✦",
       color: row.category_color ?? "#7A7A73"
     } : undefined,
+    accountId: row.account_id,
+    account: row.account_id && row.account_name ? { id: row.account_id, name: row.account_name, icon: row.account_icon ?? "账" } : null,
+    refundedAt: row.refunded_at,
+    refundAccountId: row.refund_account_id,
     localDate: row.local_date,
     note: row.note,
     source: row.source,
@@ -163,7 +175,27 @@ function mapProposal(row: ProposalRow): Proposal {
 }
 
 export class LedgerRepository {
+  private funds: FundsService | null = null;
+
   constructor(private readonly database: DatabaseSync) {}
+
+  attachFundsService(funds: FundsService): void {
+    this.funds = funds;
+  }
+
+  private savepoint<T>(work: () => T): T {
+    const name = `ledger_${randomUUID().replaceAll("-", "")}`;
+    this.database.exec(`SAVEPOINT ${name}`);
+    try {
+      const result = work();
+      this.database.exec(`RELEASE SAVEPOINT ${name}`);
+      return result;
+    } catch (error) {
+      this.database.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+      this.database.exec(`RELEASE SAVEPOINT ${name}`);
+      throw error;
+    }
+  }
 
   audit(actor: "user" | "openclaw" | "system", action: string, entity: string, entityId?: string | null, metadata?: Record<string, unknown>): void {
     this.database.prepare(`INSERT INTO audit_logs(id, actor, action, entity, entity_id, metadata, created_at)
@@ -304,6 +336,7 @@ export class LedgerRepository {
       ...(categoryId ? [{ entityType: "category", id: categoryId }] : [])
     ];
     const invalidatedOperationCount = this.invalidateOpenClawOperations(refs);
+    transactions.forEach((item) => this.funds?.preparePermanentTransactionDeletion(item.id));
     const remove = this.database.prepare("DELETE FROM transactions WHERE id = ?");
     transactions.forEach((item) => remove.run(item.id));
     return {
@@ -529,18 +562,24 @@ export class LedgerRepository {
       if (existing) return mapTransaction(existing);
     }
     this.assertCategoryForTransaction(input.categoryId, input.kind);
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    this.database.prepare(`INSERT INTO transactions(
-      id, kind, amount_minor, currency, category_id, occurred_at, local_date, note,
-      source, idempotency_key, created_at, updated_at, deleted_at
-    ) VALUES (?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, NULL)`)
-      .run(
-        id, input.kind, input.amountMinor, input.categoryId, input.localDate, input.localDate,
-        input.note?.trim() || null, options.source ?? "user", options.idempotencyKey ?? null, now, now
-      );
-    this.audit(options.actor ?? "user", "transaction.create", "transaction", id, { kind: input.kind, source: options.source ?? "user" });
-    return this.getTransaction(id);
+    return this.savepoint(() => {
+      const accountId = this.funds
+        ? this.funds.resolveTransactionAccount(input.kind, input.localDate, input.accountId)
+        : input.accountId ?? null;
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      this.database.prepare(`INSERT INTO transactions(
+        id, kind, amount_minor, currency, category_id, occurred_at, local_date, note,
+        source, idempotency_key, created_at, updated_at, deleted_at, account_id, refunded_at, refund_account_id
+      ) VALUES (?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL)`)
+        .run(
+          id, input.kind, input.amountMinor, input.categoryId, input.localDate, input.localDate,
+          input.note?.trim() || null, options.source ?? "user", options.idempotencyKey ?? null, now, now, accountId
+        );
+      this.funds?.reconcileTransaction(id, options.idempotencyKey);
+      this.audit(options.actor ?? "user", "transaction.create", "transaction", id, { kind: input.kind, source: options.source ?? "user" });
+      return this.getTransaction(id);
+    });
   }
 
   updateTransaction(
@@ -553,18 +592,25 @@ export class LedgerRepository {
     if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) {
       throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
     }
+    if (current.refundedAt) throw new ConflictError("已退款账目需要先撤销退款才能修改");
     const patch = transactionPatchSchema.parse(rawPatch);
     const next = { ...current, ...patch };
     this.assertCategoryForTransaction(next.categoryId, next.kind);
-    const updatedAt = new Date().toISOString();
-    const result = expectedUpdatedAt
-      ? this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
-        .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, updatedAt, id, expectedUpdatedAt)
-      : this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, updatedAt, id);
-    if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
-    this.audit(actor, "transaction.update", "transaction", id, { kind: next.kind });
-    return this.getTransaction(id);
+    return this.savepoint(() => {
+      const accountId = this.funds
+        ? this.funds.resolveTransactionAccount(next.kind, next.localDate, next.accountId)
+        : next.accountId ?? null;
+      const updatedAt = new Date().toISOString();
+      const result = expectedUpdatedAt
+        ? this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
+          .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, accountId, updatedAt, id, expectedUpdatedAt)
+        : this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+          .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, accountId, updatedAt, id);
+      if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
+      this.funds?.reconcileTransaction(id);
+      this.audit(actor, "transaction.update", "transaction", id, { kind: next.kind });
+      return this.getTransaction(id);
+    });
   }
 
   softDeleteTransaction(
@@ -576,15 +622,18 @@ export class LedgerRepository {
     if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) {
       throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
     }
-    const now = new Date().toISOString();
-    const result = expectedUpdatedAt
-      ? this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
-        .run(now, now, id, expectedUpdatedAt)
-      : this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-        .run(now, now, id);
-    if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
-    this.audit(actor, "transaction.delete", "transaction", id);
-    return this.getTransaction(id);
+    return this.savepoint(() => {
+      const now = new Date().toISOString();
+      const result = expectedUpdatedAt
+        ? this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
+          .run(now, now, id, expectedUpdatedAt)
+        : this.database.prepare("UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+          .run(now, now, id);
+      if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
+      this.funds?.reconcileTransaction(id);
+      this.audit(actor, "transaction.delete", "transaction", id);
+      return this.getTransaction(id);
+    });
   }
 
   restoreTransaction(id: string, actor: "user" | "openclaw" = "user"): Transaction {
@@ -592,11 +641,14 @@ export class LedgerRepository {
     if (!current.deletedAt) return current;
     const category = this.getCategory(current.categoryId);
     if (category.isArchived) throw new ConflictError("请先恢复这笔账使用的分类");
-    this.database.prepare("UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
-    this.audit(actor, "transaction.restore", "transaction", id);
-    return this.getTransaction(id);
+    return this.savepoint(() => {
+      if (current.accountId) this.funds?.restoreHistoricalAccount(current.accountId);
+      this.database.prepare("UPDATE transactions SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+      this.funds?.reconcileTransaction(id);
+      this.audit(actor, "transaction.restore", "transaction", id);
+      return this.getTransaction(id);
+    });
   }
-
   permanentlyDeleteTransaction(
     id: string,
     expectedUpdatedAt: string,
@@ -677,7 +729,7 @@ export class LedgerRepository {
 
   getDailyTotals(rawQuery: DailyTotalsQuery): DailyTransactionTotal[] {
     const query = dailyTotalsQuerySchema.parse(rawQuery);
-    const clauses = ["t.deleted_at IS NULL", "t.local_date BETWEEN ? AND ?"];
+    const clauses = ["t.deleted_at IS NULL", "t.refunded_at IS NULL", "t.local_date BETWEEN ? AND ?"];
     const values: SqlValue[] = [query.start, query.end];
     if (query.kind) { clauses.push("t.kind = ?"); values.push(query.kind); }
     if (query.categoryId) { clauses.push("t.category_id = ?"); values.push(query.categoryId); }
@@ -710,9 +762,9 @@ export class LedgerRepository {
   getDashboard(today: string): DashboardData {
     const monthStart = `${today.slice(0, 7)}-01`;
     const monthRows = this.database.prepare(`SELECT kind, SUM(amount_minor) AS total FROM transactions
-      WHERE deleted_at IS NULL AND local_date BETWEEN ? AND ? GROUP BY kind`).all(monthStart, today) as unknown as Array<{ kind: TransactionKind; total: number }>;
+      WHERE deleted_at IS NULL AND refunded_at IS NULL AND local_date BETWEEN ? AND ? GROUP BY kind`).all(monthStart, today) as unknown as Array<{ kind: TransactionKind; total: number }>;
     const todayRows = this.database.prepare(`SELECT kind, SUM(amount_minor) AS total FROM transactions
-      WHERE deleted_at IS NULL AND local_date = ? GROUP BY kind`).all(today) as unknown as Array<{ kind: TransactionKind; total: number }>;
+      WHERE deleted_at IS NULL AND refunded_at IS NULL AND local_date = ? GROUP BY kind`).all(today) as unknown as Array<{ kind: TransactionKind; total: number }>;
     const totals = (rows: Array<{ kind: TransactionKind; total: number }>) => {
       const incomeMinor = Number(rows.find((row) => row.kind === "income")?.total ?? 0);
       const expenseMinor = Number(rows.find((row) => row.kind === "expense")?.total ?? 0);
@@ -727,10 +779,13 @@ export class LedgerRepository {
   getFinanceReport(grain: ReportGrain, anchor: string, kind: TransactionKind, todayKey?: string): FinanceReport {
     const range = rangeForQuery(grain, anchor, todayKey);
     const transactions = this.listTransactions({ start: range.start, end: range.end, pageSize: 100, deleted: "active" });
-    const items = [...transactions.items];
+    const items = transactions.items.filter((item) => !item.refundedAt);
+    let fetched = transactions.items.length;
     let page = 2;
-    while (items.length < transactions.total) {
-      items.push(...this.listTransactions({ start: range.start, end: range.end, pageSize: 100, page, deleted: "active" }).items);
+    while (fetched < transactions.total) {
+      const next = this.listTransactions({ start: range.start, end: range.end, pageSize: 100, page, deleted: "active" });
+      fetched += next.items.length;
+      items.push(...next.items.filter((item) => !item.refundedAt));
       page += 1;
     }
     return calculateFinanceReport({
@@ -898,7 +953,7 @@ export class LedgerRepository {
       items.push(...this.listTransactions({ start, end, page, pageSize: 100, deleted: "active" }).items);
       page += 1;
     }
-    return items.sort((a, b) => a.localDate.localeCompare(b.localDate) || a.createdAt.localeCompare(b.createdAt));
+    return items.filter((item) => !item.refundedAt).sort((a, b) => a.localDate.localeCompare(b.localDate) || a.createdAt.localeCompare(b.createdAt));
   }
 
   dataHash(start: string, end: string): { hash: string; transactions: Transaction[] } {

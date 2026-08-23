@@ -84,10 +84,10 @@ export class BudgetService {
     const row = this.database.prepare("SELECT * FROM monthly_budgets WHERE month = ?")
       .get(month) as unknown as BudgetRow | undefined;
     const spentRow = this.database.prepare(`SELECT COALESCE(SUM(amount_minor), 0) AS value
-      FROM transactions WHERE kind = 'expense' AND deleted_at IS NULL
+      FROM transactions WHERE kind = 'expense' AND deleted_at IS NULL AND refunded_at IS NULL
         AND local_date >= ? AND local_date <= ?`).get(range.start, range.end) as { value: number };
     const categorySpentRows = this.database.prepare(`SELECT category_id, COALESCE(SUM(amount_minor), 0) AS value
-      FROM transactions WHERE kind = 'expense' AND deleted_at IS NULL
+      FROM transactions WHERE kind = 'expense' AND deleted_at IS NULL AND refunded_at IS NULL
         AND local_date >= ? AND local_date <= ? GROUP BY category_id`)
       .all(range.start, range.end) as unknown as Array<{ category_id: string; value: number }>;
     const spentByCategory = new Map(categorySpentRows.map((item) => [item.category_id, Number(item.value)]));

@@ -48,6 +48,7 @@ const loan: Loan = {
   lentDate: "2026-08-18",
   purpose: "生活费和买花",
   note: null,
+  accountId: null,
   status: "active",
   ledgerLink: { mode: "none", transactionId: null, amountMinor: null, currency: "CNY" },
   repayments: [],

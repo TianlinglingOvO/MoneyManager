@@ -47,6 +47,10 @@ export interface Transaction {
   currency: "CNY";
   categoryId: string;
   category?: Pick<Category, "id" | "name" | "icon" | "color">;
+  accountId: string | null;
+  account?: Pick<Account, "id" | "name" | "icon"> | null;
+  refundedAt: string | null;
+  refundAccountId: string | null;
   localDate: string;
   note: string | null;
   source: "user" | "openclaw" | "system";
@@ -55,6 +59,76 @@ export interface Transaction {
   deletedAt: string | null;
 }
 
+export interface Account {
+  id: string;
+  name: string;
+  icon: string;
+  aliases: string[];
+  openingBalanceMinor: number;
+  balanceMinor: number;
+  openedOn: string;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountMovement {
+  id: string;
+  accountId: string;
+  accountName?: string;
+  deltaMinor: number;
+  sourceType: "transaction" | "loan" | "loan_repayment" | "transfer" | "adjustment";
+  sourceId: string;
+  localDate: string;
+  requestId: string | null;
+  operationId: string | null;
+  reversalOfId: string | null;
+  createdAt: string;
+}
+
+export interface AccountMovementList {
+  items: AccountMovement[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface FundsSummary {
+  enabled: boolean;
+  startedOn: string | null;
+  totalMinor: number;
+  accountCount: number;
+  defaultExpenseAccountId: string | null;
+  defaultIncomeAccountId: string | null;
+  defaultFeeCategoryId: string | null;
+  accounts: Account[];
+}
+
+export interface Transfer {
+  id: string;
+  fromAccountId: string;
+  toAccountId: string;
+  debitedMinor: number;
+  creditedMinor: number;
+  feeMinor: number;
+  feeTransactionId: string | null;
+  localDate: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface AccountAdjustment {
+  id: string;
+  accountId: string;
+  targetBalanceMinor: number;
+  deltaMinor: number;
+  localDate: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface TransactionList {
   items: Transaction[];
   total: number;
@@ -175,7 +249,12 @@ export type HealthIssueType =
   | "large_expense"
   | "budget_warning"
   | "subscription_due"
-  | "foreign_key";
+  | "foreign_key"
+  | "funds_negative"
+  | "funds_missing_account"
+  | "funds_mismatch"
+  | "funds_orphan"
+  | "subscription_funds";
 
 export interface HealthIssue {
   fingerprint: string;
@@ -346,6 +425,7 @@ export interface LoanRepayment {
   localDate: string;
   note: string | null;
   ledgerLink: LedgerLink;
+  accountId: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -367,6 +447,7 @@ export interface Loan {
   note: string | null;
   status: "active" | "settled";
   ledgerLink: LedgerLink;
+  accountId: string | null;
   repayments: LoanRepayment[];
   createdAt: string;
   updatedAt: string;
@@ -394,6 +475,7 @@ export interface SubscriptionPayment {
   ledgerLink: LedgerLink;
   actualCnyAmountMinor?: number | null;
   nextBillingDateBefore?: string | null;
+  refundedAt: string | null;
   nextBillingDateAfter?: string | null;
   createdAt: string;
   updatedAt: string;

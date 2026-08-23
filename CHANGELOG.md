@@ -2,6 +2,21 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.3.0 — 2026-08-23
+
+### Lightweight funds tracking
+
+- Added opt-in CNY accounts whose balances are derived from opening balances and append-only movements rather than a mutable balance field.
+- Added account aliases, transfers with explicit fees, balance adjustments, transaction account assignment, full refunds, and refund undo.
+- Kept transfers and adjustments outside income, expense, charts, and budgets; refunded transactions are excluded while their original records remain visible.
+- Integrated post-activation loans, repayments, and subscription payments with funds while preserving all pre-activation history.
+
+### Reliability and automation
+
+- Added migration 9, funds-aware complete JSON and CSV exports, restore verification, and deterministic health findings for missing, orphaned, duplicated, or unbalanced money movements.
+- Added OpenClaw account, funds summary, transfer, adjustment, refund, and refund-undo tools with exact account resolution, idempotent request IDs, snapshots, and reversible operations.
+- Added the responsive Funds page, activation wizard, account management, movement history, transfer editor, ledger account labels, and refund actions.
+
 ## 2.2.1 — 2026-08-23
 
 ### Borrower picker

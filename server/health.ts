@@ -74,6 +74,7 @@ export class HealthService {
     this.addLargeExpenseIssues(month, transactions, issues);
     this.addBudgetIssues(month, issues);
     this.addSubscriptionIssues(range.start, range.end, issues);
+    this.addFundsIssues(range.start, range.end, issues);
     this.addForeignKeyIssues(issues);
     const acknowledgements = new Set((this.database.prepare(
       "SELECT fingerprint FROM health_acknowledgements"
@@ -359,6 +360,195 @@ export class HealthService {
       });
     });
   }
+  private addFundsIssues(monthStart: string, monthEnd: string, issues: HealthIssue[]): void {
+    const started = this.database.prepare("SELECT value FROM settings WHERE key = 'funds.started_on'").get() as { value: string } | undefined;
+    if (!started?.value) return;
+
+    const issue = (
+      type: HealthIssueType,
+      severity: "info" | "warning" | "critical",
+      title: string,
+      detail: string,
+      values: unknown[],
+      href: string | null,
+      relatedTransactionIds: string[] = []
+    ) => issues.push({
+      fingerprint: fingerprint(type, values),
+      type,
+      severity,
+      title,
+      detail,
+      relatedTransactionIds,
+      href,
+      acknowledged: false
+    });
+
+    const negativeAccounts = this.database.prepare(`SELECT a.id, a.name, a.updated_at,
+      a.opening_balance_minor + COALESCE(SUM(m.delta_minor), 0) AS balance
+      FROM accounts a LEFT JOIN account_movements m ON m.account_id = a.id
+      WHERE a.is_archived = 0 GROUP BY a.id HAVING balance < 0`).all() as unknown as Array<{
+        id: string; name: string; updated_at: string; balance: number;
+      }>;
+    negativeAccounts.forEach((account) => issue(
+      "funds_negative",
+      "warning",
+      `${account.name}账户余额为负`,
+      "账户余额低于零，请核对遗漏账目或使用余额校准记录现实余额。",
+      [account.id, account.updated_at, Number(account.balance)],
+      "/funds"
+    ));
+
+    const missingAccounts = this.database.prepare(`SELECT id, updated_at FROM transactions
+      WHERE deleted_at IS NULL AND refunded_at IS NULL AND account_id IS NULL
+        AND local_date >= ? AND local_date BETWEEN ? AND ?`).all(started.value, monthStart, monthEnd) as unknown as Array<{
+          id: string; updated_at: string;
+        }>;
+    missingAccounts.forEach((transaction) => issue(
+      "funds_missing_account",
+      "critical",
+      "启用资金追踪后的账目缺少账户",
+      "这笔有效收支没有资金账户，收支统计仍存在，但账户余额无法可靠对应。",
+      [transaction.id, transaction.updated_at],
+      "/funds",
+      [transaction.id]
+    ));
+
+    const movementNet = (sourceType: string, sourceId: string): Map<string, number> => {
+      const rows = this.database.prepare(`SELECT account_id, SUM(delta_minor) AS total
+        FROM account_movements WHERE source_type = ? AND source_id = ?
+        GROUP BY account_id HAVING total <> 0`).all(sourceType, sourceId) as unknown as Array<{
+          account_id: string; total: number;
+        }>;
+      return new Map(rows.map((row) => [row.account_id, Number(row.total)]));
+    };
+    const sameImpact = (left: Map<string, number>, right: Map<string, number>): boolean => {
+      const accounts = new Set([...left.keys(), ...right.keys()]);
+      return [...accounts].every((accountId) => (left.get(accountId) ?? 0) === (right.get(accountId) ?? 0));
+    };
+    const checkImpact = (
+      sourceType: string,
+      sourceId: string,
+      expected: Map<string, number>,
+      version: string,
+      href: string,
+      relatedTransactionIds: string[] = []
+    ) => {
+      const actual = movementNet(sourceType, sourceId);
+      if (sameImpact(expected, actual)) return;
+      issue(
+        "funds_mismatch",
+        "critical",
+        "业务记录与资金流水不一致",
+        `${sourceType} 记录的应有资金影响与当前流水不一致，请先备份并核对。`,
+        [sourceType, sourceId, version, [...expected], [...actual]],
+        href,
+        relatedTransactionIds
+      );
+    };
+
+    const transactions = this.database.prepare(`SELECT id, kind, amount_minor, local_date, account_id,
+      refunded_at, refund_account_id, deleted_at, updated_at FROM transactions
+      WHERE local_date BETWEEN ? AND ?`).all(monthStart, monthEnd) as unknown as Array<{
+        id: string; kind: "income" | "expense"; amount_minor: number; local_date: string;
+        account_id: string | null; refunded_at: string | null; refund_account_id: string | null;
+        deleted_at: string | null; updated_at: string;
+      }>;
+    transactions.forEach((transaction) => {
+      const expected = new Map<string, number>();
+      if (!transaction.deleted_at && transaction.local_date >= started.value) {
+        if (!transaction.refunded_at && transaction.account_id) {
+          expected.set(transaction.account_id, transaction.kind === "expense" ? -Number(transaction.amount_minor) : Number(transaction.amount_minor));
+        } else if (transaction.refunded_at && !transaction.account_id && transaction.refund_account_id) {
+          expected.set(transaction.refund_account_id, transaction.kind === "expense" ? Number(transaction.amount_minor) : -Number(transaction.amount_minor));
+        }
+      }
+      checkImpact("transaction", transaction.id, expected, transaction.updated_at, "/funds", [transaction.id]);
+    });
+
+    const loanSources = this.database.prepare(`SELECT 'loan' AS source_type, id, account_id, principal_minor AS amount_minor,
+      local_date, deleted_at, updated_at FROM loans WHERE local_date BETWEEN ? AND ?
+      UNION ALL
+      SELECT 'loan_repayment', id, account_id, amount_minor, local_date, deleted_at, updated_at
+      FROM loan_repayments WHERE local_date BETWEEN ? AND ?`).all(
+        monthStart, monthEnd, monthStart, monthEnd
+      ) as unknown as Array<{
+        source_type: "loan" | "loan_repayment"; id: string; account_id: string | null;
+        amount_minor: number; local_date: string; deleted_at: string | null; updated_at: string;
+      }>;
+    loanSources.forEach((row) => {
+      const expected = new Map<string, number>();
+      if (!row.deleted_at && row.local_date >= started.value && row.account_id) {
+        expected.set(row.account_id, row.source_type === "loan" ? -Number(row.amount_minor) : Number(row.amount_minor));
+      }
+      checkImpact(row.source_type, row.id, expected, row.updated_at, "/matters?tab=loans");
+    });
+
+    const transfers = this.database.prepare(`SELECT * FROM transfers WHERE local_date BETWEEN ? AND ?`)
+      .all(monthStart, monthEnd) as unknown as Array<{
+        id: string; from_account_id: string; to_account_id: string; credited_minor: number;
+        debited_minor: number; fee_transaction_id: string | null; deleted_at: string | null; updated_at: string;
+      }>;
+    transfers.forEach((transfer) => {
+      const expected = new Map<string, number>();
+      if (!transfer.deleted_at) {
+        expected.set(transfer.from_account_id, -Number(transfer.credited_minor));
+        expected.set(transfer.to_account_id, Number(transfer.credited_minor));
+      }
+      checkImpact("transfer", transfer.id, expected, transfer.updated_at, "/funds");
+      if (!transfer.deleted_at && Number(transfer.debited_minor) > Number(transfer.credited_minor) && !transfer.fee_transaction_id) {
+        issue(
+          "funds_mismatch",
+          "critical",
+          "转账手续费缺少支出记录",
+          "这笔转账的实际扣款高于到账金额，但没有对应手续费账目。",
+          ["transfer-fee", transfer.id, transfer.updated_at],
+          "/funds"
+        );
+      }
+    });
+
+    const orphaned = this.database.prepare(`SELECT m.source_type, m.source_id, SUM(m.delta_minor) AS total
+      FROM account_movements m
+      WHERE (m.source_type = 'transaction' AND NOT EXISTS (SELECT 1 FROM transactions x WHERE x.id = m.source_id))
+         OR (m.source_type = 'loan' AND NOT EXISTS (SELECT 1 FROM loans x WHERE x.id = m.source_id))
+         OR (m.source_type = 'loan_repayment' AND NOT EXISTS (SELECT 1 FROM loan_repayments x WHERE x.id = m.source_id))
+         OR (m.source_type = 'transfer' AND NOT EXISTS (SELECT 1 FROM transfers x WHERE x.id = m.source_id))
+         OR (m.source_type = 'adjustment' AND NOT EXISTS (SELECT 1 FROM account_adjustments x WHERE x.id = m.source_id))
+      GROUP BY m.source_type, m.source_id HAVING total <> 0`).all() as unknown as Array<{
+        source_type: string; source_id: string; total: number;
+      }>;
+    orphaned.forEach((row) => issue(
+      "funds_orphan",
+      "critical",
+      "资金流水失去来源",
+      "检测到仍影响余额但已找不到对应业务记录的资金流水。",
+      [row.source_type, row.source_id, Number(row.total)],
+      "/funds"
+    ));
+
+    const subscriptionPayments = this.database.prepare(`SELECT p.id, p.updated_at, p.ledger_transaction_id,
+      t.id AS transaction_id, t.kind, t.account_id, t.deleted_at, t.refunded_at
+      FROM subscription_payments p
+      LEFT JOIN transactions t ON t.id = p.ledger_transaction_id
+      WHERE p.deleted_at IS NULL AND p.local_date >= ? AND p.local_date BETWEEN ? AND ?`)
+      .all(started.value, monthStart, monthEnd) as unknown as Array<{
+        id: string; updated_at: string; ledger_transaction_id: string | null; transaction_id: string | null;
+        kind: string | null; account_id: string | null; deleted_at: string | null; refunded_at: string | null;
+      }>;
+    subscriptionPayments.forEach((payment) => {
+      const valid = payment.transaction_id && payment.kind === "expense" && payment.account_id && !payment.deleted_at && !payment.refunded_at;
+      if (valid) return;
+      issue(
+        "subscription_funds",
+        "critical",
+        "订阅付款缺少有效资金变化",
+        "启用资金追踪后的订阅付款必须关联一笔有效的人民币支出及支付账户。",
+        [payment.id, payment.updated_at, payment.ledger_transaction_id],
+        "/matters?tab=subscriptions"
+      );
+    });
+  }
+
 
   private addForeignKeyIssues(issues: HealthIssue[]): void {
     const rows = this.database.prepare("PRAGMA foreign_key_check").all() as unknown as Array<{

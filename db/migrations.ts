@@ -371,5 +371,99 @@ export const migrations: Migration[] = [
       "CREATE INDEX IF NOT EXISTS idx_openclaw_operations_status_expires ON openclaw_operations(status, expires_at)",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
     ]
+  },
+  {
+    version: 9,
+    name: "lightweight_funds",
+    statements: [
+      `CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        opening_balance_minor INTEGER NOT NULL,
+        opened_on TEXT NOT NULL,
+        is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      "CREATE UNIQUE INDEX idx_accounts_active_name ON accounts(normalized_name) WHERE is_archived = 0",
+      "CREATE INDEX idx_accounts_archived_name ON accounts(is_archived, name)",
+      `CREATE TABLE account_aliases (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        alias TEXT NOT NULL,
+        normalized_alias TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(account_id, normalized_alias)
+      )`,
+      "CREATE INDEX idx_account_aliases_normalized ON account_aliases(normalized_alias)",
+      "ALTER TABLE transactions ADD COLUMN account_id TEXT REFERENCES accounts(id)",
+      "ALTER TABLE transactions ADD COLUMN refunded_at TEXT",
+      "ALTER TABLE transactions ADD COLUMN refund_account_id TEXT REFERENCES accounts(id)",
+      "ALTER TABLE loans ADD COLUMN account_id TEXT REFERENCES accounts(id)",
+      "ALTER TABLE loan_repayments ADD COLUMN account_id TEXT REFERENCES accounts(id)",
+      "ALTER TABLE subscription_payments ADD COLUMN refunded_at TEXT",
+      `CREATE TABLE transfers (
+        id TEXT PRIMARY KEY,
+        from_account_id TEXT NOT NULL REFERENCES accounts(id),
+        to_account_id TEXT NOT NULL REFERENCES accounts(id),
+        debited_minor INTEGER NOT NULL CHECK (debited_minor > 0),
+        credited_minor INTEGER NOT NULL CHECK (credited_minor > 0),
+        fee_transaction_id TEXT REFERENCES transactions(id),
+        local_date TEXT NOT NULL,
+        note TEXT,
+        request_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        CHECK (from_account_id != to_account_id),
+        CHECK (debited_minor >= credited_minor)
+      )`,
+      "CREATE UNIQUE INDEX idx_transfers_request_id ON transfers(request_id) WHERE request_id IS NOT NULL",
+      "CREATE INDEX idx_transfers_date ON transfers(deleted_at, local_date)",
+      `CREATE TABLE account_adjustments (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        target_balance_minor INTEGER NOT NULL,
+        delta_minor INTEGER NOT NULL,
+        local_date TEXT NOT NULL,
+        note TEXT,
+        request_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      "CREATE UNIQUE INDEX idx_account_adjustments_request_id ON account_adjustments(request_id) WHERE request_id IS NOT NULL",
+      "CREATE INDEX idx_account_adjustments_account_date ON account_adjustments(account_id, local_date)",
+      `CREATE TABLE account_movements (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        delta_minor INTEGER NOT NULL CHECK (delta_minor != 0),
+        source_type TEXT NOT NULL CHECK (source_type IN ('transaction', 'loan', 'loan_repayment', 'transfer', 'adjustment')),
+        source_id TEXT NOT NULL,
+        local_date TEXT NOT NULL,
+        request_id TEXT,
+        operation_id TEXT REFERENCES openclaw_operations(id),
+        reversal_of_id TEXT REFERENCES account_movements(id),
+        created_at TEXT NOT NULL
+      )`,
+      "CREATE INDEX idx_account_movements_account_date ON account_movements(account_id, local_date, created_at)",
+      "CREATE INDEX idx_account_movements_source ON account_movements(source_type, source_id)",
+      "ALTER TABLE openclaw_operation_items RENAME TO openclaw_operation_items_legacy_v9",
+      `CREATE TABLE openclaw_operation_items (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES openclaw_operations(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('transaction', 'category', 'proposal', 'setting', 'borrower', 'loan', 'loan_repayment', 'subscription', 'subscription_payment', 'budget', 'account', 'transfer', 'account_adjustment')),
+        entity_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT
+      )`,
+      `INSERT INTO openclaw_operation_items(id, operation_id, sequence, entity_type, entity_id, before_json, after_json)
+        SELECT id, operation_id, sequence, entity_type, entity_id, before_json, after_json
+        FROM openclaw_operation_items_legacy_v9`,
+      "DROP TABLE openclaw_operation_items_legacy_v9",
+      "CREATE UNIQUE INDEX idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
+    ]
   }
 ];

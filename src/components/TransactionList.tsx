@@ -6,6 +6,7 @@ import { friendlyDate, money, signedMoney } from "../utils";
 interface TransactionListProps {
   items: Transaction[];
   onEdit?: (transaction: Transaction) => void;
+  onRefund?: (transaction: Transaction) => void;
   onRestore?: (transaction: Transaction) => void;
   onPermanentDelete?: (transaction: Transaction) => void;
   compact?: boolean;
@@ -13,7 +14,7 @@ interface TransactionListProps {
   dailyTotals?: DailyTransactionTotal[];
 }
 
-export function TransactionList({ items, onEdit, onRestore, onPermanentDelete, compact = false, emptyText = "还没有账目", dailyTotals = [] }: TransactionListProps) {
+export function TransactionList({ items, onEdit, onRestore, onPermanentDelete, onRefund, compact = false, emptyText = "还没有账目", dailyTotals = [] }: TransactionListProps) {
   const { timezone } = useLedgerClock();
   if (items.length === 0) {
     return <div className="empty-state"><span>记</span><strong>{emptyText}</strong><p>每一笔小记录，都会让生活更清楚。</p></div>;
@@ -71,10 +72,13 @@ export function TransactionList({ items, onEdit, onRestore, onPermanentDelete, c
                 <span className="transaction-row__body">
                   <strong>{transaction.category?.name ?? "未知分类"}</strong>
                   <small>{transaction.note ?? "无备注"}</small>
+                  {transaction.account && <small>账户：{transaction.account.icon} {transaction.account.name}</small>}
+                  {transaction.refundedAt && <small className="transaction-refunded">已全额退款，不计入统计</small>}
                   {transaction.deletedAt && <small>发生于 {transaction.localDate}</small>}
                 </span>
                 <span className="transaction-row__trailing">
                   <span className={`transaction-row__amount is-${transaction.kind}`}>{signedMoney(transaction.amountMinor, transaction.kind)}</span>
+                  {onRefund && !transaction.deletedAt && <button type="button" className="transaction-refund-button" onClick={(event) => { event.stopPropagation(); onRefund(transaction); }}>{transaction.refundedAt ? "撤销退款" : "全额退款"}</button>}
                   {canEdit && <ChevronRight className="transaction-row__edit" size={18} aria-hidden="true" />}
                 </span>
                 {transaction.deletedAt && (onRestore || onPermanentDelete) && (

@@ -15,6 +15,31 @@ export const categories = sqliteTable("categories", {
   uniqueIndex("idx_categories_kind_name").on(table.kind, table.name),
   index("idx_categories_kind_order").on(table.kind, table.sortOrder)
 ]);
+export const accounts = sqliteTable("accounts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  icon: text("icon").notNull(),
+  openingBalanceMinor: integer("opening_balance_minor").notNull(),
+  openedOn: text("opened_on").notNull(),
+  isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  uniqueIndex("idx_accounts_active_name").on(table.normalizedName).where(sql`${table.isArchived} = 0`),
+  index("idx_accounts_archived_name").on(table.isArchived, table.name)
+]);
+
+export const accountAliases = sqliteTable("account_aliases", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  alias: text("alias").notNull(),
+  normalizedAlias: text("normalized_alias").notNull(),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  uniqueIndex("idx_account_aliases_account_name").on(table.accountId, table.normalizedAlias),
+  index("idx_account_aliases_normalized").on(table.normalizedAlias)
+]);
 
 export const transactions = sqliteTable("transactions", {
   id: text("id").primaryKey(),
@@ -29,7 +54,10 @@ export const transactions = sqliteTable("transactions", {
   idempotencyKey: text("idempotency_key"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-  deletedAt: text("deleted_at")
+  deletedAt: text("deleted_at"),
+  accountId: text("account_id").references(() => accounts.id),
+  refundedAt: text("refunded_at"),
+  refundAccountId: text("refund_account_id").references(() => accounts.id)
 }, (table) => [
   uniqueIndex("idx_transactions_idempotency").on(table.idempotencyKey),
   index("idx_transactions_active_date").on(table.deletedAt, table.localDate),
@@ -121,7 +149,7 @@ export const openClawOperationItems = sqliteTable("openclaw_operation_items", {
   id: text("id").primaryKey(),
   operationId: text("operation_id").notNull().references(() => openClawOperations.id, { onDelete: "cascade" }),
   sequence: integer("sequence").notNull(),
-  entityType: text("entity_type", { enum: ["transaction", "category", "proposal", "setting", "borrower", "loan", "loan_repayment", "subscription", "subscription_payment", "budget"] }).notNull(),
+  entityType: text("entity_type", { enum: ["transaction", "category", "proposal", "setting", "borrower", "loan", "loan_repayment", "subscription", "subscription_payment", "budget", "account", "transfer", "account_adjustment"] }).notNull(),
   entityId: text("entity_id").notNull(),
   beforeJson: text("before_json"),
   afterJson: text("after_json")
@@ -150,6 +178,7 @@ export const loans = sqliteTable("loans", {
   note: text("note"),
   ledgerLinkMode: text("ledger_link_mode", { enum: ["none", "existing", "create"] }).notNull().default("none"),
   ledgerTransactionId: text("ledger_transaction_id").references(() => transactions.id),
+  accountId: text("account_id").references(() => accounts.id),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   deletedAt: text("deleted_at")
@@ -167,6 +196,7 @@ export const loanRepayments = sqliteTable("loan_repayments", {
   note: text("note"),
   ledgerLinkMode: text("ledger_link_mode", { enum: ["none", "existing", "create"] }).notNull().default("none"),
   ledgerTransactionId: text("ledger_transaction_id").references(() => transactions.id),
+  accountId: text("account_id").references(() => accounts.id),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   deletedAt: text("deleted_at")
@@ -210,6 +240,7 @@ export const subscriptionPayments = sqliteTable("subscription_payments", {
   nextBillingDateBefore: text("next_billing_date_before"),
   nextBillingDateAfter: text("next_billing_date_after"),
   createdAt: text("created_at").notNull(),
+  refundedAt: text("refunded_at"),
   updatedAt: text("updated_at").notNull(),
   deletedAt: text("deleted_at")
 }, (table) => [
@@ -249,4 +280,52 @@ export const healthAcknowledgements = sqliteTable("health_acknowledgements", {
   acknowledgedAt: text("acknowledged_at").notNull()
 }, (table) => [
   index("idx_health_acknowledgements_time").on(table.acknowledgedAt)
+]);
+export const accountMovements = sqliteTable("account_movements", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id),
+  deltaMinor: integer("delta_minor").notNull(),
+  sourceType: text("source_type", { enum: ["transaction", "loan", "loan_repayment", "transfer", "adjustment"] }).notNull(),
+  sourceId: text("source_id").notNull(),
+  localDate: text("local_date").notNull(),
+  requestId: text("request_id"),
+  operationId: text("operation_id"),
+  reversalOfId: text("reversal_of_id"),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  index("idx_account_movements_account_date").on(table.accountId, table.localDate, table.createdAt),
+  index("idx_account_movements_source").on(table.sourceType, table.sourceId)
+]);
+
+export const transfers = sqliteTable("transfers", {
+  id: text("id").primaryKey(),
+  fromAccountId: text("from_account_id").notNull().references(() => accounts.id),
+  toAccountId: text("to_account_id").notNull().references(() => accounts.id),
+  debitedMinor: integer("debited_minor").notNull(),
+  creditedMinor: integer("credited_minor").notNull(),
+  feeTransactionId: text("fee_transaction_id").references(() => transactions.id),
+  localDate: text("local_date").notNull(),
+  note: text("note"),
+  requestId: text("request_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at")
+}, (table) => [
+  uniqueIndex("idx_transfers_request_id").on(table.requestId),
+  index("idx_transfers_date").on(table.deletedAt, table.localDate)
+]);
+
+export const accountAdjustments = sqliteTable("account_adjustments", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id),
+  targetBalanceMinor: integer("target_balance_minor").notNull(),
+  deltaMinor: integer("delta_minor").notNull(),
+  localDate: text("local_date").notNull(),
+  note: text("note"),
+  requestId: text("request_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  uniqueIndex("idx_account_adjustments_request_id").on(table.requestId),
+  index("idx_account_adjustments_account_date").on(table.accountId, table.localDate)
 ]);

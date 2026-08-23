@@ -13,6 +13,7 @@ import { useLedgerClock } from "./ledger-clock";
 import { ToastContext } from "./toast-context";
 
 const BillsPage = lazy(() => import("./pages/BillsPage").then((module) => ({ default: module.BillsPage })));
+const FundsPage = lazy(() => import("./pages/FundsPage").then((module) => ({ default: module.FundsPage })));
 const AiPage = lazy(() => import("./pages/AiPage").then((module) => ({ default: module.AiPage })));
 const ProposalsPage = lazy(() => import("./pages/ProposalsPage").then((module) => ({ default: module.ProposalsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
@@ -69,6 +70,7 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<InsightsPage />} />
+            <Route path="funds" element={<FundsPage />} />
             <Route path="bills" element={<BillsPage />} />
             <Route path="analytics" element={<Navigate to="/" replace />} />
             <Route path="ai" element={<AiPage />} />
