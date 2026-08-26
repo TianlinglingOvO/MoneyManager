@@ -73,12 +73,12 @@ npm start
 # 浏览器访问 http://127.0.0.1:8788
 ```
 
-## 检查
+## 质量检查
 
-```powershell
-npm.cmd test
-npm.cmd run typecheck
-npm.cmd run build
+```bash
+npm test
+npm run typecheck
+npm run build
 ```
 
 正式更新前可额外创建一份经过完整性检查的快照：
@@ -88,9 +88,16 @@ npm.cmd run backup:snapshot -- manual-update
 npm.cmd run backup:verify-restore
 ```
 
-## 正式部署
+## 进阶功能与部署指南
 
-完整步骤见 [部署指南](docs/DEPLOYMENT.md)，账户与余额见 [资金追踪指南](docs/FUNDS.md)，借款与订阅见 [事项使用指南](docs/MATTERS.md)，备份解密与恢复见 [恢复指南](docs/RECOVERY.md)。正式启用前需要你亲自完成三件事：Cloudflare 账号授权、Google Drive 授权，以及在本机安全输入 DeepSeek API Key。
+如果你仅在个人电脑上单机记账，**无需配置任何外部服务，开箱即用**。
+
+若需要以下进阶能力，可参考对应指南按需配置：
+- **手机跨网远程记账**：通过 Cloudflare Tunnel 实现免公网 IP 穿透与 Access 身份验证，详见 [部署指南](docs/DEPLOYMENT.md)。
+- **AI 智能消费分析**：双击根目录 `配置DeepSeek密钥.cmd` 或在 `.env` 中填入 DeepSeek API Key 即可启用消费洞察与节省建议。
+- **异地加密自动云备份**：配置 Google Drive 与 `age` 加密密钥，实现每日自动快照上传，详见 [恢复指南](docs/RECOVERY.md)。
+- **资金与账户管理**：多账户资产流水、转账与余额校准，详见 [资金追踪指南](docs/FUNDS.md)。
+- **借款与订阅管理**：跟进外部欠款、分次归还与周期订阅扣费，详见 [事项使用指南](docs/MATTERS.md)。
 
 ## 目录
 
