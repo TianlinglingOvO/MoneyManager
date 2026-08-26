@@ -16,10 +16,14 @@ if not exist "node_modules\" (
 )
 
 if not exist ".env" (
-  echo Missing local production configuration: .env
-  echo Please ask Codex to restore the local configuration.
-  pause
-  exit /b 1
+  if exist ".env.example" (
+    echo Initializing local .env from .env.example...
+    copy ".env.example" ".env" >nul
+  ) else (
+    echo Missing configuration template: .env.example
+    pause
+    exit /b 1
+  )
 )
 
 if not exist "dist-server\index.js" goto :build
@@ -56,6 +60,6 @@ start "" "%SMB_URL%"
 exit /b 0
 
 :failed
-echo SMB startup failed. Keep this window open and send the error text to Codex.
+echo SMB startup failed. Please check the error messages above.
 pause
 exit /b 1

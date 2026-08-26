@@ -109,7 +109,7 @@ MONEY_CF_ACCESS_CLIENT_SECRET=Cloudflare Service Token Client Secret
 然后在 WSL 中执行：
 
 ```bash
-openclaw mcp set money-manager "$(cat /mnt/d/Application/MoneyManager/deploy/openclaw-money-manager.json)"
+openclaw mcp set money-manager "$(cat ./deploy/openclaw-money-manager.json)"
 openclaw mcp doctor money-manager --probe
 openclaw mcp reload
 ```

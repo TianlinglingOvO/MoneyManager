@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-windows_env="/mnt/d/Application/MoneyManager/.env"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd "$script_dir/.." && pwd)"
+windows_env="${SMB_ENV_PATH:-$project_dir/.env}"
 openclaw_dir="$HOME/.openclaw"
 openclaw_env="$openclaw_dir/.env"
 
