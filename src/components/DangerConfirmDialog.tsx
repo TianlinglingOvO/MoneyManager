@@ -30,16 +30,43 @@ export function DangerConfirmDialog({
   const previousFocus = useRef<HTMLElement | null>(null);
   const closeRef = useRef(onClose);
   const pendingRef = useRef(isPending);
+  const historyEntryActive = useRef(false);
   const confirmed = confirmText === undefined || typed === confirmText;
   closeRef.current = onClose;
   pendingRef.current = isPending;
+
+  const requestClose = (historyAlreadyPopped = false) => {
+    if (pendingRef.current) {
+      if (historyAlreadyPopped && !historyEntryActive.current) {
+        window.history.pushState({ ...window.history.state, moneyManagerDangerDialog: true }, "");
+        historyEntryActive.current = true;
+      }
+      return;
+    }
+    if (historyEntryActive.current && !historyAlreadyPopped) {
+      historyEntryActive.current = false;
+      window.history.back();
+    }
+    closeRef.current();
+  };
 
   useEffect(() => {
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.classList.add("modal-open");
     cancelButton.current?.focus();
+    const isMobile = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches;
+    const onPopState = () => {
+      if (!historyEntryActive.current) return;
+      historyEntryActive.current = false;
+      requestClose(true);
+    };
+    if (isMobile) {
+      window.history.pushState({ ...window.history.state, moneyManagerDangerDialog: true }, "");
+      historyEntryActive.current = true;
+      window.addEventListener("popstate", onPopState);
+    }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingRef.current) closeRef.current();
+      if (event.key === "Escape") requestClose();
       if (event.key !== "Tab" || !dialog.current) return;
       const focusable = Array.from(dialog.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]"));
       if (focusable.length === 0) return;
@@ -57,17 +84,22 @@ export function DangerConfirmDialog({
     return () => {
       document.body.classList.remove("modal-open");
       document.removeEventListener("keydown", onKeyDown);
+      if (isMobile) window.removeEventListener("popstate", onPopState);
+      if (historyEntryActive.current) {
+        historyEntryActive.current = false;
+        window.history.back();
+      }
       const target = previousFocus.current;
       if (target?.isConnected) window.requestAnimationFrame(() => target.focus());
     };
   }, []);
 
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !isPending) onClose(); }}>
+    <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose(); }}>
       <section ref={dialog} className="small-dialog danger-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="danger-confirm-title" aria-describedby="danger-confirm-description">
         <header>
           <div className="danger-confirm-dialog__heading"><span><AlertTriangle size={20} /></span><h2 id="danger-confirm-title">{title}</h2></div>
-          <button className="icon-button" type="button" onClick={onClose} disabled={isPending} aria-label="关闭"><X size={20} /></button>
+          <button className="icon-button" type="button" onClick={() => requestClose()} disabled={isPending} aria-label="关闭"><X size={20} /></button>
         </header>
         <p id="danger-confirm-description" className="danger-confirm-dialog__copy">{description}</p>
         {details && <div className="danger-confirm-dialog__details">{details}</div>}
@@ -77,9 +109,9 @@ export function DangerConfirmDialog({
             <input value={typed} onChange={(event) => setTyped(event.target.value)} autoComplete="off" />
           </label>
         )}
-        {error && <p className="form-error">{error}</p>}
-        <div className="danger-confirm-dialog__actions">
-          <button ref={cancelButton} className="secondary-button" type="button" onClick={onClose} disabled={isPending}>取消</button>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="danger-confirm-dialog__actions confirm-action-group">
+          <button ref={cancelButton} className="secondary-button" type="button" onClick={() => requestClose()} disabled={isPending}>取消</button>
           <button className="danger-button" type="button" onClick={onConfirm} disabled={!confirmed || isPending}>
             {isPending && <LoaderCircle className="spin" size={17} />}{confirmLabel}
           </button>

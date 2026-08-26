@@ -4,6 +4,7 @@ export type ProposalAction = "create" | "update" | "delete";
 export type ProposalStatus = "pending" | "approved" | "rejected" | "expired";
 export type OpenClawMode = "confirm" | "direct";
 export type OpenClawOperationStatus = "running" | "applied" | "undone" | "failed";
+export type AccountCurrency = "CNY" | "USD" | "USDT";
 export type MatterCurrency = "CNY" | "USD";
 export type MatterStatus = "active" | "paused" | "cancelled";
 export type SubscriptionCycle = "month" | "year" | "custom";
@@ -44,11 +45,13 @@ export interface Transaction {
   id: string;
   kind: TransactionKind;
   amountMinor: number;
+  accountAmountMinor: number | null;
   currency: "CNY";
   categoryId: string;
   category?: Pick<Category, "id" | "name" | "icon" | "color">;
   accountId: string | null;
-  account?: Pick<Account, "id" | "name" | "icon"> | null;
+  account?: Pick<Account, "id" | "name" | "icon" | "currency"> | null;
+  fundsBaseline: boolean;
   refundedAt: string | null;
   refundAccountId: string | null;
   localDate: string;
@@ -63,11 +66,13 @@ export interface Account {
   id: string;
   name: string;
   icon: string;
+  currency: AccountCurrency;
   aliases: string[];
   openingBalanceMinor: number;
   balanceMinor: number;
   openedOn: string;
   isArchived: boolean;
+  isUnused: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +81,7 @@ export interface AccountMovement {
   id: string;
   accountId: string;
   accountName?: string;
+  currency: AccountCurrency;
   deltaMinor: number;
   sourceType: "transaction" | "loan" | "loan_repayment" | "transfer" | "adjustment";
   sourceId: string;
@@ -97,6 +103,7 @@ export interface FundsSummary {
   enabled: boolean;
   startedOn: string | null;
   totalMinor: number;
+  currencyTotals: Record<AccountCurrency, number>;
   accountCount: number;
   defaultExpenseAccountId: string | null;
   defaultIncomeAccountId: string | null;
@@ -108,6 +115,7 @@ export interface Transfer {
   id: string;
   fromAccountId: string;
   toAccountId: string;
+  currency: AccountCurrency;
   debitedMinor: number;
   creditedMinor: number;
   feeMinor: number;
@@ -122,13 +130,25 @@ export interface Transfer {
 export interface AccountAdjustment {
   id: string;
   accountId: string;
+  accountName: string;
+  currency: AccountCurrency;
   targetBalanceMinor: number;
   deltaMinor: number;
   localDate: string;
+  balanceBeforeMinor: number;
   note: string | null;
   createdAt: string;
+  canUndo: boolean;
   updatedAt: string;
 }
+
+export interface AccountAdjustmentList {
+  items: AccountAdjustment[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface TransactionList {
   items: Transaction[];
   total: number;
@@ -402,6 +422,7 @@ export interface LedgerLink {
   mode: LedgerLinkMode;
   transactionId: string | null;
   amountMinor: number | null;
+  accountAmountMinor: number | null;
   currency: MatterCurrency;
 }
 

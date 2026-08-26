@@ -6,6 +6,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ReportGrain, TransactionKind } from "@shared/types";
 import { api } from "../api";
 import { buildCategoryComposition, categoryCompositionPercent } from "../category-composition";
+import { formatAccountBalance } from "../components/AccountPicker";
 import { RecentRecordedList } from "../components/RecentRecordedList";
 import { MoneyValue } from "../components/MoneyValue";
 import { SegmentedControl } from "../components/SegmentedControl";
@@ -169,6 +170,11 @@ export function InsightsPage() {
   const activeHealthIssues = healthQuery.data?.issues.filter((issue) => !issue.acknowledged) ?? [];
   const criticalHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "critical").length;
   const warningHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "warning").length;
+  const otherFunds = fundsSummaryQuery.data ? (["USD", "USDT"] as const)
+    .filter((currency) => fundsSummaryQuery.data.currencyTotals[currency] !== 0)
+    .map((currency) => formatAccountBalance(fundsSummaryQuery.data!.currencyTotals[currency], currency)) : [];
+  const fundsCardDetail = otherFunds.length > 0 ? `另有 ${otherFunds.join(" · ")}`
+    : `${fundsSummaryQuery.data?.accountCount ?? 0} 个可用账户 · 查看资金`;
 
   return (
     <div className={`page insights-page ${reportQuery.isFetching && report ? "is-refreshing" : ""}`}>
@@ -233,25 +239,22 @@ export function InsightsPage() {
             </button>
           </section>}
 
-          {(loanSummaryQuery.data || subscriptionSummaryQuery.data) && <section className="insight-matters-strip" aria-label="财务事项摘要">
-          {fundsSummaryQuery.data && <section className="insight-funds-strip" aria-label="资金摘要">
-            <Link to="/funds" className="insight-matter-card insight-matter-card--funds">
+          {(fundsSummaryQuery.data || loanSummaryQuery.data || subscriptionSummaryQuery.data) && <section className="insight-finance-grid" aria-label="财务事项摘要">
+            {fundsSummaryQuery.data && <Link to="/funds" className="insight-matter-card insight-matter-card--funds">
               <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
-              <span><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><em>{fundsSummaryQuery.data.enabled ? `${fundsSummaryQuery.data.accountCount} 个可用账户 · 查看资金` : "填写现实余额后开始追踪"}</em></span>
+              <span><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><em>{fundsSummaryQuery.data.enabled ? fundsCardDetail : "填写现实余额后开始追踪"}</em></span>
               <ChevronRight size={17} />
-            </Link>
-          </section>}
-
-            <Link to="/matters?tab=loans" className="insight-matter-card insight-matter-card--loan">
+            </Link>}
+            {loanSummaryQuery.data && <Link to="/matters?tab=loans" className="insight-matter-card insight-matter-card--loan">
               <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
-              <span><small>待收款</small><strong>{money(loanSummaryQuery.data?.outstandingMinor ?? 0)}</strong><em>{loanSummaryQuery.data?.borrowerCount ?? 0} 位借款人 · 查看借款</em></span>
+              <span><small>待收款</small><strong>{money(loanSummaryQuery.data.outstandingMinor)}</strong><em>{loanSummaryQuery.data.borrowerCount} 位借款人 · 查看借款</em></span>
               <ChevronRight size={17} />
-            </Link>
-            <Link to="/matters?tab=subscriptions" className="insight-matter-card insight-matter-card--subscription">
+            </Link>}
+            {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insight-matter-card insight-matter-card--subscription">
               <span className="insight-matter-card__icon"><Clock3 size={18} /></span>
-              <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data?.attentionCount ?? 0} 项</strong><em>{subscriptionSummaryQuery.data?.upcoming.length ?? 0} 项近期需要确认 · 查看订阅</em></span>
+              <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><em>{subscriptionSummaryQuery.data.upcoming.length} 项近期需要确认 · 查看订阅</em></span>
               <ChevronRight size={17} />
-            </Link>
+            </Link>}
           </section>}
 
           <section className="content-card chart-card insights-trend-card">

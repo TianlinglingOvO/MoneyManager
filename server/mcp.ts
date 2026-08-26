@@ -40,6 +40,32 @@ export function amountToMinor(amount: number): number {
   return minor;
 }
 
+function resolveTransactionAccount(funds: FundsService | undefined, value?: string | null): string | null | undefined {
+  if (value === undefined || value === null || value.trim() === "") return value ?? undefined;
+  if (!funds) throw new Error("资金服务尚未启用");
+  return z.string().uuid().safeParse(value).success ? value : funds.resolveAccountId(value);
+}
+
+function normalizeAccountAmount(
+  funds: FundsService | undefined,
+  accountId: string | null | undefined,
+  accountAmount: number | undefined,
+  accountWasExplicit: boolean
+): number | null | undefined {
+  if (!accountId) {
+    if (accountAmount !== undefined) throw new Error("填写 accountAmount 时必须同时明确资金账户");
+    return undefined;
+  }
+  if (!funds) throw new Error("资金服务尚未启用");
+  const account = funds.getAccount(accountId, false);
+  if (account.currency === "CNY") return accountWasExplicit ? null : undefined;
+  if (accountAmount === undefined) {
+    if (accountWasExplicit) throw new Error(`外币账户 ${account.name} 必须提供 accountAmount；若只有外币金额，必须向用户询问人民币等值，不得查询或猜测汇率`);
+    return undefined;
+  }
+  return amountToMinor(accountAmount);
+}
+
 export function createLedgerMcpServer(
   repository: LedgerRepository,
   config: AppConfig,
@@ -142,11 +168,13 @@ export function createLedgerMcpServer(
   }
 
   server.registerTool("propose_add_transaction", {
-    description: "仅当用户明确要求‘先让我确认’时提出一笔新账；必须使用唯一 requestId，重复调用会安全返回原提案。此工具只会进入待确认列表。",
+    description: "仅当用户明确要求‘先让我确认’时提出一笔新账。amount 始终是人民币账本金额；选择 USD/USDT 账户时必须另传 accountAmount。只有外币金额时必须先询问人民币等值，不得查询或猜测汇率。",
     inputSchema: {
       requestId: requestIdSchema,
       kind: z.enum(["expense", "income"]),
       amount: z.number().positive().max(1_000_000_000).describe("人民币元，最多两位小数"),
+      account: z.string().trim().min(1).max(80).optional().describe("资金账户 ID、名称或别名"),
+      accountAmount: z.number().positive().max(1_000_000_000).optional().describe("所选外币账户的实际扣款或到账金额，最多两位小数"),
       categoryId: z.string().uuid(),
       localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(240).optional(),
@@ -154,6 +182,8 @@ export function createLedgerMcpServer(
     }
   }, async ({ requestId, ...input }) => {
     const localDate = input.localDate ?? currentLocalDate(config.timezone);
+    const accountId = resolveTransactionAccount(services?.funds, input.account);
+    const accountAmountMinor = normalizeAccountAmount(services?.funds, accountId, input.accountAmount, input.account !== undefined);
     const proposal = repository.createProposal({
       action: "create",
       payload: {
@@ -161,7 +191,9 @@ export function createLedgerMcpServer(
         amountMinor: amountToMinor(input.amount),
         categoryId: input.categoryId,
         localDate,
-        note: input.note ?? null
+        note: input.note ?? null,
+        accountId,
+        accountAmountMinor
       },
       reason: input.reason ?? null
     }, "openclaw", {
@@ -172,21 +204,29 @@ export function createLedgerMcpServer(
   });
 
   server.registerTool("propose_update_transaction", {
-    description: "仅当用户明确要求‘先让我确认’时提出修改请求；direct 模式请优先使用 direct_update_transaction。此工具只会进入待确认列表。",
+    description: "仅当用户明确要求‘先让我确认’时提出修改请求。amount 始终是人民币账本金额；显式选择 USD/USDT 账户时必须另传 accountAmount，不得猜测汇率。",
     inputSchema: {
       requestId: requestIdSchema,
       transactionId: z.string().uuid(),
       kind: z.enum(["expense", "income"]).optional(),
       amount: z.number().positive().max(1_000_000_000).optional(),
+      account: z.string().trim().min(1).max(80).optional(),
+      accountAmount: z.number().positive().max(1_000_000_000).optional(),
       categoryId: z.string().uuid().optional(),
       localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(240).nullable().optional(),
       reason: z.string().max(240).optional()
     }
-  }, async ({ requestId, transactionId, amount, reason, ...changes }) => {
-    const request = { transactionId, amount, reason, ...changes };
+  }, async ({ requestId, transactionId, amount, account, accountAmount, reason, ...changes }) => {
+    const request = { transactionId, amount, account, accountAmount, reason, ...changes };
     const payload: Record<string, unknown> = { ...changes };
     if (amount !== undefined) payload.amountMinor = amountToMinor(amount);
+    if (account !== undefined) payload.accountId = resolveTransactionAccount(services?.funds, account);
+    if (account !== undefined || accountAmount !== undefined) {
+      const current = repository.getTransaction(transactionId, false);
+      const accountId = account === undefined ? current.accountId : payload.accountId as string | null | undefined;
+      payload.accountAmountMinor = normalizeAccountAmount(services?.funds, accountId, accountAmount, account !== undefined);
+    }
     const proposal = repository.createProposal({
       action: "update",
       targetTransactionId: transactionId,
@@ -226,14 +266,30 @@ export function createLedgerMcpServer(
       expectedRevision: z.number().int().positive().describe("先通过 list_pending_proposals 读取到的当前版本号"),
       kind: z.enum(["expense", "income"]).optional(),
       amount: z.number().positive().max(1_000_000_000).optional().describe("人民币元，最多两位小数"),
+      account: z.string().trim().min(1).max(80).optional(),
+      accountAmount: z.number().positive().max(1_000_000_000).optional(),
       categoryId: z.string().uuid().optional(),
       localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(240).nullable().optional()
     }
-  }, async ({ proposalId, expectedRevision, amount, ...fields }) => {
+  }, async ({ proposalId, expectedRevision, amount, account, accountAmount, ...fields }) => {
     const changes: Record<string, unknown> = {};
     if (fields.kind !== undefined) changes.kind = fields.kind;
     if (amount !== undefined) changes.amountMinor = amountToMinor(amount);
+    if (account !== undefined) changes.accountId = resolveTransactionAccount(services?.funds, account);
+    if (account !== undefined || accountAmount !== undefined) {
+      const currentProposal = repository.getProposal(proposalId);
+      let accountId = account === undefined ? currentProposal.payload.accountId as string | null | undefined : changes.accountId as string | null | undefined;
+      if (account === undefined && accountId === undefined && currentProposal.targetTransactionId) {
+        accountId = repository.getTransaction(currentProposal.targetTransactionId, false).accountId;
+      }
+      changes.accountAmountMinor = normalizeAccountAmount(
+        services?.funds,
+        accountId,
+        accountAmount,
+        account !== undefined
+      );
+    }
     if (fields.categoryId !== undefined) changes.categoryId = fields.categoryId;
     if (fields.localDate !== undefined) changes.localDate = fields.localDate;
     if (fields.note !== undefined) changes.note = fields.note;
@@ -291,7 +347,7 @@ function registerDirectTools(
     );
 
     server.registerTool("list_accounts", {
-      description: "列出 SMB 的人民币资金账户、余额和版本。账户名称或别名存在歧义时，后续写入必须使用账户 ID。",
+      description: "列出 SMB 各币种资金账户、余额和版本。账户名称或别名存在歧义时，后续写入必须使用账户 ID。",
       inputSchema: { includeArchived: z.boolean().optional().default(false) }
     }, async ({ includeArchived }) => {
       const result = funds.listAccounts(includeArchived);
@@ -309,24 +365,26 @@ function registerDirectTools(
     });
 
     server.registerTool("direct_create_account", {
-      description: "direct 模式下新建人民币资金账户。名称与别名必须明确且不能与有效账户冲突。",
+      description: "direct 模式下新建 CNY、USD 或 USDT 资金账户。名称与别名必须明确且不能与有效账户冲突。",
       inputSchema: {
         requestId,
         name: z.string().trim().min(1).max(40),
         icon: z.string().trim().min(1).max(8),
+        currency: z.enum(["CNY", "USD", "USDT"]).optional().default("CNY"),
         openingBalance: z.number().min(-1_000_000_000).max(1_000_000_000).default(0),
         aliases: z.array(z.string().trim().min(1).max(40)).max(20).optional().default([])
       }
-    }, async ({ requestId: idempotency, name, icon, openingBalance, aliases }) => textResult(openclaw.execute({
+    }, async ({ requestId: idempotency, name, icon, currency, openingBalance, aliases }) => textResult(openclaw.execute({
       requestId: idempotency,
       action: "account.create",
       entityType: "account",
       summary: "OpenClaw 新建资金账户",
-      request: { name, icon, openingBalance, aliases },
+      request: { name, icon, currency, openingBalance, aliases },
       run: () => {
         const account = funds.createAccount({
           name,
           icon,
+          currency,
           openingBalanceMinor: amountToMinor(openingBalance),
           aliases
         });
@@ -346,6 +404,7 @@ function registerDirectTools(
         expectedUpdatedAt: z.string().datetime(),
         name: z.string().trim().min(1).max(40).optional(),
         icon: z.string().trim().min(1).max(8).optional(),
+        currency: z.enum(["CNY", "USD", "USDT"]).optional(),
         aliases: z.array(z.string().trim().min(1).max(40)).max(20).optional()
       }
     }, async ({ requestId: idempotency, account: reference, expectedUpdatedAt, ...changes }) => textResult(openclaw.execute({
@@ -580,11 +639,12 @@ function registerDirectTools(
   }
 
   server.registerTool("direct_add_transaction", {
-    description: "在 direct 模式下立即新增账目，不进入待确认。必须使用唯一 requestId，重复调用安全返回原结果。",
+    description: "在 direct 模式下立即新增账目。amount 始终是人民币账本金额；选择 USD/USDT 账户时必须另传 accountAmount。只有外币金额时必须询问人民币等值，不得查询或猜测汇率。",
     inputSchema: {
       requestId,
       kind: z.enum(["expense", "income"]),
       amount: z.number().positive().max(1_000_000_000),
+      accountAmount: z.number().positive().max(1_000_000_000).optional().describe("所选外币账户实际扣款或到账金额"),
       categoryId: z.string().uuid(),
       localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(240).optional(),
@@ -598,7 +658,8 @@ function registerDirectTools(
         const transaction = repository.createTransaction({
           kind: input.kind, amountMinor: amountToMinor(input.amount), categoryId: input.categoryId,
           localDate: request.localDate, note: input.note ?? null,
-          accountId: resolveRequestedAccount(input.account)
+          accountId: resolveRequestedAccount(input.account),
+          accountAmountMinor: input.accountAmount === undefined ? undefined : amountToMinor(input.accountAmount)
         }, { source: "openclaw", actor: "openclaw", idempotencyKey: `openclaw:${input.requestId}` });
         return { result: transaction, entityId: transaction.id, snapshots: [{ entityType: "transaction" as const, entityId: transaction.id, before: null, after: openclaw.transactionSnapshot(transaction) }] };
       }
@@ -607,12 +668,13 @@ function registerDirectTools(
   });
 
   server.registerTool("direct_add_transactions_batch", {
-    description: "direct 模式下一次原子新增 1–20 笔账目。每笔金额、日期和分类都必须明确；不能确定时必须先在聊天中询问，不能猜测。整批共用一个 requestId，任意一笔失败则全部不写入，并可作为一项操作整体撤销。",
+    description: "direct 模式下一次原子新增 1–20 笔账目。每笔 amount 都是明确的人民币账本金额；USD/USDT 账户还必须明确 accountAmount。缺少人民币等值时必须询问用户，不得查询或猜测汇率。",
     inputSchema: {
       requestId,
       transactions: z.array(z.object({
         kind: z.enum(["expense", "income"]),
         amount: z.number().positive().max(1_000_000_000),
+        accountAmount: z.number().positive().max(1_000_000_000).optional(),
         categoryId: z.string().uuid(),
         localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         note: z.string().max(240).nullable().optional(),
@@ -633,7 +695,8 @@ function registerDirectTools(
           categoryId: item.categoryId,
           localDate: item.localDate,
           note: item.note ?? null,
-          accountId: resolveRequestedAccount(item.account)
+          accountId: resolveRequestedAccount(item.account),
+          accountAmountMinor: item.accountAmount === undefined ? undefined : amountToMinor(item.accountAmount)
         }, {
           source: "openclaw",
           actor: "openclaw",
@@ -659,17 +722,19 @@ function registerDirectTools(
     inputSchema: {
       requestId, transactionId: z.string().uuid(), expectedUpdatedAt: z.string().min(1),
       kind: z.enum(["expense", "income"]).optional(), amount: z.number().positive().max(1_000_000_000).optional(),
+      accountAmount: z.number().positive().max(1_000_000_000).optional(),
       categoryId: z.string().uuid().optional(), localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       note: z.string().max(240).nullable().optional(),
       account: z.string().trim().min(1).max(80).optional()
     }
-  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, amount, ...fields }) => {
+  }, async ({ requestId: idempotency, transactionId, expectedUpdatedAt, amount, accountAmount, ...fields }) => {
     const changes: Record<string, unknown> = { ...fields };
     if (fields.account !== undefined) {
       changes.accountId = resolveRequestedAccount(fields.account);
       delete changes.account;
     }
     if (amount !== undefined) changes.amountMinor = amountToMinor(amount);
+    if (accountAmount !== undefined) changes.accountAmountMinor = amountToMinor(accountAmount);
     const output = openclaw.execute({
       requestId: idempotency, action: "transaction.update", entityType: "transaction", summary: "OpenClaw 修改账目",
       request: { transactionId, expectedUpdatedAt, ...changes },

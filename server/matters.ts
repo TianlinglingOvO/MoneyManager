@@ -162,8 +162,8 @@ function addBillingPeriod(date: string, cycle: "month" | "year" | "custom", cust
   return `${targetYear.toString().padStart(4, "0")}-${(targetMonthIndex + 1).toString().padStart(2, "0")}-${targetDay.toString().padStart(2, "0")}`;
 }
 
-function mapLink(mode: "none" | "existing" | "create", transactionId: string | null, amountMinor: number | null, currency: MatterCurrency): LedgerLink {
-  return { mode, transactionId, amountMinor: amountMinor == null ? null : Number(amountMinor), currency };
+function mapLink(mode: "none" | "existing" | "create", transactionId: string | null, amountMinor: number | null, currency: MatterCurrency, accountAmountMinor: number | null = null): LedgerLink {
+  return { mode, transactionId, amountMinor: amountMinor == null ? null : Number(amountMinor), accountAmountMinor, currency };
 }
 
 export class MattersRepository {
@@ -232,6 +232,12 @@ export class MattersRepository {
       return { mode: "existing", transactionId: input.transactionId!, amountMinor: transaction.amountMinor };
     }
     const ledgerAmount = currency === "CNY" ? amountMinor : input.ledgerAmountMinor;
+    let accountAmountMinor = input.accountAmountMinor;
+    if (input.accountId && this.funds) {
+      const account = this.funds.getAccount(input.accountId, false);
+      if (account.currency === "CNY") accountAmountMinor = undefined;
+      else if (account.currency === "USD" && currency === "USD" && accountAmountMinor === undefined) accountAmountMinor = amountMinor;
+    }
     if (!ledgerAmount) throw new ConflictError("美元事项创建账目时必须填写实际人民币金额");
     const transaction = this.ledger.createTransaction({
       kind: expectedKind,
@@ -239,7 +245,8 @@ export class MattersRepository {
       categoryId: input.categoryId!,
       localDate,
       note: null,
-      accountId: input.accountId
+      accountId: input.accountId,
+      accountAmountMinor
     }, { source: "user", actor: "user", idempotencyKey: `matter-ledger:${randomUUID()}` });
     return { mode: "create", transactionId: transaction.id, amountMinor: transaction.amountMinor };
   }
@@ -682,7 +689,8 @@ export class MattersRepository {
     });
   }
   private paymentFromRow(row: PaymentRow): SubscriptionPayment {
-    const actualCnyAmountMinor = row.ledger_link_mode === "create" ? this.linkedTransactionAmount(row.ledger_transaction_id) : null;
+    const linked = row.ledger_link_mode === "create" ? this.linkedTransactionDetails(row.ledger_transaction_id) : null;
+    const actualCnyAmountMinor = linked?.amountMinor ?? null;
     return {
       id: row.id,
       subscriptionId: row.subscription_id,
@@ -692,7 +700,7 @@ export class MattersRepository {
       paidDate: row.local_date,
       note: row.note,
       paymentType: row.payment_type,
-      ledgerLink: mapLink(row.ledger_link_mode, row.ledger_transaction_id, null, "CNY"),
+      ledgerLink: mapLink(row.ledger_link_mode, row.ledger_transaction_id, actualCnyAmountMinor, "CNY", linked?.accountAmountMinor ?? null),
       actualCnyAmountMinor,
       nextBillingDateBefore: row.next_billing_date_before,
       nextBillingDateAfter: row.next_billing_date_after,
@@ -703,10 +711,13 @@ export class MattersRepository {
     };
   }
 
-  private linkedTransactionAmount(transactionId: string | null): number | null {
+  private linkedTransactionDetails(transactionId: string | null): { amountMinor: number; accountAmountMinor: number | null } | null {
     if (!transactionId) return null;
-    const row = this.database.prepare("SELECT amount_minor FROM transactions WHERE id = ?").get(transactionId) as { amount_minor: number } | undefined;
-    return row ? Number(row.amount_minor) : null;
+    const row = this.database.prepare("SELECT amount_minor, account_amount_minor FROM transactions WHERE id = ?").get(transactionId) as {
+      amount_minor: number;
+      account_amount_minor: number | null;
+    } | undefined;
+    return row ? { amountMinor: Number(row.amount_minor), accountAmountMinor: row.account_amount_minor == null ? null : Number(row.account_amount_minor) } : null;
   }
 
   private subscriptionState(row: SubscriptionRow, today = todayInTimezone(this.timezone)): Subscription["renewalState"] {

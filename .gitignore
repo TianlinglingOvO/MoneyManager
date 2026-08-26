@@ -11,3 +11,7 @@ test-results/
 *.log
 .DS_Store
 Thumbs.db
+# 本地临时工作与优化笔记文件
+优化建议*
+*.assets/
+*.tmp

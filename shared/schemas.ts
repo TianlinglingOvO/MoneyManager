@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const transactionKindSchema = z.enum(["expense", "income"]);
+export const accountCurrencySchema = z.enum(["CNY", "USD", "USDT"]);
 export const reportGrainSchema = z.enum(["day", "week", "month", "year"]);
 export const appearancePresetSchema = z.enum(["warm-paper", "porcelain", "sage-ledger", "ink-night"]);
 export const appearanceDensitySchema = z.enum(["comfortable", "compact"]);
@@ -20,7 +21,8 @@ export const transactionInputSchema = z.object({
   categoryId: z.string().uuid(),
   localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   note: z.string().trim().max(240).optional().nullable(),
-  accountId: z.string().uuid().optional().nullable()
+  accountId: z.string().uuid().optional().nullable(),
+  accountAmountMinor: z.number().int().positive().max(100_000_000_000).optional().nullable()
 });
 
 export const transactionPatchSchema = transactionInputSchema.partial().refine(
@@ -146,6 +148,7 @@ export const accountIconSchema = z.string().trim().min(1).max(8);
 export const accountInputSchema = z.object({
   name: accountNameSchema,
   icon: accountIconSchema,
+  currency: accountCurrencySchema.default("CNY"),
   openingBalanceMinor: z.number().int().min(-100_000_000_000).max(100_000_000_000),
   aliases: z.array(accountNameSchema).max(20).optional().default([])
 }).strict();
@@ -164,12 +167,27 @@ export const accountCreateSchema = accountInputSchema.extend({
 export const accountPatchSchema = z.object({
   name: accountNameSchema.optional(),
   icon: accountIconSchema.optional(),
+  currency: accountCurrencySchema.optional(),
   aliases: z.array(accountNameSchema).max(20).optional(),
+  balanceChange: z.object({
+    targetBalanceMinor: z.number().int().min(-100_000_000_000).max(100_000_000_000),
+    localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    note: z.string().trim().max(240).optional().nullable(),
+    requestId: requestIdSchema
+  }).strict().optional(),
   expectedUpdatedAt: z.string().datetime()
 }).strict().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "至少需要修改一个字段");
 
 export const accountVersionSchema = z.object({
   expectedUpdatedAt: z.string().datetime()
+}).strict();
+
+export const fundsAssignTransactionsSchema = z.object({
+  accountId: z.string().uuid(),
+  transactions: z.array(z.object({
+    id: z.string().uuid(),
+    expectedUpdatedAt: z.string().datetime()
+  }).strict()).min(1).max(100)
 }).strict();
 
 export const accountMovementQuerySchema = z.object({
@@ -178,6 +196,17 @@ export const accountMovementQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50)
 });
+
+export const accountAdjustmentQuerySchema = z.object({
+  accountId: z.string().uuid().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const accountAdjustmentUndoSchema = z.object({
+  expectedUpdatedAt: z.string().datetime(),
+  requestId: requestIdSchema
+}).strict();
 
 export const transferInputSchema = z.object({
   fromAccountId: z.string().uuid(),
@@ -286,7 +315,8 @@ const ledgerLinkInputBase = z.object({
   transactionId: z.string().uuid().optional(),
   categoryId: z.string().uuid().optional(),
   ledgerAmountMinor: z.number().int().positive().max(100_000_000_000).optional(),
-  accountId: z.string().uuid().optional()
+  accountId: z.string().uuid().optional(),
+  accountAmountMinor: z.number().int().positive().max(100_000_000_000).optional()
 }).strict();
 
 export const ledgerLinkInputSchema = ledgerLinkInputBase.superRefine((value, context) => {
@@ -296,7 +326,7 @@ export const ledgerLinkInputSchema = ledgerLinkInputBase.superRefine((value, con
   if (value.mode === "create" && !value.categoryId) {
     context.addIssue({ code: "custom", path: ["categoryId"], message: "创建账目时必须选择分类" });
   }
-  if (value.mode !== "create" && (value.categoryId !== undefined || value.ledgerAmountMinor !== undefined || value.accountId !== undefined)) {
+  if (value.mode !== "create" && (value.categoryId !== undefined || value.ledgerAmountMinor !== undefined || value.accountId !== undefined || value.accountAmountMinor !== undefined)) {
     context.addIssue({ code: "custom", path: ["mode"], message: "只有同时创建账目时才能填写分类和实际金额" });
   }
 });

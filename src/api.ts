@@ -1,6 +1,7 @@
 import type {
   Account,
   AccountAdjustment,
+  AccountAdjustmentList,
   AccountMovementList,
   FundsSummary,
   Transfer,
@@ -90,6 +91,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (isAccessRedirect(response)) {
     throw connectionError("AUTH_EXPIRED", "Cloudflare 登录状态已过期", 401);
+  }
+
+  const contentLength = response.headers.get("content-length");
+  const isEmptySuccess = response.ok && (response.status === 204 || response.status === 205 || contentLength === "0");
+  if (isEmptySuccess) {
+    clearConnectionIssue();
+    return undefined as T;
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -295,6 +303,8 @@ export const api = {
   fundsSummary: () => request<FundsSummary>("/api/v1/funds/summary"),
   activateFunds: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<FundsSummary>("/api/v1/funds/activate", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
+  assignTransactionsAccount: (input: { accountId: string; transactions: Array<{ id: string; expectedUpdatedAt: string }> }) =>
+    request<{ transactions: Transaction[] }>("/api/v1/funds/transactions/assign-account", { method: "POST", body: JSON.stringify(input) }),
   accounts: (includeArchived = false) => request<Account[]>(`/api/v1/accounts${queryString({ includeArchived })}`),
   createAccount: (input: Record<string, unknown>) =>
     request<Account>("/api/v1/accounts", { method: "POST", body: JSON.stringify(input) }),
@@ -319,6 +329,10 @@ export const api = {
     request<Transfer>(`/api/v1/transfers/${id}/restore`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt, requestId }) }),
   adjustAccount: (input: Record<string, unknown>) =>
     request<AccountAdjustment>("/api/v1/funds/adjustments", { method: "POST", body: JSON.stringify(input) }),
+  accountAdjustments: (filters: { accountId?: string; page?: number; pageSize?: number } = {}) =>
+    request<AccountAdjustmentList>("/api/v1/funds/adjustments" + queryString(filters)),
+  undoAccountAdjustment: (id: string, input: { expectedUpdatedAt: string; requestId: string }) =>
+    request<Account>("/api/v1/funds/adjustments/" + id + "/undo", { method: "POST", body: JSON.stringify(input) }),
   refundTransaction: (id: string, expectedUpdatedAt: string, accountId?: string | null, requestId = crypto.randomUUID()) =>
     request<Transaction>(`/api/v1/transactions/${id}/refund`, {
       method: "POST", body: JSON.stringify({ expectedUpdatedAt, accountId, requestId })

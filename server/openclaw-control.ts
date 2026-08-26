@@ -114,6 +114,7 @@ function transactionSnapshot(transaction: Transaction): Record<string, unknown> 
     id: transaction.id,
     kind: transaction.kind,
     amountMinor: transaction.amountMinor,
+    accountAmountMinor: transaction.accountAmountMinor,
     currency: transaction.currency,
     categoryId: transaction.categoryId,
     localDate: transaction.localDate,
@@ -218,6 +219,7 @@ function paymentSnapshot(payment: SubscriptionPayment): Record<string, unknown> 
 function accountSnapshot(account: Account): Record<string, unknown> {
   return {
     id: account.id, name: account.name, icon: account.icon, aliases: account.aliases,
+    currency: account.currency,
     openingBalanceMinor: account.openingBalanceMinor, openedOn: account.openedOn,
     isArchived: account.isArchived, createdAt: account.createdAt, updatedAt: account.updatedAt
   };
@@ -536,14 +538,7 @@ export class OpenClawControlService {
       if (current.updatedAt !== after.updatedAt) throw new ConflictError("账户后来已经改变，不能撤销创建");
       const defaults = this.funds.summary();
       if ([defaults.defaultExpenseAccountId, defaults.defaultIncomeAccountId].includes(id)) throw new ConflictError("账户已经成为默认账户，不能撤销创建");
-      const related = this.database.prepare(`SELECT
-        (SELECT COUNT(*) FROM account_movements WHERE account_id = ?) +
-        (SELECT COUNT(*) FROM transactions WHERE account_id = ? OR refund_account_id = ?) +
-        (SELECT COUNT(*) FROM loans WHERE account_id = ?) +
-        (SELECT COUNT(*) FROM loan_repayments WHERE account_id = ?) +
-        (SELECT COUNT(*) FROM transfers WHERE from_account_id = ? OR to_account_id = ?) +
-        (SELECT COUNT(*) FROM account_adjustments WHERE account_id = ?) AS count`).get(id, id, id, id, id, id, id, id) as { count: number };
-      if (Number(related.count) > 0) throw new ConflictError("账户后来已经产生资金记录，不能撤销创建");
+      this.funds.assertAccountUnused(id);
       this.database.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       return;
     }
@@ -551,6 +546,7 @@ export class OpenClawControlService {
     let restored = this.funds.updateAccount(id, {
       name: String(before.name),
       icon: String(before.icon),
+      currency: before.currency === undefined ? current.currency : String(before.currency) as Account["currency"],
       aliases: Array.isArray(before.aliases) ? before.aliases.map(String) : [],
       expectedUpdatedAt: current.updatedAt
     });
@@ -585,9 +581,9 @@ export class OpenClawControlService {
     if (!before || !after) throw new ConflictError("账目恢复快照不完整");
     const current = this.repository.getTransaction(id, true);
     if (current.updatedAt !== after.updatedAt || current.deletedAt !== after.deletedAt) throw new ConflictError("账目后来已经改变，不能覆盖新内容");
-    this.database.prepare(`UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?,
+    this.database.prepare(`UPDATE transactions SET kind = ?, amount_minor = ?, account_amount_minor = ?, category_id = ?, occurred_at = ?,
       local_date = ?, note = ?, source = ?, account_id = ?, refunded_at = ?, refund_account_id = ?, updated_at = ?, deleted_at = ? WHERE id = ?`)
-      .run(sql(before.kind), sql(before.amountMinor), sql(before.categoryId), sql(before.localDate), sql(before.localDate), sql(before.note),
+      .run(sql(before.kind), sql(before.amountMinor), sql(snapshotField(before, "accountAmountMinor")), sql(before.categoryId), sql(before.localDate), sql(before.localDate), sql(before.note),
         sql(before.source), sql(before.accountId), sql(before.refundedAt), sql(before.refundAccountId), sql(before.updatedAt), sql(before.deletedAt), id);
   }
 

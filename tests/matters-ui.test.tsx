@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Borrower, Loan, Subscription } from "../shared/types";
+import type { Account, Borrower, Category, Loan, Subscription } from "../shared/types";
 import { api } from "../src/api";
 import { MattersPage } from "../src/pages/MattersPage";
 
@@ -50,7 +50,7 @@ const loan: Loan = {
   note: null,
   accountId: null,
   status: "active",
-  ledgerLink: { mode: "none", transactionId: null, amountMinor: null, currency: "CNY" },
+  ledgerLink: { mode: "none", transactionId: null, amountMinor: null, accountAmountMinor: null, currency: "CNY" },
   repayments: [],
   createdAt: "2026-08-18T00:00:00.000Z",
   updatedAt: "2026-08-18T00:00:00.000Z",
@@ -85,6 +85,51 @@ const subscription: Subscription = {
   deletedAt: null
 };
 
+const cnyAccount: Account = {
+  id: "44444444-4444-4444-8444-444444444444",
+  name: "微信",
+  icon: "微",
+  currency: "CNY",
+  aliases: [],
+  openingBalanceMinor: 20_000,
+  balanceMinor: 20_000,
+  openedOn: "2026-08-01",
+  isArchived: false,
+  isUnused: false,
+  createdAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-01T00:00:00.000Z"
+};
+
+const usdAccount: Account = { ...cnyAccount, id: "55555555-5555-4555-8555-555555555555", name: "美元卡", icon: "卡", currency: "USD", balanceMinor: 5_000 };
+const usdtAccount: Account = { ...cnyAccount, id: "66666666-6666-4666-8666-666666666666", name: "Bybit", icon: "B", currency: "USDT", balanceMinor: 8_000 };
+
+const expenseCategory: Category = {
+  id: "77777777-7777-4777-8777-777777777777",
+  kind: "expense",
+  name: "订阅服务",
+  icon: "订",
+  color: "#D66A4C",
+  sortOrder: 0,
+  isArchived: false,
+  transactionCount: 0,
+  createdAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-01T00:00:00.000Z"
+};
+
+function enabledFunds() {
+  return {
+    enabled: true,
+    startedOn: "2026-08-01",
+    totalMinor: cnyAccount.balanceMinor,
+    currencyTotals: { CNY: cnyAccount.balanceMinor, USD: usdAccount.balanceMinor, USDT: usdtAccount.balanceMinor },
+    accountCount: 3,
+    defaultExpenseAccountId: cnyAccount.id,
+    defaultIncomeAccountId: cnyAccount.id,
+    defaultFeeCategoryId: null,
+    accounts: [cnyAccount, usdAccount, usdtAccount]
+  };
+}
+
 describe("财务事项页面", () => {
   it("按借款人展示余额，展开后显示用途并提供还款入口", async () => {
     vi.spyOn(api, "borrowers").mockResolvedValue({ items: [borrower], total: 1, page: 1, pageSize: 30 });
@@ -107,6 +152,41 @@ describe("财务事项页面", () => {
     expect(screen.getByText("$10.00")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /记录续费/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "订阅，1项需要留意" })).toHaveTextContent("1");
+  });
+
+  it("续费可选择外币账户并传递实际扣款金额", async () => {
+    vi.spyOn(api, "subscriptions").mockResolvedValue({ items: [subscription], total: 1, page: 1, pageSize: 30 });
+    vi.mocked(api.subscriptionSummary).mockResolvedValue({ activeCount: 1, attentionCount: 1, dueCount: 1, upcomingCount: 1, upcoming: [subscription], currencies: [{ currency: "USD", amountMinor: 1_000 }] });
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(enabledFunds());
+    vi.spyOn(api, "categories").mockResolvedValue([expenseCategory]);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 50 });
+    const createPayment = vi.spyOn(api, "createSubscriptionPayment").mockResolvedValue({} as never);
+
+    renderPage("/matters?tab=subscriptions");
+    fireEvent.click(await screen.findByRole("button", { name: /记录续费/ }));
+    const picker = await screen.findByRole("combobox", { name: "订阅扣款账户" });
+
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("option", { name: /美元卡/ }));
+    expect(screen.getByLabelText(/实际扣款 USD/)).toHaveValue("10.00");
+    expect(screen.getByLabelText(/实际扣款 USD/)).toHaveAttribute("readonly");
+
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("option", { name: /Bybit/ }));
+    fireEvent.change(screen.getByLabelText(/实际扣款 USDT/), { target: { value: "9.80" } });
+    fireEvent.change(screen.getByLabelText(/实际扣款人民币/), { target: { value: "72.00" } });
+    fireEvent.change(screen.getByLabelText("订阅支出分类"), { target: { value: expenseCategory.id } });
+    fireEvent.click(screen.getByRole("button", { name: "确认已付款" }));
+
+    await waitFor(() => expect(createPayment).toHaveBeenCalledWith(subscription.id, expect.objectContaining({
+      amountMinor: 1_000,
+      currency: "USD",
+      ledgerLink: expect.objectContaining({
+        accountId: usdtAccount.id,
+        accountAmountMinor: 980,
+        ledgerAmountMinor: 7_200
+      })
+    })));
   });
 
   it("事项回收站使用独立查询，不把已删除内容混入正常列表", async () => {

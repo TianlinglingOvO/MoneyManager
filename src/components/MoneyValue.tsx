@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { money } from "../utils";
+import type { AccountCurrency } from "@shared/types";
+import { formatAccountBalance } from "./AccountPicker";
 
 export function MoneyValue({
   amountMinor,
   className = "",
-  animateKey
+  animateKey,
+  currency = "CNY"
 }: {
   amountMinor: number;
   className?: string;
   animateKey?: string;
+  currency?: AccountCurrency;
 }) {
   const previousKey = useRef(animateKey);
   const previousAmount = useRef(amountMinor);
@@ -26,5 +29,5 @@ export function MoneyValue({
     return () => window.clearTimeout(timer);
   }, [amountMinor, animateKey]);
 
-  return <span className={`money-value ${direction ? `is-${direction}` : ""} ${className}`.trim()}>{money(amountMinor)}</span>;
+  return <span className={`money-value ${direction ? `is-${direction}` : ""} ${className}`.trim()}>{formatAccountBalance(amountMinor, currency)}</span>;
 }

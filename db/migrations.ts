@@ -465,5 +465,22 @@ export const migrations: Migration[] = [
       "DROP TABLE openclaw_operation_items_legacy_v9",
       "CREATE UNIQUE INDEX idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
     ]
+  },
+  {
+    version: 10,
+    name: "funds_activation_baseline_and_currencies",
+    statements: [
+      "ALTER TABLE accounts ADD COLUMN currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency IN ('CNY', 'USD', 'USDT'))",
+      "ALTER TABLE transactions ADD COLUMN account_amount_minor INTEGER CHECK (account_amount_minor IS NULL OR account_amount_minor > 0)",
+      `CREATE TABLE funds_baseline_transactions (
+        transaction_id TEXT PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+        captured_at TEXT NOT NULL
+      )`,
+      `INSERT INTO funds_baseline_transactions(transaction_id, captured_at)
+        SELECT t.id, s.updated_at
+        FROM transactions t
+        JOIN settings s ON s.key = 'funds.started_on'
+        WHERE t.account_id IS NULL AND t.created_at <= s.updated_at`
+    ]
   }
 ];

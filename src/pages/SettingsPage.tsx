@@ -422,7 +422,7 @@ export function SettingsPage() {
         <div className="section-title"><h2>设备与接入</h2></div>
         <div className="connection-grid">
           <article><span><Smartphone size={21} /></span><div><strong>安装为 App</strong><p>在 Android Chrome 或电脑浏览器打开菜单，选择“安装应用”或“添加到主屏幕”。</p></div></article>
-          <article><span><Cloud size={21} /></span><div><strong>Cloudflare Tunnel</strong><p>正式部署后由 money.sutady.top 转发到本机，不需要开放家庭路由器端口。</p></div></article>
+          <article><span><Cloud size={21} /></span><div><strong>Cloudflare Tunnel</strong><p>正式部署后由 Cloudflare 域名转发到本机，不需要开放家庭路由器端口。</p></div></article>
           <article><span><KeyRound size={21} /></span><div><strong>DeepSeek 密钥</strong><p>在服务电脑上双击“配置DeepSeek密钥.cmd”，隐藏输入密钥后重启服务；思考模式可在 .env 中设为 enabled 或 disabled。</p></div></article>
           <article><span><Bot size={21} /></span><div><strong>OpenClaw MCP</strong><p>标准入口为 /mcp。当前为{openClawSettings.data?.mode === "direct" ? "直接接管模式：可管理账目、分类、借款、订阅、AI、备份和时区，操作记录保留 30 天。" : "确认模式：普通账目写入需要批准，借款和订阅只允许查询。"}密钥、Access 和服务控制永不开放。</p></div></article>
         </div>

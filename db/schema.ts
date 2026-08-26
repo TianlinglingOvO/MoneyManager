@@ -20,6 +20,7 @@ export const accounts = sqliteTable("accounts", {
   name: text("name").notNull(),
   normalizedName: text("normalized_name").notNull(),
   icon: text("icon").notNull(),
+  currency: text("currency", { enum: ["CNY", "USD", "USDT"] }).notNull().default("CNY"),
   openingBalanceMinor: integer("opening_balance_minor").notNull(),
   openedOn: text("opened_on").notNull(),
   isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
@@ -56,6 +57,7 @@ export const transactions = sqliteTable("transactions", {
   updatedAt: text("updated_at").notNull(),
   deletedAt: text("deleted_at"),
   accountId: text("account_id").references(() => accounts.id),
+  accountAmountMinor: integer("account_amount_minor"),
   refundedAt: text("refunded_at"),
   refundAccountId: text("refund_account_id").references(() => accounts.id)
 }, (table) => [
@@ -64,6 +66,11 @@ export const transactions = sqliteTable("transactions", {
   index("idx_transactions_kind_date").on(table.kind, table.localDate),
   index("idx_transactions_category_date").on(table.categoryId, table.localDate)
 ]);
+
+export const fundsBaselineTransactions = sqliteTable("funds_baseline_transactions", {
+  transactionId: text("transaction_id").primaryKey().references(() => transactions.id, { onDelete: "cascade" }),
+  capturedAt: text("captured_at").notNull()
+});
 
 export const proposals = sqliteTable("proposals", {
   id: text("id").primaryKey(),

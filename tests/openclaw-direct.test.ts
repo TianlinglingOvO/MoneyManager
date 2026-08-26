@@ -77,6 +77,12 @@ describe("OpenClaw 直接接管", () => {
       requestId: "update-undo-001", transactionId: target.id, expectedUpdatedAt: target.updatedAt, amount: 20
     } }));
     expect(context.repository.getTransaction(target.id).amountMinor).toBe(2_000);
+    const snapshotRow = context.database.prepare("SELECT sequence, before_json FROM openclaw_operation_items WHERE operation_id = ? AND entity_type = 'transaction'")
+      .get(changed.operation.id) as { sequence: number; before_json: string };
+    const legacyBefore = JSON.parse(snapshotRow.before_json) as Record<string, unknown>;
+    delete legacyBefore.accountAmountMinor;
+    context.database.prepare("UPDATE openclaw_operation_items SET before_json = ? WHERE operation_id = ? AND sequence = ?")
+      .run(JSON.stringify(legacyBefore), changed.operation.id, snapshotRow.sequence);
     await client.callTool({ name: "undo_openclaw_operation", arguments: { operationId: changed.operation.id } });
     expect(context.repository.getTransaction(target.id).amountMinor).toBe(1_234);
 

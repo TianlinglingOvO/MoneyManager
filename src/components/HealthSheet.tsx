@@ -1,11 +1,12 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleAlert, Sparkles } from "lucide-react";
+import { Check, ChevronDown, CircleAlert, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { HealthIssue, HealthReport } from "../finance-health";
 import { useToast } from "../toast-context";
 import { BottomSheet, type BottomSheetHandle } from "./BottomSheet";
+import { FundsMissingAccountDetails } from "./FundsMissingAccountDetails";
 
 interface HealthSheetProps {
   open: boolean;
@@ -36,6 +37,7 @@ export function HealthSheet({ open, month, report, isLoading, isError, onClose, 
   const notify = useToast();
   const sheetRef = useRef<BottomSheetHandle | null>(null);
   const pendingActionRef = useRef<(() => void) | null>(null);
+  const [expandedFingerprint, setExpandedFingerprint] = useState<string | null>(null);
   const acknowledge = useMutation({
     mutationFn: (fingerprint: string) => api.acknowledgeHealthIssue(fingerprint, month),
     onSuccess: () => {
@@ -68,11 +70,20 @@ export function HealthSheet({ open, month, report, isLoading, isError, onClose, 
       {isLoading ? <div className="sheet-loading" role="status">正在检查账本…</div> : isError ? <p className="form-error" role="alert">体检暂时无法读取，请稍后重试。</p> : <>
         <div className="health-score"><span>本月待核对</span><strong>{activeIssues.length}<small>项</small></strong><p>{activeIssues.length === 0 ? "目前没有需要处理的项目。" : `${criticalIssues > 0 ? `${criticalIssues} 项需要处理` : "没有严重问题"}${warningIssues > 0 ? `，${warningIssues} 项建议核对` : ""}。`}</p><small className="health-score__legacy">数据健康度 {report?.score ?? 100} 分</small></div>
         <div className="health-issue-list">
-          {issues.map((issue) => <article key={issue.fingerprint} className={`health-issue is-${issue.severity} ${issue.acknowledged ? "is-acknowledged" : ""}`.trim()}>
-            <CircleAlert size={19} aria-hidden="true" />
-            <div><span>{severityLabel(issue)}</span><h3>{issue.title}</h3><p>{issue.detail}</p>{issue.relatedTransactionIds.length > 0 ? <small>涉及 {issue.relatedTransactionIds.length} 笔记录</small> : null}{issue.href ? <button className="text-link health-issue__link" type="button" onClick={() => followIssue(issue)}>{actionLabel(issue)}</button> : null}</div>
-            {issue.acknowledged ? <em><Check size={15} />已核对</em> : <button className="secondary-button" type="button" disabled={acknowledge.isPending} onClick={() => acknowledge.mutate(issue.fingerprint)}>{acknowledge.isPending && acknowledge.variables === issue.fingerprint ? "标记中…" : "标记已核对"}</button>}
-          </article>)}
+          {issues.map((issue) => {
+            const isFundsBatch = issue.type === "funds_missing_account" && issue.relatedTransactionIds.length > 0;
+            const isExpanded = expandedFingerprint === issue.fingerprint;
+            return <article key={issue.fingerprint} className={`health-issue is-${issue.severity} ${issue.acknowledged ? "is-acknowledged" : ""}`.trim()}>
+              <CircleAlert size={19} aria-hidden="true" />
+              <div><span>{severityLabel(issue)}</span><h3>{issue.title}</h3><p>{issue.detail}</p>{issue.relatedTransactionIds.length > 0 ? <small>涉及 {issue.relatedTransactionIds.length} 笔记录</small> : null}
+                {isFundsBatch ? <button className="text-link health-issue__link health-issue__expand" type="button" aria-expanded={isExpanded} aria-controls={`health-funds-${issue.fingerprint}`} onClick={() => setExpandedFingerprint(isExpanded ? null : issue.fingerprint)}>
+                  {isExpanded ? "收起明细" : `查看 ${issue.relatedTransactionIds.length} 笔`}<ChevronDown className={isExpanded ? "is-rotated" : ""} size={15} />
+                </button> : issue.href ? <button className="text-link health-issue__link" type="button" onClick={() => followIssue(issue)}>{actionLabel(issue)}</button> : null}
+              </div>
+              {issue.acknowledged ? <em><Check size={15} />已核对</em> : <button className="secondary-button" type="button" disabled={acknowledge.isPending} onClick={() => acknowledge.mutate(issue.fingerprint)}>{acknowledge.isPending && acknowledge.variables === issue.fingerprint ? "标记中…" : "标记已核对"}</button>}
+              {isFundsBatch && isExpanded ? <div className="health-issue__details" id={`health-funds-${issue.fingerprint}`}><FundsMissingAccountDetails issue={issue} month={month} /></div> : null}
+            </article>;
+          })}
           {issues.length === 0 && <div className="health-empty"><Check size={25} /><strong>账本状态良好</strong><p>继续按自己的习惯记录即可。</p></div>}
         </div>
         {acknowledge.isError && <p className="form-error" role="alert">标记失败，请刷新后再试。</p>}

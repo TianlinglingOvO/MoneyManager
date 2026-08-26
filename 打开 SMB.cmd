@@ -46,7 +46,13 @@ if errorlevel 1 (
 )
 
 :ready
-start "" "https://money.sutady.top"
+set "SMB_URL=http://127.0.0.1:8788"
+if exist "%~dp0.env" (
+  for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env") do (
+    if /i "%%A"=="APP_URL" set "SMB_URL=%%B"
+  )
+)
+start "" "%SMB_URL%"
 exit /b 0
 
 :failed

@@ -1,5 +1,5 @@
 {
-  "url": "https://money.sutady.top/mcp",
+  "url": "https://money.example.com/mcp",
   "transport": "streamable-http",
   "connectionTimeoutMs": 10000,
   "requestTimeoutMs": 30000,

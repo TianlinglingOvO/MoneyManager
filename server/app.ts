@@ -30,12 +30,15 @@ import {
   transactionQuerySchema
 } from "../shared/schemas";
 import {
+  accountAdjustmentQuerySchema,
+  accountAdjustmentUndoSchema,
   accountCreateSchema,
   accountMovementQuerySchema,
   accountPatchSchema,
   accountVersionSchema,
   adjustmentInputSchema,
   fundsActivationSchema,
+  fundsAssignTransactionsSchema,
   fundsMutationSchema,
   transferInputSchema,
   transferPatchSchema,
@@ -72,6 +75,16 @@ function csvCell(value: unknown): string {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
+
+const internalSettingPrefixes = [
+  "funds.account_balance_request.",
+  "funds.adjustment_request.",
+  "funds.adjustment_undo_request."
+] as const;
+
+function isInternalSettingKey(key: string): boolean {
+  return internalSettingPrefixes.some((prefix) => key.startsWith(prefix));
+}
 function requestIdempotencyKey(request: Request): string | null {
   const key = request.header("Idempotency-Key")?.trim();
   if (!key) return null;
@@ -276,6 +289,13 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     } catch (error) { next(error); }
   });
 
+  app.post("/api/v1/funds/transactions/assign-account", (request, response, next) => {
+    try {
+      const input = fundsAssignTransactionsSchema.parse(request.body);
+      response.json({ data: funds.assignTransactionsAccount(input) });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/accounts", (request, response, next) => {
     try {
       const includeArchived = z.coerce.boolean().default(false).parse(request.query.includeArchived ?? false);
@@ -329,14 +349,15 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
         };
       };
       const names = new Map(exported.funds.accounts.map((account) => [String(account.id), String(account.name)]));
-      const header = ["日期", "账户", "变化金额（元）", "来源类型", "来源 ID", "创建时间"];
-      const lines = exported.funds.movements.map((movement) => [
+      const header = ["日期", "账户", "变化金额（元）", "来源类型", "来源 ID", "创建时间", "币种"];
+      const lines = exported.funds.movements.filter((movement) => movement.sourceType !== "adjustment").map((movement) => [
         movement.localDate,
         names.get(String(movement.accountId)) ?? "",
         (Number(movement.deltaMinor) / 100).toFixed(2),
         movement.sourceType,
         movement.sourceId,
-        movement.createdAt
+        movement.createdAt,
+        movement.currency
       ].map(csvCell).join(","));
       response.setHeader("Content-Type", "text/csv; charset=utf-8");
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-funds-${localDate(config.timezone)}.csv"`);
@@ -353,7 +374,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
         };
       };
       const names = new Map(exported.funds.accounts.map((account) => [String(account.id), String(account.name)]));
-      const header = ["日期", "转出账户", "转入账户", "扣款金额（元）", "到账金额（元）", "手续费（元）", "备注", "删除时间"];
+      const header = ["日期", "转出账户", "转入账户", "扣款金额（元）", "到账金额（元）", "手续费（元）", "备注", "删除时间", "币种"];
       const lines = exported.funds.transfers.map((transfer) => [
         transfer.localDate,
         names.get(String(transfer.fromAccountId)) ?? "",
@@ -362,7 +383,8 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
         (Number(transfer.creditedMinor) / 100).toFixed(2),
         ((Number(transfer.debitedMinor) - Number(transfer.creditedMinor)) / 100).toFixed(2),
         transfer.note ?? "",
-        transfer.deletedAt ?? ""
+        transfer.deletedAt ?? "",
+        transfer.currency
       ].map(csvCell).join(","));
       response.setHeader("Content-Type", "text/csv; charset=utf-8");
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-transfers-${localDate(config.timezone)}.csv"`);
@@ -401,9 +423,21 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v1/funds/adjustments", (request, response, next) => {
+    try {
+      response.json({ data: funds.listAdjustments(accountAdjustmentQuerySchema.parse(request.query)) });
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v1/funds/adjustments", (request, response, next) => {
     try {
       response.status(201).json({ data: funds.adjustAccount(adjustmentInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/funds/adjustments/:id/undo", (request, response, next) => {
+    try {
+      response.json({ data: funds.undoLatestAdjustment(String(request.params.id), accountAdjustmentUndoSchema.parse(request.body)) });
     } catch (error) { next(error); }
   });
 
@@ -599,7 +633,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.get("/api/v1/export.csv", (_request, response, next) => {
     try {
       const data = repository.exportData() as { transactions: Array<Record<string, unknown>> };
-      const header = ["日期", "类型", "金额（元）", "分类", "备注", "来源", "删除时间"];
+      const header = ["日期", "类型", "金额（元）", "分类", "备注", "来源", "删除时间", "账户币种", "账本金额（CNY）", "账户实际金额"];
       const lines = data.transactions.map((item) => [
         item.localDate,
         item.kind === "income" ? "收入" : "支出",
@@ -607,7 +641,10 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
         (item.category as { name?: string } | undefined)?.name ?? "",
         item.note ?? "",
         item.source,
-        item.deletedAt ?? ""
+        item.deletedAt ?? "",
+        (item.account as { currency?: string } | null)?.currency ?? "",
+        (Number(item.amountMinor) / 100).toFixed(2),
+        item.accountAmountMinor == null ? "" : (Number(item.accountAmountMinor) / 100).toFixed(2)
       ].map(csvCell).join(","));
       response.setHeader("Content-Type", "text/csv; charset=utf-8");
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.csv"`);
@@ -617,7 +654,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
 
   app.get("/api/v1/settings", (_request, response, next) => {
     try {
-      const rows = database.prepare("SELECT key, value, updated_at FROM settings ORDER BY key").all();
+      const rows = (database.prepare("SELECT key, value, updated_at FROM settings ORDER BY key").all() as unknown as Array<{ key: string; value: string; updated_at: string }>).filter((row) => !isInternalSettingKey(row.key));
       response.json({ data: { currency: "CNY", timezone: config.timezone, today: localDate(config.timezone), rows } });
     } catch (error) { next(error); }
   });

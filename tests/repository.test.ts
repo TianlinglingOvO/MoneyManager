@@ -204,6 +204,8 @@ describe("账本仓库", () => {
     expect(revised.payload).toEqual({
       kind: "expense",
       amountMinor: 2_420,
+      accountId: null,
+      accountAmountMinor: null,
       categoryId: targetCategory.id,
       localDate: "2026-08-05",
       note: null

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  Account,
   Category,
   CategoryDeletionImpact,
   CategoryDispositionResult,
@@ -65,6 +66,7 @@ interface TransactionRow {
   id: string;
   kind: TransactionKind;
   amount_minor: number;
+  account_amount_minor: number | null;
   currency: "CNY";
   category_id: string;
   local_date: string;
@@ -76,8 +78,10 @@ interface TransactionRow {
   account_id: string | null;
   refunded_at: string | null;
   refund_account_id: string | null;
+  funds_baseline: number;
   account_name?: string | null;
   account_icon?: string | null;
+  account_currency?: Account["currency"] | null;
   category_name?: string;
   category_icon?: string;
   category_color?: string;
@@ -110,12 +114,16 @@ const categorySelect = `SELECT categories.*,
   (SELECT COUNT(*) FROM transactions WHERE transactions.category_id = categories.id) AS transaction_count
   FROM categories`;
 
-const transactionSelect = `SELECT t.id, t.kind, t.amount_minor, t.currency, t.category_id,
+const transactionSelect = `SELECT t.id, t.kind, t.amount_minor, t.account_amount_minor, t.currency, t.category_id,
   t.local_date, t.note, t.source, t.created_at, t.updated_at, t.deleted_at,
   t.account_id, t.refunded_at, t.refund_account_id,
+  CASE WHEN fb.transaction_id IS NULL THEN 0 ELSE 1 END AS funds_baseline,
   c.name AS category_name, c.icon AS category_icon, c.color AS category_color,
-  a.name AS account_name, a.icon AS account_icon
-  FROM transactions t JOIN categories c ON c.id = t.category_id LEFT JOIN accounts a ON a.id = t.account_id`;
+  a.name AS account_name, a.icon AS account_icon, a.currency AS account_currency
+  FROM transactions t
+  JOIN categories c ON c.id = t.category_id
+  LEFT JOIN accounts a ON a.id = t.account_id
+  LEFT JOIN funds_baseline_transactions fb ON fb.transaction_id = t.id`;
 
 function mapCategory(row: CategoryRow): Category {
   return {
@@ -137,6 +145,7 @@ function mapTransaction(row: TransactionRow): Transaction {
     id: row.id,
     kind: row.kind,
     amountMinor: Number(row.amount_minor),
+    accountAmountMinor: row.account_amount_minor === null ? null : Number(row.account_amount_minor),
     currency: "CNY",
     categoryId: row.category_id,
     category: row.category_name ? {
@@ -146,7 +155,13 @@ function mapTransaction(row: TransactionRow): Transaction {
       color: row.category_color ?? "#7A7A73"
     } : undefined,
     accountId: row.account_id,
-    account: row.account_id && row.account_name ? { id: row.account_id, name: row.account_name, icon: row.account_icon ?? "账" } : null,
+    account: row.account_id && row.account_name ? {
+      id: row.account_id,
+      name: row.account_name,
+      icon: row.account_icon ?? "账",
+      currency: row.account_currency ?? "CNY"
+    } : null,
+    fundsBaseline: Boolean(row.funds_baseline),
     refundedAt: row.refunded_at,
     refundAccountId: row.refund_account_id,
     localDate: row.local_date,
@@ -538,6 +553,8 @@ export class LedgerRepository {
       amountMinor: target.amountMinor,
       categoryId: target.categoryId,
       localDate: target.localDate,
+      accountId: target.accountId,
+      accountAmountMinor: target.accountAmountMinor,
       note: target.note,
       ...proposal.payload
     });
@@ -563,18 +580,24 @@ export class LedgerRepository {
     }
     this.assertCategoryForTransaction(input.categoryId, input.kind);
     return this.savepoint(() => {
-      const accountId = this.funds
-        ? this.funds.resolveTransactionAccount(input.kind, input.localDate, input.accountId)
-        : input.accountId ?? null;
+      const funding = this.funds
+        ? this.funds.resolveTransactionFunding({
+            kind: input.kind,
+            localDate: input.localDate,
+            amountMinor: input.amountMinor,
+            accountId: input.accountId,
+            accountAmountMinor: input.accountAmountMinor
+          })
+        : { accountId: input.accountId ?? null, accountAmountMinor: input.accountAmountMinor ?? null };
       const id = randomUUID();
       const now = new Date().toISOString();
       this.database.prepare(`INSERT INTO transactions(
-        id, kind, amount_minor, currency, category_id, occurred_at, local_date, note,
+        id, kind, amount_minor, account_amount_minor, currency, category_id, occurred_at, local_date, note,
         source, idempotency_key, created_at, updated_at, deleted_at, account_id, refunded_at, refund_account_id
-      ) VALUES (?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL)`)
+      ) VALUES (?, ?, ?, ?, 'CNY', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL)`)
         .run(
-          id, input.kind, input.amountMinor, input.categoryId, input.localDate, input.localDate,
-          input.note?.trim() || null, options.source ?? "user", options.idempotencyKey ?? null, now, now, accountId
+          id, input.kind, input.amountMinor, funding.accountAmountMinor, input.categoryId, input.localDate, input.localDate,
+          input.note?.trim() || null, options.source ?? "user", options.idempotencyKey ?? null, now, now, funding.accountId
         );
       this.funds?.reconcileTransaction(id, options.idempotencyKey);
       this.audit(options.actor ?? "user", "transaction.create", "transaction", id, { kind: input.kind, source: options.source ?? "user" });
@@ -594,18 +617,31 @@ export class LedgerRepository {
     }
     if (current.refundedAt) throw new ConflictError("已退款账目需要先撤销退款才能修改");
     const patch = transactionPatchSchema.parse(rawPatch);
+    if (this.funds && patch.accountId && patch.accountId !== current.accountId) {
+      const targetAccount = this.funds.getAccount(patch.accountId, false);
+      if (targetAccount.currency !== "CNY" && patch.accountAmountMinor === undefined) {
+        throw new ConflictError("切换到外币账户时需要填写实际账户金额");
+      }
+    }
     const next = { ...current, ...patch };
     this.assertCategoryForTransaction(next.categoryId, next.kind);
     return this.savepoint(() => {
-      const accountId = this.funds
-        ? this.funds.resolveTransactionAccount(next.kind, next.localDate, next.accountId)
-        : next.accountId ?? null;
+      const funding = this.funds
+        ? this.funds.resolveTransactionFunding({
+            transactionId: id,
+            kind: next.kind,
+            localDate: next.localDate,
+            amountMinor: next.amountMinor,
+            accountId: next.accountId,
+            accountAmountMinor: next.accountAmountMinor
+          })
+        : { accountId: next.accountId ?? null, accountAmountMinor: next.accountAmountMinor ?? null };
       const updatedAt = new Date().toISOString();
       const result = expectedUpdatedAt
-        ? this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
-          .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, accountId, updatedAt, id, expectedUpdatedAt)
-        : this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-          .run(next.kind, next.amountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, accountId, updatedAt, id);
+        ? this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, account_amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND updated_at = ?")
+          .run(next.kind, next.amountMinor, funding.accountAmountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, funding.accountId, updatedAt, id, expectedUpdatedAt)
+        : this.database.prepare("UPDATE transactions SET kind = ?, amount_minor = ?, account_amount_minor = ?, category_id = ?, occurred_at = ?, local_date = ?, note = ?, account_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+          .run(next.kind, next.amountMinor, funding.accountAmountMinor, next.categoryId, next.localDate, next.localDate, next.note?.trim() || null, funding.accountId, updatedAt, id);
       if (Number(result.changes) !== 1) throw new ConflictError("这笔账已经在其他设备上更新，请刷新后重试");
       this.funds?.reconcileTransaction(id);
       this.audit(actor, "transaction.update", "transaction", id, { kind: next.kind });

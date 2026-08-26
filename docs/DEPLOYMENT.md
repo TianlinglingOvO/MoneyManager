@@ -6,8 +6,8 @@
 
 先在 Cloudflare Access 中创建两个应用并记下它们各自的 Audience Tag：
 
-1. 网页应用：`money.sutady.top`，不填写路径。
-2. MCP 应用：`money.sutady.top/mcp`。更具体的路径规则会覆盖根应用规则。
+1. 网页应用：`money.example.com`，不填写路径。
+2. MCP 应用：`money.example.com/mcp`。更具体的路径规则会覆盖根应用规则。
 
 然后运行：
 
@@ -53,7 +53,7 @@ SMB 2.3.0 使用数据库迁移版本 9，新增账户、别名、资金流水�
 
 在 Cloudflare Zero Trust 中新建 Tunnel，选择 Windows 连接器，并按页面给出的管理员命令安装 `cloudflared` 服务。为 Tunnel 添加公共主机名：
 
-- 主机名：`money.sutady.top`
+- 主机名：`money.example.com`
 - 服务：`HTTP`
 - 地址：`127.0.0.1:8788`
 
@@ -129,7 +129,7 @@ openclaw mcp reload
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-production.ps1
 ```
 
-确认 `https://money.sutady.top` 可访问后，关闭手动进程并注册登录任务：
+确认 `https://money.example.com` 可访问后，关闭手动进程并注册登录任务：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startup-task.ps1

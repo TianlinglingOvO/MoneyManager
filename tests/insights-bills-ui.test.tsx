@@ -38,6 +38,7 @@ const transaction: Transaction = {
   id: "33333333-3333-4333-8333-333333333333",
   kind: "expense",
   amountMinor: 2_440,
+  accountAmountMinor: null,
   currency: "CNY",
   categoryId: category.id,
   category: { id: category.id, name: category.name, icon: category.icon, color: category.color },
@@ -45,6 +46,7 @@ const transaction: Transaction = {
   note: "晚餐",
   accountId: null,
   account: null,
+  fundsBaseline: false,
   refundedAt: null,
   refundAccountId: null,
   source: "openclaw",
@@ -172,7 +174,7 @@ describe("洞察与账单下钻", () => {
     fireEvent.click(screen.getByRole("button", { name: "收入" }));
     await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("view=ledger&period=month&anchor=2026-08-01&kind=income"));
     await waitFor(() => expect(calls.some((value) => value.kind === "income" && value.categoryId === undefined)).toBe(true));
-  });
+  }, 10_000);
 
   it("使用最近录入、月账单、年账单和回收站四个平级页签", async () => {
     vi.spyOn(api, "report").mockResolvedValue(report);

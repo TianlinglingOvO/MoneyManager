@@ -23,8 +23,9 @@ import {
   X
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { Borrower, Category, LedgerLinkMode, Loan, LoanRepayment, MatterCurrency, Subscription, SubscriptionPayment, Transaction } from "@shared/types";
+import type { Account, AccountCurrency, Borrower, Category, LedgerLinkMode, Loan, LoanRepayment, MatterCurrency, Subscription, SubscriptionPayment, Transaction } from "@shared/types";
 import { api } from "../api";
+import { AccountPicker } from "../components/AccountPicker";
 import { BottomSheet } from "../components/BottomSheet";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { useLedgerClock } from "../ledger-clock";
@@ -113,14 +114,9 @@ function LedgerLinkFields({ mode, setMode, kind, setKind, amount, setAmount, cat
     </div>
   );
 }
-function FundsAccountField({ accounts, value, onChange, label }: { accounts: Array<{ id: string; icon: string; name: string; balanceMinor: number }>; value: string; onChange: (value: string) => void; label: string }) {
-  return <label className="matter-field">
-    <span>{label}</span>
-    <select value={value} onChange={(event) => onChange(event.target.value)} required>
-      <option value="">选择资金账户</option>
-      {accounts.map((account) => <option key={account.id} value={account.id}>{account.icon} {account.name} · {money(account.balanceMinor)}</option>)}
-    </select>
-  </label>;
+function FundsAccountField({ accounts, value, onChange, label, currencies }: { accounts: Account[]; value: string; onChange: (value: string) => void; label: string; currencies?: AccountCurrency[] }) {
+  const availableAccounts = accounts.filter((account) => !account.isArchived && (!currencies || currencies.includes(account.currency)));
+  return <AccountPicker accounts={availableAccounts} value={value} onChange={onChange} label={label} required />;
 }
 
 
@@ -274,7 +270,7 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
       <div className="matter-form-grid"><label className="matter-field"><span>借出金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="300.00" /></label><label className="matter-field"><span>借出日期</span><input required type="date" value={lentDate} onChange={(event) => { setLentDate(event.target.value); setLinkDate(event.target.value); }} /></label></div>
       <label className="matter-field"><span>用途</span><input maxLength={120} value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="例如：生活费、给女朋友买花" /></label>
       <label className="matter-field"><span>备注 <small>选填</small></span><textarea maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="可以补充约定或说明" /></label>
-      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="借出资金账户" />}
+      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="借出资金账户" currencies={["CNY"]} />}
       {!editing && !fundsRequired && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind={linkKind} setKind={setLinkKind} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={linkDate} setDate={setLinkDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 
@@ -314,7 +310,7 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
       <p className="matter-form-intro">{loan?.borrowerName ?? "这笔借款"} · 未还 {money(loan?.outstandingMinor ?? 0)}</p>
       <div className="matter-form-grid"><label className="matter-field"><span>还款金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label><label className="matter-field"><span>还款日期</span><input required type="date" value={repaidDate} onChange={(event) => setRepaidDate(event.target.value)} /></label></div>
       <label className="matter-field"><span>备注 <small>选填</small></span><input maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：微信转账" /></label>
-      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="还款到账账户" />}
+      {fundsRequired && <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="还款到账账户" currencies={["CNY"]} />}
       {!fundsRequired && <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="income" setKind={() => undefined} amount={linkAmount} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={repaidDate} setDate={setRepaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 
@@ -412,6 +408,7 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
   const [price, setPrice] = useState(editing ? (editing.recurringAmountMinor / 100).toFixed(2) : "");
   const [initialPrice, setInitialPrice] = useState("");
   const [initialActualCny, setInitialActualCny] = useState("");
+  const [initialAccountAmount, setInitialAccountAmount] = useState("");
   const [initialCategory, setInitialCategory] = useState("");
   const [initialAccountId, setInitialAccountId] = useState("");
   const [currency, setCurrency] = useState<MatterCurrency>(editing?.currency ?? "USD");
@@ -428,6 +425,7 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
   const initialPaymentMinor = parseAmountMinor(initialPrice);
   const initialFundsRequired = Boolean(initialPaymentMinor && funds.data?.enabled && funds.data.startedOn && startDate >= funds.data.startedOn);
   const selectedInitialAccountId = initialAccountId || funds.data?.defaultExpenseAccountId || "";
+  const selectedInitialAccount = funds.data?.accounts.find((account) => account.id === selectedInitialAccountId);
   const save = useMutation({
     mutationFn: () => {
       const priceMinor = parseAmountMinor(price);
@@ -438,11 +436,15 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
       if (editing) return api.updateSubscription(editing.id, { ...base, expectedUpdatedAt: editing.updatedAt });
       const firstPayment = parseAmountMinor(initialPrice);
       if (initialFundsRequired && !initialCategory) throw new Error("请选择首期订阅支出分类");
-      if (initialFundsRequired && !selectedInitialAccountId) throw new Error("请选择首期扣款账户");
+      if (initialFundsRequired && !selectedInitialAccount) throw new Error("请选择首期扣款账户");
       const initialLedgerAmount = currency === "USD" ? parseAmountMinor(initialActualCny) : firstPayment;
       if (initialFundsRequired && !initialLedgerAmount) throw new Error("请填写首期实际人民币扣款金额");
+      const initialAccountAmountMinor = selectedInitialAccount?.currency === "CNY"
+        ? undefined
+        : selectedInitialAccount?.currency === "USD" && currency === "USD" ? firstPayment : parseAmountMinor(initialAccountAmount);
+      if (initialFundsRequired && selectedInitialAccount?.currency !== "CNY" && !initialAccountAmountMinor) throw new Error(`请填写首期实际扣款 ${selectedInitialAccount?.currency ?? "外币"}`);
       const ledgerLink = initialFundsRequired
-        ? { mode: "create", categoryId: initialCategory, ledgerAmountMinor: initialLedgerAmount!, accountId: selectedInitialAccountId }
+        ? { mode: "create", categoryId: initialCategory, ledgerAmountMinor: initialLedgerAmount!, accountId: selectedInitialAccountId, accountAmountMinor: initialAccountAmountMinor }
         : undefined;
       return api.createSubscription({ ...base, initialPayment: firstPayment ? { amountMinor: firstPayment, currency, localDate: startDate, paymentType: "initial", ledgerLink } : undefined });
     },
@@ -453,14 +455,15 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
     <form id="subscription-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记下价格、续费日期和首月优惠，之后只需确认每次是否真的续费。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>订阅名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="OpenAI、opencode…" /></label><label className="matter-field"><span>套餐 <small>选填</small></span><input value={plan} onChange={(event) => setPlan(event.target.value)} placeholder="Pro" /></label></div>
-      <div className="matter-form-grid"><label className="matter-field"><span>常规续费价格</span><input required inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder="10.00" /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => setCurrency(event.target.value as MatterCurrency)}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
+      <div className="matter-form-grid"><label className="matter-field"><span>常规续费价格</span><input required inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder="10.00" /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => { setCurrency(event.target.value as MatterCurrency); setInitialActualCny(""); setInitialAccountAmount(""); }}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
       <div className="matter-form-grid"><label className="matter-field"><span>首期价格 <small>选填</small></span><input inputMode="decimal" value={initialPrice} onChange={(event) => setInitialPrice(event.target.value.replace(/[^\d.]/g, ""))} placeholder={currency === "USD" ? "5.00" : ""} /></label><label className="matter-field"><span>提醒提前天数</span><input type="number" min="0" max="60" value={reminderDays} onChange={(event) => setReminderDays(event.target.value)} /></label></div>
       {initialFundsRequired && <>
         <div className="matter-form-grid">
           {currency === "USD" && <label className="matter-field"><span>首期实际扣款人民币</span><input required inputMode="decimal" value={initialActualCny} onChange={(event) => setInitialActualCny(event.target.value.replace(/[^\d.]/g, ""))} placeholder="例如 36.00" /></label>}
           <label className="matter-field"><span>首期支出分类</span><select required value={initialCategory} onChange={(event) => setInitialCategory(event.target.value)}><option value="">选择分类</option>{(expenseCategories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>
         </div>
-        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedInitialAccountId} onChange={setInitialAccountId} label="首期扣款账户" />
+        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedInitialAccountId} onChange={(value) => { setInitialAccountId(value); setInitialAccountAmount(""); }} label="首期扣款账户" />
+        {selectedInitialAccount && selectedInitialAccount.currency !== "CNY" && (selectedInitialAccount.currency === "USD" && currency === "USD" ? <label className="matter-field"><span>首期实际扣款 USD <small>与首期价格一致</small></span><input readOnly value={initialPrice} /></label> : <label className="matter-field"><span>首期实际扣款 {selectedInitialAccount.currency} <small>必填</small></span><input required inputMode="decimal" value={initialAccountAmount} onChange={(event) => setInitialAccountAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label>)}
       </>}
       <div className="matter-field"><span>续费周期</span><div className="matter-cycle-buttons"><button type="button" className={cycle === "month" ? "is-active" : ""} onClick={() => setCycle("month")}>每月</button><button type="button" className={cycle === "year" ? "is-active" : ""} onClick={() => setCycle("year")}>每年</button><button type="button" className={cycle === "custom" ? "is-active" : ""} onClick={() => setCycle("custom")}>自定义</button></div></div>
       {cycle === "custom" && <label className="matter-field"><span>每隔多少天</span><input type="number" min="1" value={cycleDays} onChange={(event) => setCycleDays(event.target.value)} /></label>}
@@ -480,6 +483,7 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   const [paidDate, setPaidDate] = useState(today);
   const [nextRenewalDate] = useState(subscription ? nextDate(subscription, today) : today);
   const [actualCny, setActualCny] = useState("");
+  const [accountAmount, setAccountAmount] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const categories = useQuery({ queryKey: ["categories", "expense", false], queryFn: () => api.categories("expense", false) });
@@ -490,17 +494,22 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
   const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && paidDate >= funds.data.startedOn);
   const selectedAccountId = accountId || funds.data?.defaultExpenseAccountId || "";
+  const selectedAccount = funds.data?.accounts.find((account) => account.id === selectedAccountId);
   const save = useMutation({
     mutationFn: () => {
       if (!subscription) throw new Error("没有选择订阅");
       const amountMinor = parseAmountMinor(amount);
       if (!amountMinor) throw new Error("请输入有效付款金额");
       const actualLedgerAmount = currency === "USD" ? parseAmountMinor(actualCny) : amountMinor;
+      const accountAmountMinor = selectedAccount?.currency === "CNY"
+        ? undefined
+        : selectedAccount?.currency === "USD" && currency === "USD" ? amountMinor : parseAmountMinor(accountAmount);
       if ((fundsRequired || linkMode === "create") && !linkCategory) throw new Error("请选择订阅支出的分类");
       if ((fundsRequired || linkMode === "create") && !actualLedgerAmount) throw new Error("请填写实际扣款人民币金额");
-      if (fundsRequired && !selectedAccountId) throw new Error("请选择订阅扣款账户");
+      if (fundsRequired && !selectedAccount) throw new Error("请选择订阅扣款账户");
+      if (fundsRequired && selectedAccount?.currency !== "CNY" && !accountAmountMinor) throw new Error(`请填写实际扣款 ${selectedAccount?.currency ?? "外币"}`);
       const ledgerLink = fundsRequired
-        ? { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount!, accountId: selectedAccountId }
+        ? { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount!, accountId: selectedAccountId, accountAmountMinor }
         : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount! };
       return api.createSubscriptionPayment(subscription.id, { amountMinor, currency, localDate: paidDate, paymentType: "renewal", note: note.trim() || null, ledgerLink });
     },
@@ -511,13 +520,14 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   return <BottomSheet open={open} title="记录一次续费" closeLabel="关闭记录续费" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-payment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>}>
     <form id="subscription-payment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{subscription?.name} · 确认付款后才会更新下一次续费日期。</p>
-      <div className="matter-form-grid"><label className="matter-field"><span>本次付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => setCurrency(event.target.value as MatterCurrency)}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
+      <div className="matter-form-grid"><label className="matter-field"><span>本次付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => { setCurrency(event.target.value as MatterCurrency); setActualCny(""); setAccountAmount(""); }}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
       {currency === "USD" && <label className="matter-field"><span>实际扣款人民币 <small>用于账单</small></span><input inputMode="decimal" value={actualCny} onChange={(event) => setActualCny(event.target.value.replace(/[^\d.]/g, ""))} placeholder="例如 72.00" /></label>}
       <div className="matter-form-grid"><label className="matter-field"><span>付款日期</span><input required type="date" value={paidDate} onChange={(event) => setPaidDate(event.target.value)} /></label><label className="matter-field"><span>预计下次续费</span><input type="date" value={nextRenewalDate} readOnly /></label></div>
       <label className="matter-field"><span>备注 <small>选填</small></span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="首月优惠已结束" /></label>
       {fundsRequired ? <>
         <label className="matter-field"><span>订阅支出分类</span><select required value={linkCategory} onChange={(event) => setLinkCategory(event.target.value)}><option value="">选择分类</option>{(categories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>
-        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={setAccountId} label="订阅扣款账户" />
+        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={(value) => { setAccountId(value); setAccountAmount(""); }} label="订阅扣款账户" />
+        {selectedAccount && selectedAccount.currency !== "CNY" && (selectedAccount.currency === "USD" && currency === "USD" ? <label className="matter-field"><span>实际扣款 USD <small>与付款金额一致</small></span><input readOnly value={amount} /></label> : <label className="matter-field"><span>实际扣款 {selectedAccount.currency} <small>必填</small></span><input required inputMode="decimal" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label>)}
       </> : <LedgerLinkFields mode={linkMode} setMode={setLinkMode} kind="expense" setKind={() => undefined} amount={linkAmount || actualCny} setAmount={setLinkAmount} categoryId={linkCategory} setCategoryId={setLinkCategory} date={paidDate} setDate={setPaidDate} transactions={transactions.data?.items ?? []} categories={categories.data ?? []} currency={currency} />}
       {error && <p className="form-error" role="alert">{error}</p>}
 

@@ -40,7 +40,7 @@ describe("OpenClaw MCP", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.3.0" });
+      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.4.1" });
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "direct_add_transaction",
@@ -165,8 +165,8 @@ describe("OpenClaw MCP", () => {
     openclaw.setMode("direct");
     funds.activate({
       accounts: [
-        { name: "微信", icon: "微", openingBalanceMinor: 100_000, aliases: ["零钱"] },
-        { name: "支付宝", icon: "支", openingBalanceMinor: 50_000, aliases: [] }
+        { name: "微信", icon: "微", currency: "CNY", openingBalanceMinor: 100_000, aliases: ["零钱"] },
+        { name: "支付宝", icon: "支", currency: "CNY", openingBalanceMinor: 50_000, aliases: [] }
       ],
       defaultExpenseAccountName: "微信",
       defaultIncomeAccountName: "微信"
@@ -234,6 +234,47 @@ describe("OpenClaw MCP", () => {
       });
       expect(funds.getAccount(funds.resolveAccountId("微信")).balanceMinor).toBe(110_000);
       expect(funds.getAccount(funds.resolveAccountId("支付宝")).balanceMinor).toBe(59_950);
+
+      const bybit = funds.createAccount({
+        name: "Bybit虚拟卡",
+        icon: "卡",
+        currency: "USD",
+        openingBalanceMinor: 10_000,
+        aliases: ["Bybit"]
+      });
+      const foreignArgs = {
+        requestId: "funds-foreign-expense-001",
+        kind: "expense" as const,
+        amount: 140,
+        account: "Bybit",
+        accountAmount: 20,
+        categoryId: category.id,
+        localDate: "2026-08-23"
+      };
+      const foreignResult = await client.callTool({ name: "direct_add_transaction", arguments: foreignArgs });
+      const foreignReplay = await client.callTool({ name: "direct_add_transaction", arguments: foreignArgs });
+      const foreignPayload = JSON.parse((foreignResult.content as Array<{ type: "text"; text: string }>)[0]!.text) as { result: { id: string; amountMinor: number; accountAmountMinor: number }; duplicate: boolean };
+      const foreignReplayPayload = JSON.parse((foreignReplay.content as Array<{ type: "text"; text: string }>)[0]!.text) as { duplicate: boolean };
+      expect(foreignPayload).toMatchObject({ duplicate: false, result: { amountMinor: 14_000, accountAmountMinor: 2_000 } });
+      expect(foreignReplayPayload.duplicate).toBe(true);
+      expect(funds.getAccount(bybit.id).balanceMinor).toBe(8_000);
+      const movement = context.database.prepare("SELECT delta_minor FROM account_movements WHERE source_type = 'transaction' AND source_id = ?")
+        .get(foreignPayload.result.id) as { delta_minor: number };
+      expect(Number(movement.delta_minor)).toBe(-2_000);
+
+      const missingActual = await client.callTool({ name: "direct_add_transaction", arguments: {
+        ...foreignArgs,
+        requestId: "funds-foreign-missing-001",
+        accountAmount: undefined
+      } });
+      expect(missingActual.isError).toBe(true);
+      const missingProposalActual = await client.callTool({ name: "propose_add_transaction", arguments: {
+        ...foreignArgs,
+        requestId: "funds-foreign-proposal-missing-001",
+        accountAmount: undefined
+      } });
+      expect(missingProposalActual.isError).toBe(true);
+      expect(JSON.stringify(missingProposalActual.content)).toContain("不得查询或猜测汇率");
 
       const borrower = matters.createBorrower({ name: "账户测试借款人" });
       await client.callTool({

@@ -63,4 +63,35 @@ describe("数据库升级", () => {
     expect(readdirSync(backupLocalDir).some((name) => name.startsWith("money-pre-migration-"))).toBe(true);
     upgraded.close();
   });
+  it("从 v9 升级会为旧账户补 CNY，并按激活时间安全回填历史基线", () => {
+    const database = new DatabaseSync(":memory:");
+    migrations.slice(0, 9).forEach((migration) => migration.statements.forEach((statement) => database.exec(statement)));
+    const createdBefore = "2026-08-23T03:00:00.000Z";
+    const activatedAt = "2026-08-23T04:00:00.000Z";
+    const createdAfter = "2026-08-23T05:00:00.000Z";
+    database.prepare(`INSERT INTO categories(id, kind, name, icon, color, sort_order, is_archived, created_at, updated_at)
+      VALUES ('expense', 'expense', '测试', '测', '#123456', 0, 0, ?, ?)`).run(createdBefore, createdBefore);
+    database.prepare(`INSERT INTO accounts(
+      id, name, normalized_name, icon, opening_balance_minor, opened_on, is_archived, created_at, updated_at
+    ) VALUES ('legacy-account', '旧账户', '旧账户', '旧', 0, '2026-08-23', 0, ?, ?)`).run(createdBefore, createdBefore);
+    const insert = database.prepare(`INSERT INTO transactions(
+      id, kind, amount_minor, currency, category_id, occurred_at, local_date, note, source,
+      created_at, updated_at, account_id
+    ) VALUES (?, 'expense', 100, 'CNY', 'expense', '2026-08-23', '2026-08-23', NULL, 'user', ?, ?, ?)`);
+    insert.run("before-null", createdBefore, createdBefore, null);
+    insert.run("after-null", createdAfter, createdAfter, null);
+    insert.run("before-linked", createdBefore, createdBefore, "legacy-account");
+    database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES ('funds.started_on', '2026-08-23', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(activatedAt);
+
+    migrations[9]!.statements.forEach((statement) => database.exec(statement));
+
+    expect(database.prepare("SELECT currency FROM accounts WHERE id = 'legacy-account'").get()).toEqual({ currency: "CNY" });
+    expect(database.prepare("SELECT account_amount_minor FROM transactions WHERE id = 'before-null'").get())
+      .toEqual({ account_amount_minor: null });
+    expect(database.prepare("SELECT transaction_id, captured_at FROM funds_baseline_transactions ORDER BY transaction_id").all())
+      .toEqual([{ transaction_id: "before-null", captured_at: activatedAt }]);
+    database.close();
+  });
+
 });

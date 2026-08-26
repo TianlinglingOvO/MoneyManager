@@ -15,6 +15,7 @@ import {
 function response(options: {
   status?: number;
   contentType?: string;
+  contentLength?: string;
   body?: unknown;
   type?: ResponseType;
   redirected?: boolean;
@@ -27,7 +28,7 @@ function response(options: {
     type: options.type ?? "basic",
     redirected: options.redirected ?? false,
     url: options.url ?? "https://money.sutady.top/api/v1/status",
-    headers: { get: (name: string) => name.toLowerCase() === "content-type" ? (options.contentType ?? "application/json") : null },
+    headers: { get: (name: string) => name.toLowerCase() === "content-type" ? (options.contentType ?? "application/json") : name.toLowerCase() === "content-length" ? (options.contentLength ?? null) : null },
     json: vi.fn().mockResolvedValue(options.body ?? { data: { service: "ok" } })
   } as unknown as Response;
 }
@@ -73,6 +74,20 @@ describe("连接错误分类", () => {
     vi.mocked(fetch).mockResolvedValueOnce(response({ body: { data: { service: "ok" } } }));
     await expect(api.status()).resolves.toMatchObject({ service: "ok" });
     expect(getConnectionIssue()).toBeNull();
+  });
+  it("将 204、205 或 Content-Length 0 的成功响应解析为 void", async () => {
+    for (const options of [
+      { status: 204, contentType: "" },
+      { status: 205, contentType: "" },
+      { status: 200, contentType: "", contentLength: "0" }
+    ]) {
+      const empty = response(options);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(empty));
+
+      await expect(api.deleteAccount("11111111-1111-4111-8111-111111111111", "2026-08-24T00:00:00.000Z")).resolves.toBeUndefined();
+      expect(empty.json).not.toHaveBeenCalled();
+    }
+    expect(fetch).toHaveBeenCalledWith("/api/v1/accounts/11111111-1111-4111-8111-111111111111", expect.objectContaining({ method: "DELETE" }));
   });
 });
 

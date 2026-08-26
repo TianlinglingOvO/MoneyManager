@@ -62,6 +62,12 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
 export function validateProductionConfig(config: AppConfig): void {
   if (config.nodeEnv !== "production") return;
+  if (config.authMode === "disabled") {
+    if (config.host !== "127.0.0.1" && config.host !== "localhost") {
+      throw new Error("关闭身份验证时只允许监听本机 127.0.0.1");
+    }
+    return;
+  }
   if (config.authMode !== "cloudflare") {
     throw new Error("正式环境必须启用 Cloudflare Access 身份验证");
   }

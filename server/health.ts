@@ -398,20 +398,24 @@ export class HealthService {
       "/funds"
     ));
 
-    const missingAccounts = this.database.prepare(`SELECT id, updated_at FROM transactions
-      WHERE deleted_at IS NULL AND refunded_at IS NULL AND account_id IS NULL
-        AND local_date >= ? AND local_date BETWEEN ? AND ?`).all(started.value, monthStart, monthEnd) as unknown as Array<{
-          id: string; updated_at: string;
-        }>;
-    missingAccounts.forEach((transaction) => issue(
-      "funds_missing_account",
-      "critical",
-      "启用资金追踪后的账目缺少账户",
-      "这笔有效收支没有资金账户，收支统计仍存在，但账户余额无法可靠对应。",
-      [transaction.id, transaction.updated_at],
-      "/funds",
-      [transaction.id]
-    ));
+    const missingAccounts = this.database.prepare(`SELECT t.id, t.updated_at FROM transactions t
+      WHERE t.deleted_at IS NULL AND t.refunded_at IS NULL AND t.account_id IS NULL
+        AND t.local_date >= ? AND t.local_date BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM funds_baseline_transactions fb WHERE fb.transaction_id = t.id)
+      ORDER BY t.id`).all(started.value, monthStart, monthEnd) as unknown as Array<{
+        id: string; updated_at: string;
+      }>;
+    if (missingAccounts.length > 0) {
+      issue(
+        "funds_missing_account",
+        "critical",
+        `${missingAccounts.length} 笔账目缺少资金账户`,
+        "这些启用资金追踪后的有效收支没有资金账户，收支统计仍存在，但账户余额无法可靠对应。",
+        [monthStart, missingAccounts.map((transaction) => [transaction.id, transaction.updated_at])],
+        "/funds",
+        missingAccounts.map((transaction) => transaction.id)
+      );
+    }
 
     const movementNet = (sourceType: string, sourceId: string): Map<string, number> => {
       const rows = this.database.prepare(`SELECT account_id, SUM(delta_minor) AS total
@@ -446,20 +450,58 @@ export class HealthService {
       );
     };
 
-    const transactions = this.database.prepare(`SELECT id, kind, amount_minor, local_date, account_id,
-      refunded_at, refund_account_id, deleted_at, updated_at FROM transactions
-      WHERE local_date BETWEEN ? AND ?`).all(monthStart, monthEnd) as unknown as Array<{
-        id: string; kind: "income" | "expense"; amount_minor: number; local_date: string;
-        account_id: string | null; refunded_at: string | null; refund_account_id: string | null;
-        deleted_at: string | null; updated_at: string;
+    const transactions = this.database.prepare(`SELECT t.id, t.kind, t.amount_minor, t.account_amount_minor,
+      t.local_date, t.account_id, t.refunded_at, t.refund_account_id, t.deleted_at, t.updated_at,
+      a.currency AS account_currency, ra.currency AS refund_account_currency,
+      CASE WHEN fb.transaction_id IS NULL THEN 0 ELSE 1 END AS funds_baseline
+      FROM transactions t
+      LEFT JOIN accounts a ON a.id = t.account_id
+      LEFT JOIN accounts ra ON ra.id = t.refund_account_id
+      LEFT JOIN funds_baseline_transactions fb ON fb.transaction_id = t.id
+      WHERE t.local_date BETWEEN ? AND ?`).all(monthStart, monthEnd) as unknown as Array<{
+        id: string; kind: "income" | "expense"; amount_minor: number; account_amount_minor: number | null;
+        local_date: string; account_id: string | null; refunded_at: string | null; refund_account_id: string | null;
+        deleted_at: string | null; updated_at: string; account_currency: string | null;
+        refund_account_currency: string | null; funds_baseline: number;
       }>;
     transactions.forEach((transaction) => {
       const expected = new Map<string, number>();
-      if (!transaction.deleted_at && transaction.local_date >= started.value) {
-        if (!transaction.refunded_at && transaction.account_id) {
-          expected.set(transaction.account_id, transaction.kind === "expense" ? -Number(transaction.amount_minor) : Number(transaction.amount_minor));
-        } else if (transaction.refunded_at && !transaction.account_id && transaction.refund_account_id) {
-          expected.set(transaction.refund_account_id, transaction.kind === "expense" ? Number(transaction.amount_minor) : -Number(transaction.amount_minor));
+      const tracked = transaction.local_date >= started.value && !Boolean(transaction.funds_baseline);
+      if (!transaction.deleted_at) {
+        if (!transaction.refunded_at && tracked && transaction.account_id) {
+          const amount = transaction.account_currency === "CNY"
+            ? Number(transaction.amount_minor)
+            : Number(transaction.account_amount_minor);
+          if (!Number.isSafeInteger(amount) || amount <= 0) {
+            issue(
+              "funds_mismatch",
+              "critical",
+              "外币账目缺少实际账户金额",
+              "这笔账关联外币账户，但没有有效的实际账户扣款或入账金额。",
+              ["transaction-account-amount", transaction.id, transaction.updated_at],
+              "/funds",
+              [transaction.id]
+            );
+          } else {
+            expected.set(transaction.account_id, transaction.kind === "expense" ? -amount : amount);
+          }
+        } else if (transaction.refunded_at && (!tracked || !transaction.account_id) && transaction.refund_account_id) {
+          if (transaction.refund_account_currency !== "CNY") {
+            issue(
+              "funds_mismatch",
+              "critical",
+              "历史账目退款账户币种错误",
+              "历史账目退款必须进入人民币账户。",
+              ["transaction-refund-currency", transaction.id, transaction.updated_at],
+              "/funds",
+              [transaction.id]
+            );
+          } else {
+            expected.set(
+              transaction.refund_account_id,
+              transaction.kind === "expense" ? Number(transaction.amount_minor) : -Number(transaction.amount_minor)
+            );
+          }
         }
       }
       checkImpact("transaction", transaction.id, expected, transaction.updated_at, "/funds", [transaction.id]);

@@ -228,11 +228,11 @@ describe("HTTP API", () => {
   it("允许浏览器显示仅保存在本机的 blob 背景图片", async () => {
     const app = createApp(context.config, context.database).app;
     const response = await request(app).get("/health").expect(200);
-    expect(response.body).toMatchObject({ status: "ok", version: "2.3.0" });
+    expect(response.body).toMatchObject({ status: "ok", version: "2.4.1" });
     expect(response.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
 
     const status = await request(app).get("/api/v1/status").expect(200);
-    expect(status.body.data.version).toBe("2.3.0");
+    expect(status.body.data.version).toBe("2.4.1");
   });
 
   it("网页账目修改和删除拒绝旧版本，并拒绝跨站写请求", async () => {
@@ -317,4 +317,40 @@ describe("HTTP API", () => {
     expect(updated.body.data.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(updated.body.data.rows.find((row: { key: string }) => row.key === "timezone.initialized")?.value).toBe("true");
   });
+  it("普通设置接口隐藏资金幂等记录，但完整 JSON 导出保留审计数据", async () => {
+    const now = new Date().toISOString();
+    const note = "极私密余额说明";
+    const insert = context.database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)`);
+    insert.run(
+      "funds.account_balance_request.private-balance-001",
+      JSON.stringify({ hash: "balance", result: { note, balanceMinor: 12_345 } }),
+      now
+    );
+    insert.run(
+      "funds.adjustment_request.private-adjustment-001",
+      JSON.stringify({ hash: "adjustment", result: { note, targetBalanceMinor: 12_345 } }),
+      now
+    );
+    insert.run(
+      "funds.adjustment_undo_request.private-undo-001",
+      JSON.stringify({ hash: "undo", result: { note, balanceMinor: 12_345 } }),
+      now
+    );
+
+    const app = createApp(context.config, context.database).app;
+    const settings = await request(app).get("/api/v1/settings").expect(200);
+    const visible = JSON.stringify(settings.body);
+    expect(visible).not.toContain("funds.account_balance_request.");
+    expect(visible).not.toContain("funds.adjustment_request.");
+    expect(visible).not.toContain("funds.adjustment_undo_request.");
+    expect(visible).not.toContain(note);
+
+    const exported = await request(app).get("/api/v1/export.json").expect(200);
+    const audit = JSON.stringify(exported.body);
+    expect(audit).toContain("funds.account_balance_request.private-balance-001");
+    expect(audit).toContain("funds.adjustment_request.private-adjustment-001");
+    expect(audit).toContain("funds.adjustment_undo_request.private-undo-001");
+    expect(audit).toContain(note);
+  });
+
 });

@@ -1,6 +1,7 @@
 import { ChevronRight, RotateCcw, Trash2 } from "lucide-react";
 import type { DailyTransactionTotal, Transaction } from "@shared/types";
 import { localDateForTimestamp, useLedgerClock } from "../ledger-clock";
+import { formatAccountBalance } from "./AccountPicker";
 import { friendlyDate, money, signedMoney } from "../utils";
 
 interface TransactionListProps {
@@ -50,6 +51,9 @@ export function TransactionList({ items, onEdit, onRestore, onPermanentDelete, o
           <div className="transaction-list">
             {transactions.map((transaction) => {
               const canEdit = !transaction.deletedAt && Boolean(onEdit);
+              const accountCurrency = transaction.account?.currency ?? "CNY";
+              const accountAmountMinor = transaction.accountAmountMinor;
+              const hasForeignImpact = Boolean(transaction.account && accountCurrency !== "CNY" && accountAmountMinor !== null);
               return (
               <div
                 className="transaction-row"
@@ -72,7 +76,9 @@ export function TransactionList({ items, onEdit, onRestore, onPermanentDelete, o
                 <span className="transaction-row__body">
                   <strong>{transaction.category?.name ?? "未知分类"}</strong>
                   <small>{transaction.note ?? "无备注"}</small>
-                  {transaction.account && <small>账户：{transaction.account.icon} {transaction.account.name}</small>}
+                  {transaction.account && (hasForeignImpact
+                    ? <small className="transaction-account-impact">{transaction.account.icon} {transaction.account.name} · {transaction.kind === "expense" ? "实扣" : "实收"} {formatAccountBalance(accountAmountMinor!, accountCurrency)}</small>
+                    : <small>账户：{transaction.account.icon} {transaction.account.name}</small>)}
                   {transaction.refundedAt && <small className="transaction-refunded">已全额退款，不计入统计</small>}
                   {transaction.deletedAt && <small>发生于 {transaction.localDate}</small>}
                 </span>
