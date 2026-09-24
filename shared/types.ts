@@ -7,6 +7,8 @@ export type OpenClawOperationStatus = "running" | "applied" | "undone" | "failed
 export type AccountCurrency = "CNY" | "USD" | "USDT";
 export type MatterCurrency = "CNY" | "USD";
 export type MatterStatus = "active" | "paused" | "cancelled";
+export type PlanStatus = "open" | "completed" | "cancelled";
+export type PlanAttentionState = "none" | "overdue" | "due" | "scheduled";
 export type SubscriptionCycle = "month" | "year" | "custom";
 export type LedgerLinkMode = "none" | "existing" | "create";
 export type AppearancePreset = "warm-paper" | "porcelain" | "sage-ledger" | "ink-night";
@@ -216,6 +218,7 @@ export interface FinanceReport {
   kind: TransactionKind;
   range: PeriodRange;
   previousRange: PeriodRange;
+  isCurrentPeriod: boolean;
   incomeMinor: number;
   expenseMinor: number;
   balanceMinor: number;
@@ -269,6 +272,7 @@ export type HealthIssueType =
   | "large_expense"
   | "budget_warning"
   | "subscription_due"
+  | "plan_due"
   | "foreign_key"
   | "funds_negative"
   | "funds_missing_account"
@@ -357,6 +361,14 @@ export interface AiAnalysis {
   isStale: boolean;
 }
 
+export interface SystemReload {
+  runningVersion: string;
+  builtVersion: string;
+  supervised: boolean;
+  stale: boolean;
+  restarting: boolean;
+}
+
 export interface SystemStatus {
   service: "ok";
   database: "ok" | "error";
@@ -369,6 +381,7 @@ export interface SystemStatus {
     restoreVerification: BackupCheckStatus;
   };
   version: string;
+  reload: Omit<SystemReload, "restarting">;
 }
 
 export interface BackupCheckStatus {
@@ -539,4 +552,29 @@ export interface SubscriptionSummary {
   upcomingCount: number;
   upcoming: Subscription[];
   currencies: Array<{ currency: MatterCurrency; amountMinor: number }>;
+}
+
+export interface Plan {
+  id: string;
+  title: string;
+  amountMinor: number | null;
+  dueDate: string | null;
+  reminderDays: number;
+  status: PlanStatus;
+  note: string | null;
+  completedAt: string | null;
+  attentionState: PlanAttentionState;
+  ledgerLink: LedgerLink;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface PlanSummary {
+  openCount: number;
+  attentionCount: number;
+  dueCount: number;
+  overdueCount: number;
+  openAmountMinor: number;
+  upcoming: Plan[];
 }

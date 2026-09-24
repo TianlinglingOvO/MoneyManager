@@ -28,7 +28,14 @@ const desktopPrimaryItems = [
   { to: "/ai", label: "AI", icon: Sparkles }
 ];
 
-function NavItem({ item, mobile = false, badge = 0 }: { item: typeof desktopPrimaryItems[number]; mobile?: boolean; badge?: number }) {
+function mattersNavLabel(subscriptionAttention: number, planAttention: number): string {
+  const parts: string[] = [];
+  if (subscriptionAttention > 0) parts.push(`${subscriptionAttention}项订阅`);
+  if (planAttention > 0) parts.push(`${planAttention}项计划`);
+  return parts.length ? `事项，${parts.join("、")}需要留意` : "事项";
+}
+
+function NavItem({ item, mobile = false, badge = 0, badgeLabel }: { item: typeof desktopPrimaryItems[number]; mobile?: boolean; badge?: number; badgeLabel?: string }) {
   const Icon = item.icon;
   return (
     <NavLink
@@ -36,7 +43,7 @@ function NavItem({ item, mobile = false, badge = 0 }: { item: typeof desktopPrim
       end={item.end}
       viewTransition
       title={item.label}
-      aria-label={badge > 0 && item.label === "事项" ? `事项，${badge}项订阅需要留意` : item.label}
+      aria-label={badge > 0 && badgeLabel ? badgeLabel : item.label}
       className={({ isActive }) => `${mobile ? "mobile-nav__item" : "sidebar__item"} ${isActive ? "is-active" : ""}`}
     >
       <Icon size={mobile ? 21 : 19} strokeWidth={1.9} />
@@ -52,12 +59,17 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(sidebarStorageKey) === "true");
   const proposals = useQuery({ queryKey: ["proposals", "pending", "badge"], queryFn: () => api.proposals("pending") });
   const subscriptions = useQuery({ queryKey: ["matters", "subscriptions", "badge"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
+  const plans = useQuery({ queryKey: ["matters", "plans", "badge"], queryFn: api.planSummary, staleTime: 60_000 });
   const pending = proposals.data?.length ?? 0;
-  const matterBadge = subscriptions.data?.attentionCount ?? 0;
+  const subscriptionAttention = subscriptions.data?.attentionCount ?? 0;
+  const planAttention = plans.data?.attentionCount ?? 0;
+  const matterBadge = subscriptionAttention + planAttention;
+  const matterDestination = subscriptionAttention > 0 ? "/matters?tab=subscriptions" : planAttention > 0 ? "/matters?tab=plans" : "/matters?tab=loans";
   const primaryItems = desktopPrimaryItems.map((item) => item.label === "事项"
-    ? { ...item, to: matterBadge > 0 ? "/matters?tab=subscriptions" : "/matters?tab=loans" }
+    ? { ...item, to: matterDestination }
     : item);
   const mobilePrimaryItems = primaryItems.filter((item) => ["洞察", "账单", "事项"].includes(item.label));
+  const mattersLabel = mattersNavLabel(subscriptionAttention, planAttention);
 
   useEffect(() => localStorage.setItem(sidebarStorageKey, String(collapsed)), [collapsed]);
 
@@ -92,7 +104,7 @@ export function AppShell() {
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
         </button>
         <nav className="sidebar__nav" aria-label="主导航">
-          {primaryItems.map((item) => <NavItem key={item.to} item={item} badge={item.to.startsWith("/matters") ? matterBadge : 0} />)}
+          {primaryItems.map((item) => <NavItem key={item.to} item={item} badge={item.to.startsWith("/matters") ? matterBadge : 0} badgeLabel={item.to.startsWith("/matters") ? mattersLabel : undefined} />)}
         </nav>
         <button className="sidebar__new" onClick={() => openEntry()} title="记一笔（N）"><Plus size={19} /><span>记一笔</span></button>
         <div className="sidebar__secondary">
@@ -125,7 +137,7 @@ export function AppShell() {
       </div>
 
       <nav className="mobile-nav" aria-label="移动端主导航">
-        {mobilePrimaryItems.map((item) => <NavItem key={item.to} item={item} mobile badge={item.to.startsWith("/matters") ? matterBadge : 0} />)}
+        {mobilePrimaryItems.map((item) => <NavItem key={item.to} item={item} mobile badge={item.to.startsWith("/matters") ? matterBadge : 0} badgeLabel={item.to.startsWith("/matters") ? mattersLabel : undefined} />)}
         <button className="mobile-nav__add" onClick={() => openEntry()} aria-label="记一笔"><Plus size={23} /><span>记一笔</span></button>
       </nav>
     </div>

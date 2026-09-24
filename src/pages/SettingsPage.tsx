@@ -329,6 +329,21 @@ export function SettingsPage() {
     mutationFn: api.backup,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] })
   });
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await refreshApplication();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const reloadHint = status.data?.reload?.supervised
+    ? (status.data.reload.stale
+      ? "会先加载磁盘上已构建的最新本机服务，再更新网页。"
+      : "本机服务已是最新构建。「检查并刷新」会同步网页程序。")
+    : "会更新网页。若接口仍是旧版，请关掉 SMB Service 窗口后重新打开一次；之后这一按钮就能同步本机服务。";
   const visibleCategories = categories.data?.filter((item) => item.kind === kind) ?? [];
   const reorder = useMutation({
     mutationFn: async ({ category, direction }: { category: Category; direction: -1 | 1 }) => {
@@ -362,12 +377,12 @@ export function SettingsPage() {
       </section>
 
       <section className="content-card status-section">
-        <div className="section-title section-title--row"><div><h2>运行状态</h2><p>页面会自动同步账目并检查新版本，无需清除 Cookie。</p></div><button className="secondary-button" onClick={() => void refreshApplication()}><RefreshCw size={17} />检查并刷新</button></div>
+        <div className="section-title section-title--row"><div><h2>运行状态</h2><p>{reloadHint}</p></div><button className="secondary-button" type="button" disabled={refreshing} onClick={() => void refreshNow()}>{refreshing ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{refreshing ? "正在同步…" : "检查并刷新"}</button></div>
         <div className="status-grid">
           <div><span className="status-icon"><Database size={20} /></span><p>数据库</p><strong>{status.data?.database === "ok" ? "运行正常" : "等待连接"}</strong><small>SQLite · 本机 SSD</small></div>
           <div><span className="status-icon"><Bot size={20} /></span><p>DeepSeek</p><strong>{status.data?.deepseek === "configured" ? "已配置" : "尚未配置"}</strong><small>密钥仅保存在本机</small></div>
           <div><span className="status-icon"><HardDrive size={20} /></span><p>最近备份</p><strong>{status.data?.backup.lastSuccessAt ? new Date(status.data.backup.lastSuccessAt).toLocaleDateString("zh-CN") : "尚未备份"}</strong><small>{status.data?.backup.remoteConfigured ? "本地 + Google Drive" : "本地快照可用"}</small></div>
-          <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>私人账本</small></div>
+          <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>{status.data?.reload?.stale ? `运行 ${status.data.version} · 磁盘 ${status.data.reload.builtVersion}` : "私人账本"}</small></div>
         </div>
       </section>
 
@@ -424,7 +439,7 @@ export function SettingsPage() {
           <article><span><Smartphone size={21} /></span><div><strong>安装为 App</strong><p>在 Android Chrome 或电脑浏览器打开菜单，选择“安装应用”或“添加到主屏幕”。</p></div></article>
           <article><span><Cloud size={21} /></span><div><strong>Cloudflare Tunnel</strong><p>正式部署后由 Cloudflare 域名转发到本机，不需要开放家庭路由器端口。</p></div></article>
           <article><span><KeyRound size={21} /></span><div><strong>DeepSeek 密钥</strong><p>在服务电脑上双击“配置DeepSeek密钥.cmd”，隐藏输入密钥后重启服务；思考模式可在 .env 中设为 enabled 或 disabled。</p></div></article>
-          <article><span><Bot size={21} /></span><div><strong>OpenClaw MCP</strong><p>标准入口为 /mcp。当前为{openClawSettings.data?.mode === "direct" ? "直接接管模式：可管理账目、分类、借款、订阅、AI、备份和时区，操作记录保留 30 天。" : "确认模式：普通账目写入需要批准，借款和订阅只允许查询。"}密钥、Access 和服务控制永不开放。</p></div></article>
+          <article><span><Bot size={21} /></span><div><strong>OpenClaw MCP</strong><p>标准入口为 /mcp。当前为{openClawSettings.data?.mode === "direct" ? "直接接管模式：可管理账目、分类、借款、订阅、计划、AI、备份和时区，操作记录保留 30 天。" : "确认模式：普通账目写入需要批准，借款、订阅和计划只允许查询。"}密钥、Access 和服务控制永不开放。</p></div></article>
         </div>
       </section>
 

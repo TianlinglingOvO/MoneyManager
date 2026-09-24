@@ -22,6 +22,7 @@ const report: FinanceReport = {
   kind: "expense",
   range: { start: "2026-08-01", end: "2026-08-31", label: "2026年8月" },
   previousRange: { start: "2026-07-01", end: "2026-07-31", label: "2026年7月" },
+  isCurrentPeriod: false,
   incomeMinor: 0,
   expenseMinor: 0,
   balanceMinor: 0,

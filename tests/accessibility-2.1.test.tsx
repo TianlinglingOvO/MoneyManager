@@ -156,6 +156,25 @@ describe("SMB 2.1.2 响应式弹层基线", () => {
     await waitFor(() => expect(screen.getByLabelText("当前位置")).toHaveTextContent("/bills?view=ledger"));
   });
 
+  it("已核对的体检问题不再出现在列表里", () => {
+    const acknowledgedHealth: HealthReport = {
+      ...health,
+      issueCount: 0,
+      acknowledgedCount: 1,
+      issues: [{
+        ...health.issues[0],
+        fingerprint: "budget-over-test",
+        type: "budget_warning",
+        title: "月总预算已经超支",
+        acknowledged: true
+      }]
+    };
+    renderWithQuery(<HealthSheet open month="2026-08" report={acknowledgedHealth} isLoading={false} isError={false} onClose={() => undefined} onOpenBudget={() => undefined} />);
+    expect(screen.queryByRole("heading", { name: "月总预算已经超支" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "标记已核对" })).not.toBeInTheDocument();
+    expect(screen.getByText(/另有 1 项已核对，不再列出/)).toBeInTheDocument();
+  });
+
   it("预算体检提醒退出后直接打开对应月份的预算管理", async () => {
     const onClose = vi.fn();
     const onOpenBudget = vi.fn();

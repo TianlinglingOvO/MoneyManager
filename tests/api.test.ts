@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
+import { APP_VERSION } from "../shared/app-metadata";
 import type { TestContext } from "./helpers";
 import { createTestContext, expenseCategory, incomeCategory, transactionInput } from "./helpers";
 
@@ -228,11 +229,58 @@ describe("HTTP API", () => {
   it("允许浏览器显示仅保存在本机的 blob 背景图片", async () => {
     const app = createApp(context.config, context.database).app;
     const response = await request(app).get("/health").expect(200);
-    expect(response.body).toMatchObject({ status: "ok", version: "2.4.1" });
+    expect(response.body).toMatchObject({ status: "ok", version: APP_VERSION });
     expect(response.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
 
     const status = await request(app).get("/api/v1/status").expect(200);
-    expect(status.body.data.version).toBe("2.4.1");
+    expect(status.body.data.version).toBe(APP_VERSION);
+    expect(status.body.data.reload).toMatchObject({
+      runningVersion: APP_VERSION,
+      builtVersion: APP_VERSION,
+      supervised: false
+    });
+  });
+
+  it("财务报告用账本今天做同进度对比，月初不拿整个上月", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T04:00:00.000Z"));
+    try {
+      const category = expenseCategory(context);
+      context.repository.createTransaction(transactionInput(category.id, { amountMinor: 1_000, localDate: "2026-08-01" }));
+      context.repository.createTransaction(transactionInput(category.id, { amountMinor: 50_000, localDate: "2026-08-15" }));
+      context.repository.createTransaction(transactionInput(category.id, { amountMinor: 3_000, localDate: "2026-09-01" }));
+      const app = createApp(context.config, context.database).app;
+      const report = await request(app).get("/api/v1/reports/finance?grain=month&anchor=2026-09-01&kind=expense").expect(200);
+      expect(report.body.data.isCurrentPeriod).toBe(true);
+      expect(report.body.data.previousRange).toMatchObject({ start: "2026-08-01", end: "2026-08-01" });
+      expect(report.body.data.selectedComparison.previous).toBe(1_000);
+      expect(report.body.data.categories[0]).toMatchObject({
+        amountMinor: 3_000,
+        previousAmountMinor: 1_000,
+        changePercent: 200,
+        changeState: "up"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("未托管时重新加载接口不退出进程", async () => {
+    const { setReloadExitHandler } = await import("../server/reload");
+    const exit = vi.fn();
+    setReloadExitHandler(exit);
+    try {
+      const app = createApp(context.config, context.database).app;
+      const reloaded = await request(app).post("/api/v1/system/reload").expect(200);
+      expect(reloaded.body.data).toMatchObject({
+        runningVersion: APP_VERSION,
+        supervised: false,
+        restarting: false
+      });
+      expect(exit).not.toHaveBeenCalled();
+    } finally {
+      setReloadExitHandler(null);
+    }
   });
 
   it("网页账目修改和删除拒绝旧版本，并拒绝跨站写请求", async () => {
@@ -255,7 +303,7 @@ describe("HTTP API", () => {
       .expect(403);
     await request(app).post("/api/v1/transactions")
       .set("Origin", "https://attacker.example")
-      .set("Host", "money.sutady.top")
+      .set("Host", "money.example.com")
       .send(transactionInput(category.id, { localDate: "2026-08-04" }))
       .expect(403);
   });
@@ -290,6 +338,86 @@ describe("HTTP API", () => {
     } finally {
       securedContext.cleanup();
     }
+  });
+
+  it("MCP 对错误请求返回 JSON-RPC 而不是通用 500", async () => {
+    expenseCategory(context);
+    const app = createApp(context.config, context.database).app;
+    const mcpHeaders = { Accept: "application/json, text/event-stream" };
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      logs.push(args.map((value) => String(value)).join(" "));
+    };
+    try {
+      const malformed = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .set("Content-Type", "application/json")
+        .send("{not-json");
+      expect(malformed.status).toBe(400);
+      expect(malformed.body).toMatchObject({ jsonrpc: "2.0", error: { code: -32700, message: "MCP 请求不是有效 JSON" } });
+      expect(JSON.stringify(malformed.body)).not.toContain("服务暂时无法完成请求");
+
+      const missingSession = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_categories", arguments: {} } });
+      expect(missingSession.status).toBe(400);
+      expect(missingSession.body).toMatchObject({ jsonrpc: "2.0", error: { code: -32000, message: "无效或缺少 MCP 会话" } });
+
+      const staleSession = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .set("mcp-session-id", "00000000-0000-4000-8000-000000000000")
+        .send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_categories", arguments: {} } });
+      expect(staleSession.status).toBe(400);
+      expect(staleSession.body).toMatchObject({ jsonrpc: "2.0", error: { code: -32000, message: "无效或缺少 MCP 会话" } });
+
+      const getWithoutSession = await request(app).get("/mcp").set(mcpHeaders);
+      expect(getWithoutSession.status).toBe(400);
+      expect(getWithoutSession.body).toMatchObject({ jsonrpc: "2.0", error: { code: -32000, message: "无效或缺少 MCP 会话" } });
+      expect(JSON.stringify(getWithoutSession.body)).not.toContain("服务暂时无法完成请求");
+
+      const initialized = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "0" } }
+        })
+        .expect(200);
+      const sessionId = initialized.headers["mcp-session-id"];
+      expect(sessionId).toEqual(expect.any(String));
+      await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .set("mcp-session-id", sessionId)
+        .send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const unknownMethod = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .set("mcp-session-id", sessionId)
+        .send({ jsonrpc: "2.0", id: 4, method: "list_categories", params: { kind: "expense" } });
+      expect(unknownMethod.status).toBe(200);
+      expect(unknownMethod.body.error?.code).toBe(-32601);
+      expect(JSON.stringify(unknownMethod.body)).not.toContain("服务暂时无法完成请求");
+
+      const listed = await request(app)
+        .post("/mcp")
+        .set(mcpHeaders)
+        .set("mcp-session-id", sessionId)
+        .send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_categories", arguments: { kind: "expense" } } })
+        .expect(200);
+      expect(listed.body.result?.content?.[0]?.text).toContain("餐饮");
+    } finally {
+      console.error = originalError;
+    }
+    expect(logs.join("\n")).toMatch(/POST \/mcp SyntaxError/);
+    expect(logs.join("\n")).not.toMatch(/Bearer |mcpApiToken|not-json|餐饮|服务暂时无法完成请求/);
   });
 
   it("可导出 UTF-8 CSV 和完整 JSON", async () => {

@@ -173,4 +173,98 @@ describe("财务事项 API", () => {
     const countAfter = Number((context.database.prepare("SELECT COUNT(*) AS count FROM borrowers").get() as { count: number }).count);
     expect(countAfter).toBe(countBefore);
   });
+
+  it("计划支持可选日期金额、无金额完成不入账、有金额完成才记账", async () => {
+    const expense = expenseCategory(context);
+    const app = createApp(context.config, context.database).app;
+    const undated = await request(app).post("/api/v1/plans").set("Idempotency-Key", "plan-undated").send({ title: "以后想买的相机" }).expect(201);
+    expect(undated.body.data).toMatchObject({ dueDate: null, amountMinor: null, status: "open", attentionState: "none" });
+    expect(undated.body.data.ledgerLink.mode).toBe("none");
+    const dated = await request(app).post("/api/v1/plans").send({
+      title: "预购尾款",
+      amountMinor: 12_800,
+      dueDate: "2026-08-20",
+      reminderDays: 3
+    }).expect(201);
+    expect(dated.body.data.amountMinor).toBe(12_800);
+    await request(app).post("/api/v1/plans").send({ title: "零元", amountMinor: 0 }).expect(400);
+    await request(app).post("/api/v1/plans").send({ title: "相机", accountId: "11111111-1111-4111-8111-111111111111" }).expect(400);
+
+    const completedOpen = await request(app).post(`/api/v1/plans/${undated.body.data.id}/complete`)
+      .send({ expectedUpdatedAt: undated.body.data.updatedAt }).expect(200);
+    expect(completedOpen.body.data.status).toBe("completed");
+    expect(context.repository.listTransactions().total).toBe(0);
+
+    const missingLink = await request(app).post(`/api/v1/plans/${dated.body.data.id}/complete`)
+      .send({ expectedUpdatedAt: dated.body.data.updatedAt });
+    expect(missingLink.status).toBe(409);
+
+    const booked = await request(app).post(`/api/v1/plans/${dated.body.data.id}/complete`).send({
+      expectedUpdatedAt: dated.body.data.updatedAt,
+      amountMinor: 13_000,
+      localDate: "2026-08-21",
+      ledgerLink: { mode: "create", categoryId: expense.id }
+    }).expect(200);
+    expect(booked.body.data.status).toBe("completed");
+    expect(booked.body.data.amountMinor).toBe(13_000);
+    expect(booked.body.data.ledgerLink.mode).toBe("create");
+    expect(context.repository.listTransactions().total).toBe(1);
+    const transaction = context.repository.getTransaction(booked.body.data.ledgerLink.transactionId);
+    expect(transaction).toMatchObject({ amountMinor: 13_000, kind: "expense", localDate: "2026-08-21", accountId: null });
+
+    await request(app).patch(`/api/v1/plans/${booked.body.data.id}`).send({
+      title: "改回去",
+      expectedUpdatedAt: booked.body.data.updatedAt
+    }).expect(409);
+
+    const summary = await request(app).get("/api/v1/plans/summary").expect(200);
+    expect(summary.body.data.openCount).toBe(0);
+    const csv = await request(app).get("/api/v1/export.plans.csv").expect(200);
+    expect(csv.text).toContain("预购尾款");
+  });
+
+  it("资金启用后有金额的计划完成必须带支付账户", async () => {
+    const expense = expenseCategory(context);
+    const created = createApp(context.config, context.database);
+    context.repository.attachFundsService(created.services.funds);
+    const activated = await request(created.app).post("/api/v1/funds/activate").set("Idempotency-Key", "plan-funds-activate").send({
+      accounts: [{ name: "微信", icon: "微", openingBalanceMinor: 100_000 }],
+      defaultExpenseAccountName: "微信",
+      defaultIncomeAccountName: "微信"
+    }).expect(201);
+    const accountId = activated.body.data.accounts[0].id as string;
+    const startedOn = activated.body.data.startedOn as string;
+    const plan = await request(created.app).post("/api/v1/plans").send({
+      title: "尾款",
+      amountMinor: 2_000,
+      dueDate: startedOn
+    }).expect(201);
+    expect(created.services.funds.getAccount(accountId).balanceMinor).toBe(100_000);
+    await request(created.app).post(`/api/v1/plans/${plan.body.data.id}/complete`).send({
+      expectedUpdatedAt: plan.body.data.updatedAt,
+      localDate: startedOn,
+      ledgerLink: { mode: "create", categoryId: expense.id }
+    }).expect(409);
+    const booked = await request(created.app).post(`/api/v1/plans/${plan.body.data.id}/complete`).send({
+      expectedUpdatedAt: plan.body.data.updatedAt,
+      localDate: startedOn,
+      ledgerLink: { mode: "create", categoryId: expense.id, accountId }
+    }).expect(200);
+    expect(booked.body.data.ledgerLink.mode).toBe("create");
+    expect(created.services.funds.getAccount(accountId).balanceMinor).toBe(98_000);
+  });
+
+  it("计划回收站 30 天后清除且完整导出不被截断", () => {
+    const { services } = createApp(context.config, context.database);
+    for (let index = 0; index < 101; index += 1) {
+      services.matters.createPlan({ title: `计划 ${index + 1}` });
+    }
+    const exported = services.matters.exportData() as { plans: unknown[] };
+    expect(exported.plans).toHaveLength(101);
+    const first = services.matters.listPlans({ pageSize: 1 }).items[0]!;
+    services.matters.deletePlan(first.id, {}, first.updatedAt);
+    context.database.prepare("UPDATE plans SET deleted_at = ? WHERE id = ?").run("2026-06-01T00:00:00.000Z", first.id);
+    expect(services.matters.purgeExpiredTrash(new Date("2026-08-20T00:00:00.000Z"))).toBeGreaterThan(0);
+    expect(() => services.matters.getPlan(first.id)).toThrow();
+  });
 });

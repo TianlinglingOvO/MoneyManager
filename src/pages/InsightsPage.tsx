@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useReducer, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { addMonths, addWeeks, addYears, format } from "date-fns";
-import { ArrowDownRight, ArrowUpRight, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, CalendarDays, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ReportGrain, TransactionKind } from "@shared/types";
 import { api } from "../api";
@@ -16,6 +16,7 @@ import { useEntry } from "../entry-context";
 import { budgetProgress, budgetTone, hasConfiguredBudget } from "../finance-health";
 import { useLedgerClock } from "../ledger-clock";
 import { useReducedMotion, useResolvedChartMotionToken } from "../motion";
+import { categoryDetailAriaLabel, comparisonHeadline, formatSameProgressWindow, previousAmountLabel } from "../insights-comparison";
 import { money, percentLabel } from "../utils";
 
 const FinanceCharts = lazy(() => import("../components/FinanceCharts"));
@@ -105,6 +106,7 @@ export function InsightsPage() {
   });
   const loanSummaryQuery = useQuery({ queryKey: ["matters", "loans", "summary"], queryFn: api.loanSummary, staleTime: 60_000 });
   const subscriptionSummaryQuery = useQuery({ queryKey: ["matters", "subscriptions", "summary"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
+  const planSummaryQuery = useQuery({ queryKey: ["matters", "plans", "summary"], queryFn: api.planSummary, staleTime: 60_000 });
   const fundsSummaryQuery = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary, staleTime: 30_000 });
   const report = reportQuery.data;
   const budgetMonth = report?.range.start.slice(0, 7) ?? anchor.slice(0, 7);
@@ -204,7 +206,7 @@ export function InsightsPage() {
             <article className="insight-summary__primary"><span>{kind === "expense" ? "本期支出" : "本期收入"}</span><strong><MoneyValue amountMinor={report.selectedTotalMinor} animateKey={motionKey} /></strong><small>{report.range.label}</small></article>
             <div className="insight-summary__metrics">
               <article><span>{averageLabel}</span><strong><MoneyValue amountMinor={report.selectedAverageMinor} animateKey={motionKey} /></strong><small>按 {report.averageDivisor} 个{report.averageUnit === "month" ? "月" : "自然日"}计算</small></article>
-              <article className={`is-${comparisonTone}`}><span>环比 {report.previousRange.label}</span><strong><ComparisonIcon size={19} />{percentLabel(report.selectedComparison.percent, report.selectedComparison.state)}</strong><small>{report.selectedComparison.delta >= 0 ? "+" : "−"}{money(Math.abs(report.selectedComparison.delta))}</small></article>
+              <article className={`is-${comparisonTone}`}><span>{comparisonHeadline(report.grain, report.isCurrentPeriod, report.previousRange.label)}</span><strong><ComparisonIcon size={19} />{percentLabel(report.selectedComparison.percent, report.selectedComparison.state)}</strong><small>{formatSameProgressWindow(report.previousRange.start, report.previousRange.end, report.grain === "year")} · {report.selectedComparison.delta >= 0 ? "+" : "−"}{money(Math.abs(report.selectedComparison.delta))}</small></article>
               <article><span>记录笔数</span><strong>{report.transactionCount}</strong><small>本期有效账目</small></article>
             </div>
           </section>
@@ -239,7 +241,7 @@ export function InsightsPage() {
             </button>
           </section>}
 
-          {(fundsSummaryQuery.data || loanSummaryQuery.data || subscriptionSummaryQuery.data) && <section className="insight-finance-grid" aria-label="财务事项摘要">
+          {(fundsSummaryQuery.data || loanSummaryQuery.data || subscriptionSummaryQuery.data || planSummaryQuery.data) && <section className="insight-finance-grid" aria-label="财务事项摘要">
             {fundsSummaryQuery.data && <Link to="/funds" className="insight-matter-card insight-matter-card--funds">
               <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
               <span><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><em>{fundsSummaryQuery.data.enabled ? fundsCardDetail : "填写现实余额后开始追踪"}</em></span>
@@ -253,6 +255,11 @@ export function InsightsPage() {
             {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insight-matter-card insight-matter-card--subscription">
               <span className="insight-matter-card__icon"><Clock3 size={18} /></span>
               <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><em>{subscriptionSummaryQuery.data.upcoming.length} 项近期需要确认 · 查看订阅</em></span>
+              <ChevronRight size={17} />
+            </Link>}
+            {planSummaryQuery.data && <Link to="/matters?tab=plans" className="insight-matter-card insight-matter-card--plan">
+              <span className="insight-matter-card__icon"><CalendarDays size={18} /></span>
+              <span><small>待办计划</small><strong>{planSummaryQuery.data.attentionCount > 0 ? `${planSummaryQuery.data.attentionCount} 项` : `${planSummaryQuery.data.openCount} 项`}</strong><em>{planSummaryQuery.data.openCount} 项未完成 · 查看计划</em></span>
               <ChevronRight size={17} />
             </Link>}
           </section>}
@@ -274,10 +281,10 @@ export function InsightsPage() {
                   <div className="ranking-list">
                     {report.categories.length === 0 && <p className="muted-copy">暂无分类数据</p>}
                     {visibleCategories.map((category, index) => (
-                      <Link className="ranking-row" key={category.categoryId} to={ledgerPath(category.categoryId)} aria-label={`查看${category.name}分类账单`}>
+                      <Link className="ranking-row" key={category.categoryId} to={ledgerPath(category.categoryId)} aria-label={categoryDetailAriaLabel(category.name, category.amountMinor, category.previousAmountMinor, category.changePercent, category.changeState)}>
                         <span className="ranking-row__number">{String(index + 1).padStart(2, "0")}</span>
                         <span className="ranking-row__icon" style={{ background: `${category.color}18` }}>{category.icon}</span>
-                        <div className="ranking-row__body"><strong>{category.name}</strong></div>
+                        <div className="ranking-row__body"><strong>{category.name}</strong><small>{previousAmountLabel(category.previousAmountMinor, category.changeState)}</small></div>
                         <div className="ranking-row__value"><strong>{money(category.amountMinor)}</strong><small className={`is-${category.changeState}`}>{percentLabel(category.changePercent, category.changeState)}</small></div>
                       </Link>
                     ))}

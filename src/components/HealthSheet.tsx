@@ -27,6 +27,7 @@ function severityLabel(issue: HealthIssue): string {
 function actionLabel(issue: HealthIssue): string {
   if (issue.type === "budget_warning") return issue.href?.startsWith("/?") ? "管理预算" : "查看分类账单";
   if (issue.type === "subscription_due") return "查看订阅";
+  if (issue.type === "plan_due") return "查看计划";
   if (issue.type === "foreign_key") return "查看设置";
   return "查看账目";
 }
@@ -68,9 +69,9 @@ export function HealthSheet({ open, month, report, isLoading, isError, onClose, 
     <div className="health-sheet__content">
       <p className="sheet-intro">体检只帮助发现可能需要回看的记录；不会替你修改账本。</p>
       {isLoading ? <div className="sheet-loading" role="status">正在检查账本…</div> : isError ? <p className="form-error" role="alert">体检暂时无法读取，请稍后重试。</p> : <>
-        <div className="health-score"><span>本月待核对</span><strong>{activeIssues.length}<small>项</small></strong><p>{activeIssues.length === 0 ? "目前没有需要处理的项目。" : `${criticalIssues > 0 ? `${criticalIssues} 项需要处理` : "没有严重问题"}${warningIssues > 0 ? `，${warningIssues} 项建议核对` : ""}。`}</p><small className="health-score__legacy">数据健康度 {report?.score ?? 100} 分</small></div>
+        <div className="health-score"><span>本月待核对</span><strong>{activeIssues.length}<small>项</small></strong><p>{activeIssues.length === 0 ? "目前没有需要处理的项目。" : `${criticalIssues > 0 ? `${criticalIssues} 项需要处理` : "没有严重问题"}${warningIssues > 0 ? `，${warningIssues} 项建议核对` : ""}。`}{(report?.acknowledgedCount ?? 0) > 0 ? `另有 ${report?.acknowledgedCount} 项已核对，不再列出。` : ""}</p><small className="health-score__legacy">数据健康度 {report?.score ?? 100} 分</small></div>
         <div className="health-issue-list">
-          {issues.map((issue) => {
+          {activeIssues.map((issue) => {
             const isFundsBatch = issue.type === "funds_missing_account" && issue.relatedTransactionIds.length > 0;
             const isExpanded = expandedFingerprint === issue.fingerprint;
             return <article key={issue.fingerprint} className={`health-issue is-${issue.severity} ${issue.acknowledged ? "is-acknowledged" : ""}`.trim()}>

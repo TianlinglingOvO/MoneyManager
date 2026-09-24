@@ -50,7 +50,7 @@ import { AppError } from "./errors";
 import { LedgerRepository } from "./repository";
 import { AiService } from "./ai";
 import { BackupService } from "./backup";
-import { attachMcpRoutes } from "./mcp";
+import { attachMcpRoutes, isBodyJsonParseError, logSafeRequestError } from "./mcp";
 import { OpenClawControlService } from "./openclaw-control";
 import { AppearanceService } from "./appearance";
 import { MattersRepository, attachMatterRoutes } from "./matters";
@@ -58,6 +58,7 @@ import { APP_VERSION } from "../shared/app-metadata";
 import { BudgetService } from "./budgets";
 import { HealthService } from "./health";
 import { FundsService } from "./funds";
+import { applyReloadRequest, inspectReload } from "./reload";
 
 function localDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -518,7 +519,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.get("/api/v1/reports/finance", (request, response, next) => {
     try {
       const query = reportQuerySchema.parse(request.query);
-      response.json({ data: repository.getFinanceReport(query.grain, query.anchor, query.kind) });
+      response.json({ data: repository.getFinanceReport(query.grain, query.anchor, query.kind, localDate(config.timezone)) });
     } catch (error) { next(error); }
   });
 
@@ -690,13 +691,19 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.get("/api/v1/status", (_request, response) => {
     let databaseStatus: "ok" | "error" = "ok";
     try { database.prepare("SELECT 1").get(); } catch { databaseStatus = "error"; }
+    const reload = inspectReload();
     response.json({ data: {
       service: "ok",
       database: databaseStatus,
       deepseek: config.deepseekApiKey ? "configured" : "missing",
       backup: backup.status(),
-      version: APP_VERSION
+      version: APP_VERSION,
+      reload
     } });
+  });
+
+  app.post("/api/v1/system/reload", (_request, response) => {
+    response.json({ data: applyReloadRequest() });
   });
 
   app.post("/api/v1/backups", async (_request, response, next) => {
@@ -760,7 +767,12 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.status(404).json({ error: { code: "NOT_FOUND", message: `未找到 ${request.method} ${request.path}` } });
   });
 
-  app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+  app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+    if (request.path === "/mcp" && isBodyJsonParseError(error)) {
+      logSafeRequestError(request, error);
+      response.status(400).json({ jsonrpc: "2.0", error: { code: -32700, message: "MCP 请求不是有效 JSON" }, id: null });
+      return;
+    }
     if (error instanceof ZodError) {
       response.status(400).json({ error: { code: "VALIDATION_ERROR", message: error.issues[0]?.message ?? "输入内容有误", issues: error.issues } });
       return;
@@ -772,6 +784,13 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     const message = error instanceof Error ? error.message : "未知错误";
     if (/UNIQUE constraint failed/i.test(message)) {
       response.status(409).json({ error: { code: "CONFLICT", message: "这条记录与已有内容重复" } });
+      return;
+    }
+    logSafeRequestError(request, error);
+    if (request.path === "/mcp") {
+      if (!response.headersSent) {
+        response.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "MCP 内部错误" }, id: null });
+      }
       return;
     }
     response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });

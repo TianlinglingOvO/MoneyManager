@@ -74,6 +74,7 @@ export class HealthService {
     this.addLargeExpenseIssues(month, transactions, issues);
     this.addBudgetIssues(month, issues);
     this.addSubscriptionIssues(range.start, range.end, issues);
+    this.addPlanIssues(range.start, range.end, issues);
     this.addFundsIssues(range.start, range.end, issues);
     this.addForeignKeyIssues(issues);
     const acknowledgements = new Set((this.database.prepare(
@@ -272,9 +273,7 @@ export class HealthService {
           fingerprint: fingerprint("budget_warning", [
             "total",
             month,
-            budget.updatedAt,
-            budget.spentMinor,
-            budget.forecastMinor
+            over ? "over" : "near"
           ]),
           type: "budget_warning",
           severity: over ? "critical" : "warning",
@@ -289,9 +288,7 @@ export class HealthService {
         issues.push({
           fingerprint: fingerprint("budget_warning", [
             "forecast",
-            month,
-            budget.updatedAt,
-            budget.forecastMinor
+            month
           ]),
           type: "budget_warning",
           severity: "warning",
@@ -310,9 +307,8 @@ export class HealthService {
         fingerprint: fingerprint("budget_warning", [
           "category",
           month,
-          budget.updatedAt,
           category.categoryId,
-          category.spentMinor
+          ratio >= 1 ? "over" : "near"
         ]),
         type: "budget_warning",
         severity: ratio >= 1 ? "critical" : "warning",
@@ -356,6 +352,42 @@ export class HealthService {
         detail: `续费日期为 ${subscription.next_billing_date}，SMB 不会自动假定已经续费。`,
         relatedTransactionIds: [],
         href: "/matters?tab=subscriptions",
+        acknowledged: false
+      });
+    });
+  }
+
+  private addPlanIssues(monthStart: string, monthEnd: string, issues: HealthIssue[]): void {
+    const today = this.budgets.today();
+    const currentMonth = today.slice(0, 7);
+    const rows = (monthStart.slice(0, 7) === currentMonth
+      ? this.database.prepare(`SELECT id, title, due_date, reminder_days, updated_at
+          FROM plans
+          WHERE deleted_at IS NULL AND status = 'open' AND due_date IS NOT NULL
+            AND due_date <= ?
+          ORDER BY due_date`).all(monthEnd)
+      : this.database.prepare(`SELECT id, title, due_date, reminder_days, updated_at
+          FROM plans
+          WHERE deleted_at IS NULL AND status = 'open' AND due_date IS NOT NULL
+            AND due_date >= ? AND due_date <= ?
+          ORDER BY due_date`).all(monthStart, monthEnd)
+    ) as unknown as Array<{ id: string; title: string; due_date: string; reminder_days: number; updated_at: string }>;
+    rows.forEach((plan) => {
+      const reminderDate = dateOffset(plan.due_date, -Number(plan.reminder_days));
+      if (reminderDate > today && plan.due_date > today) return;
+      const due = plan.due_date <= today;
+      issues.push({
+        fingerprint: fingerprint("plan_due", [
+          plan.id,
+          plan.updated_at,
+          plan.due_date
+        ]),
+        type: "plan_due",
+        severity: due ? "critical" : "info",
+        title: due ? `${plan.title}待付款` : `${plan.title}即将到期`,
+        detail: `计划日期为 ${plan.due_date}，完成时才会记账。`,
+        relatedTransactionIds: [],
+        href: "/matters?tab=plans",
         acknowledged: false
       });
     });

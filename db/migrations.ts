@@ -482,5 +482,44 @@ export const migrations: Migration[] = [
         JOIN settings s ON s.key = 'funds.started_on'
         WHERE t.account_id IS NULL AND t.created_at <= s.updated_at`
     ]
+  },
+  {
+    version: 11,
+    name: "plans",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS plans (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor > 0),
+        due_date TEXT,
+        reminder_days INTEGER NOT NULL DEFAULT 3,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'completed', 'cancelled')),
+        note TEXT,
+        completed_at TEXT,
+        ledger_link_mode TEXT NOT NULL DEFAULT 'none' CHECK (ledger_link_mode IN ('none', 'existing', 'create')),
+        ledger_transaction_id TEXT REFERENCES transactions(id),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      )`,
+      "CREATE INDEX IF NOT EXISTS idx_plans_status_due ON plans(deleted_at, status, due_date)",
+      "CREATE INDEX IF NOT EXISTS idx_plans_title ON plans(title)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_ledger_transaction ON plans(ledger_transaction_id)",
+      "ALTER TABLE openclaw_operation_items RENAME TO openclaw_operation_items_legacy_v11",
+      `CREATE TABLE openclaw_operation_items (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES openclaw_operations(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('transaction', 'category', 'proposal', 'setting', 'borrower', 'loan', 'loan_repayment', 'subscription', 'subscription_payment', 'budget', 'account', 'transfer', 'account_adjustment', 'plan')),
+        entity_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT
+      )`,
+      `INSERT INTO openclaw_operation_items(id, operation_id, sequence, entity_type, entity_id, before_json, after_json)
+        SELECT id, operation_id, sequence, entity_type, entity_id, before_json, after_json
+        FROM openclaw_operation_items_legacy_v11`,
+      "DROP TABLE openclaw_operation_items_legacy_v11",
+      "CREATE UNIQUE INDEX idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
+    ]
   }
 ];

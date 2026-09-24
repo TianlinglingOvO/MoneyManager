@@ -61,6 +61,7 @@ const report: FinanceReport = {
   kind: "expense",
   range: { start: "2026-08-01", end: "2026-08-31", label: "2026年8月" },
   previousRange: { start: "2026-07-01", end: "2026-07-31", label: "2026年7月" },
+  isCurrentPeriod: false,
   incomeMinor: 0,
   expenseMinor: 2_440,
   balanceMinor: -2_440,
@@ -115,7 +116,7 @@ describe("洞察与账单下钻", () => {
     expect(screen.queryByText("INSIGHTS")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "分类明细" })).toBeInTheDocument();
     expect(screen.queryByText("前三类占比")).not.toBeInTheDocument();
-    const detailLink = screen.getByRole("link", { name: "查看餐饮分类账单" });
+    const detailLink = screen.getByRole("link", { name: /查看餐饮分类账单/ });
     const href = detailLink.getAttribute("href") ?? "";
     expect(href).toContain(`/bills?view=ledger&period=month&anchor=${todayKey()}&kind=expense`);
     expect(href).toContain(`categoryId=${category.id}`);
@@ -125,7 +126,7 @@ describe("洞察与账单下钻", () => {
     expect(screen.getByRole("heading", { name: "分类构成" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "分类明细" })).not.toBeInTheDocument();
     expect(screen.queryByText("前三类占比")).not.toBeInTheDocument();
-    const compositionLink = screen.getByRole("link", { name: "查看餐饮分类账单" });
+    const compositionLink = screen.getByRole("link", { name: /查看餐饮分类账单/ });
     fireEvent.focus(compositionLink);
     expect(compositionLink).toHaveClass("is-active");
     fireEvent.blur(compositionLink);
@@ -147,9 +148,37 @@ describe("洞察与账单下钻", () => {
     fireEvent.click(screen.getByRole("button", { name: "构成" }));
 
     for (const item of categories) {
-      expect(screen.getByRole("link", { name: `查看${item.name}分类账单` })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: new RegExp(`查看${item.name}分类账单`) })).toBeInTheDocument();
     }
     expect(screen.queryByText("其他")).not.toBeInTheDocument();
+  });
+
+  it("分类明细和环比卡片写出上期同进度窗口与金额", async () => {
+    vi.spyOn(api, "report").mockResolvedValue({
+      ...report,
+      grain: "month",
+      range: { start: "2026-09-01", end: "2026-09-01", label: "2026年9月" },
+      previousRange: { start: "2026-08-01", end: "2026-08-01", label: "2026年8月" },
+      isCurrentPeriod: true,
+      selectedTotalMinor: 3_000,
+      selectedComparison: { current: 3_000, previous: 1_000, delta: 2_000, percent: 200, state: "up" },
+      categories: [{
+        ...report.categories[0]!,
+        name: "日用",
+        amountMinor: 3_000,
+        previousAmountMinor: 1_000,
+        deltaMinor: 2_000,
+        changePercent: 200,
+        changeState: "up"
+      }]
+    });
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 6 });
+    renderWithProviders(<EntryProvider><InsightsPage /></EntryProvider>, ["/?grain=month&anchor=2026-09-01&kind=expense"]);
+    expect(await screen.findByText("较上月同期")).toBeInTheDocument();
+    expect(screen.getByText("8月1日–8月1日 · +¥20.00")).toBeInTheDocument();
+    expect(screen.getByText("上期 ¥10.00")).toBeInTheDocument();
+    expect(screen.getAllByText("+200.0%").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /较上期 ¥10.00 增加 200.0%/ })).toBeInTheDocument();
   });
 
   it("从账单 URL 初始化筛选，并在切换筛选时同步 URL", async () => {

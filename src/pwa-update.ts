@@ -1,4 +1,5 @@
 import { registerSW } from "virtual:pwa-register";
+import { requestServiceReload, waitForServiceReady } from "./service-reload";
 
 const updateIntervalMs = 60_000;
 let registration: ServiceWorkerRegistration | undefined;
@@ -47,6 +48,10 @@ export function startAppUpdates(): void {
 }
 
 export async function refreshApplication(): Promise<void> {
+  const reload = await requestServiceReload();
+  if (reload?.restarting) {
+    await waitForServiceReady(reload.runningVersion);
+  }
   if (registration) {
     await registration.update().catch(() => undefined);
     if (registration.waiting && updateServiceWorker) {

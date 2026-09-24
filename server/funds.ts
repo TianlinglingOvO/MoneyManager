@@ -697,8 +697,11 @@ export class FundsService {
     if (query.sourceType) { clauses.push("m.source_type = ?"); values.push(query.sourceType); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const total = this.database.prepare(`SELECT COUNT(*) AS count FROM account_movements m ${where}`).get(...values) as { count: number };
+    const order = query.sort === "oldest"
+      ? "ORDER BY m.local_date ASC, m.created_at ASC, m.rowid ASC"
+      : "ORDER BY m.local_date DESC, m.created_at DESC, m.rowid DESC";
     const rows = this.database.prepare(`SELECT m.*, a.name AS account_name, a.currency FROM account_movements m
-      JOIN accounts a ON a.id = m.account_id ${where} ORDER BY m.created_at, m.rowid LIMIT ? OFFSET ?`)
+      JOIN accounts a ON a.id = m.account_id ${where} ${order} LIMIT ? OFFSET ?`)
       .all(...values, query.pageSize, (query.page - 1) * query.pageSize) as unknown as MovementRow[];
     return { items: rows.map((row) => this.movementFromRow(row)), total: Number(total.count), page: query.page, pageSize: query.pageSize };
   }

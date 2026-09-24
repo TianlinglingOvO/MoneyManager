@@ -88,6 +88,36 @@ describe("轻量资金账户", () => {
       .toEqual([-12_300, 12_300, -12_300]);
   });
 
+  it("最近资金流水默认按发生日倒序，可显式改回从早到晚", async () => {
+    const expense = expenseCategory(context);
+    const { current } = await activate();
+    const wechat = current.services.funds.listAccounts()[0]!;
+    context.repository.createTransaction(transactionInput(expense.id, {
+      localDate: "2026-08-23",
+      amountMinor: 1_000,
+      accountId: wechat.id,
+      note: null
+    }));
+    context.repository.createTransaction(transactionInput(expense.id, {
+      localDate: "2026-08-27",
+      amountMinor: 2_000,
+      accountId: wechat.id,
+      note: null
+    }));
+    context.repository.createTransaction(transactionInput(expense.id, {
+      localDate: "2026-08-29",
+      amountMinor: 3_000,
+      accountId: wechat.id,
+      note: null
+    }));
+    const recent = current.services.funds.listMovements({ accountId: wechat.id, pageSize: 2 });
+    expect(recent.items.map((item) => item.localDate)).toEqual(["2026-08-29", "2026-08-27"]);
+    const oldest = current.services.funds.listMovements({ accountId: wechat.id, sort: "oldest", pageSize: 2 });
+    expect(oldest.items.map((item) => item.localDate)).toEqual(["2026-08-23", "2026-08-27"]);
+    const listed = await request(current.app).get("/api/v1/funds/movements?pageSize=2").expect(200);
+    expect(listed.body.data.items.map((item: { localDate: string }) => item.localDate)).toEqual(["2026-08-29", "2026-08-27"]);
+  });
+
   it("全额退款排除统计并恢复原账户，且可以撤销退款", async () => {
     const expense = expenseCategory(context);
     const { current } = await activate();

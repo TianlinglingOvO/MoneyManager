@@ -27,7 +27,7 @@ function response(options: {
     status,
     type: options.type ?? "basic",
     redirected: options.redirected ?? false,
-    url: options.url ?? "https://money.sutady.top/api/v1/status",
+    url: options.url ?? "https://money.example.com/api/v1/status",
     headers: { get: (name: string) => name.toLowerCase() === "content-type" ? (options.contentType ?? "application/json") : name.toLowerCase() === "content-length" ? (options.contentLength ?? null) : null },
     json: vi.fn().mockResolvedValue(options.body ?? { data: { service: "ok" } })
   } as unknown as Response;

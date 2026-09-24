@@ -120,6 +120,46 @@ describe("资金页面", () => {
     expect(screen.getByRole("button", { name: "转账" })).toBeInTheDocument();
   });
 
+  it("最近资金流水按发生日倒序并提供加载更多", async () => {
+    const newer = {
+      id: "22222222-2222-4222-8222-222222222222",
+      accountId: account.id,
+      accountName: account.name,
+      currency: "CNY" as const,
+      deltaMinor: -2_900,
+      sourceType: "transaction" as const,
+      sourceId: "33333333-3333-4333-8333-333333333333",
+      localDate: "2026-08-29",
+      requestId: null,
+      operationId: null,
+      reversalOfId: null,
+      createdAt: "2026-08-29T00:00:00.000Z"
+    };
+    const older = {
+      ...newer,
+      id: "44444444-4444-4444-8444-444444444444",
+      sourceId: "55555555-5555-4555-8555-555555555555",
+      localDate: "2026-08-27",
+      createdAt: "2026-08-27T00:00:00.000Z",
+      deltaMinor: -1_200
+    };
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(summary());
+    vi.spyOn(api, "accounts").mockResolvedValue([account]);
+    const movements = vi.spyOn(api, "accountMovements").mockImplementation(async (filters = {}) => {
+      if ((filters.page ?? 1) === 1) return { items: [newer], total: 2, page: 1, pageSize: 1 };
+      return { items: [older], total: 2, page: 2, pageSize: 1 };
+    });
+    vi.spyOn(api, "transfers").mockResolvedValue([]);
+    renderPage();
+    expect(await screen.findByText("人民币可用资金")).toBeInTheDocument();
+    expect(await screen.findByText("2026-08-29 · 账目")).toBeInTheDocument();
+    expect(screen.queryByText("2026-08-27 · 账目")).not.toBeInTheDocument();
+    expect(document.querySelector(".funds-movement-list")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+    await waitFor(() => expect(screen.getByText("2026-08-27 · 账目")).toBeInTheDocument());
+    expect(movements).toHaveBeenCalledWith(expect.objectContaining({ sort: "recent" }));
+  });
+
   it("允许永久删除带非零初始余额但从未使用的非默认账户", async () => {
     const unused: Account = {
       ...account,

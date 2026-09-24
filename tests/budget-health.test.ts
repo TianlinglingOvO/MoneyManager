@@ -186,6 +186,27 @@ describe("月度预算与账本体检", () => {
     ]));
   });
 
+  it("当前月体检包含已到期仍未完成的计划，且不写入备注", async () => {
+    const createdApp = createApp(context.config, context.database);
+    const today = createdApp.services.budgets.today();
+    const firstOfMonth = new Date(`${today.slice(0, 7)}-01T00:00:00Z`);
+    firstOfMonth.setUTCDate(0);
+    const overdueDate = firstOfMonth.toISOString().slice(0, 8) + "15";
+    const now = new Date().toISOString();
+    context.database.prepare(`INSERT INTO plans(
+      id, title, amount_minor, due_date, reminder_days, status, note, completed_at,
+      ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at
+    ) VALUES (?, ?, ?, ?, 3, 'open', ?, NULL, 'none', NULL, ?, ?, NULL)`)
+      .run("99999999-9999-4999-8999-999999999999", "跨月待付尾款", 12_800, overdueDate, "绝不能出现的计划备注", now, now);
+    const report = await request(createdApp.app)
+      .get(`/api/v1/reports/health?month=${today.slice(0, 7)}`)
+      .expect(200);
+    expect(report.body.data.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "plan_due", title: "跨月待付尾款待付款", href: "/matters?tab=plans" })
+    ]));
+    expect(JSON.stringify(report.body.data.issues)).not.toContain("绝不能出现的计划备注");
+  });
+
   it("体检识别未来日期与 OpenClaw 十分钟内近重复，但不会自动改账", async () => {
     const category = expenseCategory(context);
     const createdApp = createApp(context.config, context.database);
@@ -214,5 +235,61 @@ describe("月度预算与账本体检", () => {
       expect.objectContaining({ type: "openclaw_duplicate" })
     ]));
     expect(context.repository.listTransactions().total).toBe(before);
+  });
+
+  it("核对月总超支后继续记账仍使用同一指纹，不再计入待核对", async () => {
+    const category = expenseCategory(context);
+    const app = createApp(context.config, context.database).app;
+    await request(app).put("/api/v1/budgets/2026-08").send({
+      totalMinor: 10_000,
+      categories: [],
+      expectedUpdatedAt: null
+    }).expect(200);
+    context.repository.createTransaction(transactionInput(category.id, {
+      amountMinor: 12_000,
+      localDate: "2026-08-03"
+    }));
+    const first = await request(app).get("/api/v1/reports/health?month=2026-08").expect(200);
+    const over = first.body.data.issues.find((issue: { title: string }) => issue.title === "月总预算已经超支");
+    expect(over).toMatchObject({ acknowledged: false, type: "budget_warning" });
+    const acked = await request(app).post(`/api/v1/reports/health/${over.fingerprint}/acknowledge`).send({ month: "2026-08" }).expect(200);
+    expect(acked.body.data.issues.find((issue: { fingerprint: string }) => issue.fingerprint === over.fingerprint).acknowledged).toBe(true);
+    expect(acked.body.data.issueCount).toBe(first.body.data.issueCount - 1);
+    context.repository.createTransaction(transactionInput(category.id, {
+      amountMinor: 1_500,
+      localDate: "2026-08-04"
+    }));
+    const second = await request(app).get("/api/v1/reports/health?month=2026-08").expect(200);
+    const again = second.body.data.issues.find((issue: { title: string }) => issue.title === "月总预算已经超支");
+    expect(again.fingerprint).toBe(over.fingerprint);
+    expect(again.acknowledged).toBe(true);
+    expect(second.body.data.issueCount).toBe(acked.body.data.issueCount);
+  });
+
+  it("核对接近上限后超支会作为新问题出现", async () => {
+    const category = expenseCategory(context);
+    const app = createApp(context.config, context.database).app;
+    await request(app).put("/api/v1/budgets/2026-08").send({
+      totalMinor: 10_000,
+      categories: [],
+      expectedUpdatedAt: null
+    }).expect(200);
+    context.repository.createTransaction(transactionInput(category.id, {
+      amountMinor: 8_000,
+      localDate: "2026-08-03"
+    }));
+    const nearReport = await request(app).get("/api/v1/reports/health?month=2026-08").expect(200);
+    const near = nearReport.body.data.issues.find((issue: { title: string }) => issue.title === "月总预算接近上限");
+    expect(near).toBeDefined();
+    await request(app).post(`/api/v1/reports/health/${near.fingerprint}/acknowledge`).send({ month: "2026-08" }).expect(200);
+    context.repository.createTransaction(transactionInput(category.id, {
+      amountMinor: 3_000,
+      localDate: "2026-08-04"
+    }));
+    const overReport = await request(app).get("/api/v1/reports/health?month=2026-08").expect(200);
+    const over = overReport.body.data.issues.find((issue: { title: string }) => issue.title === "月总预算已经超支");
+    expect(over).toMatchObject({ acknowledged: false, type: "budget_warning" });
+    expect(over.fingerprint).not.toBe(near.fingerprint);
+    expect(overReport.body.data.issues.some((issue: { title: string }) => issue.title === "月总预算接近上限")).toBe(false);
   });
 });

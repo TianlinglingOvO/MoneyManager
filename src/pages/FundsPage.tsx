@@ -250,7 +250,13 @@ export function FundsPage() {
   const [adjustmentActionError, setAdjustmentActionError] = useState("");
   const summaryQuery = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
   const accountsQuery = useQuery({ queryKey: ["accounts", showArchived], queryFn: () => api.accounts(showArchived), enabled: summaryQuery.data?.enabled === true });
-  const movementsQuery = useQuery({ queryKey: ["funds", "movements"], queryFn: () => api.accountMovements({ pageSize: 30 }), enabled: summaryQuery.data?.enabled === true });
+  const movementsQuery = useInfiniteQuery({
+    queryKey: ["funds", "movements"],
+    queryFn: ({ pageParam }) => api.accountMovements({ page: pageParam, pageSize: 30, sort: "recent" }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: summaryQuery.data?.enabled === true
+  });
   const transfersQuery = useQuery({ queryKey: ["funds", "transfers", showArchived], queryFn: () => api.transfers(showArchived), enabled: summaryQuery.data?.enabled === true });
   const adjustmentsQuery = useInfiniteQuery({
     queryKey: ["funds", "adjustments"],
@@ -260,6 +266,7 @@ export function FundsPage() {
     enabled: summaryQuery.data?.enabled === true && showAdjustments
   });
   const adjustmentItems = adjustmentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const movementItems = (movementsQuery.data?.pages.flatMap((page) => page.items) ?? []).filter((movement) => movement.sourceType !== "adjustment");
   const accounts = accountsQuery.data ?? summaryQuery.data?.accounts ?? [];
   const activeAccounts = accounts.filter((item) => !item.isArchived);
   const accountMap = useMemo(() => new Map(accounts.map((item) => [item.id, item])), [accounts]);
@@ -319,10 +326,14 @@ export function FundsPage() {
     </section>
 
     <div className="funds-columns">
-      <section className="ledger-section"><div className="section-title"><h2>最近资金流水</h2><p>展示记账、转账、借款和还款，不含余额校准。</p></div><div className="funds-movement-list">{(movementsQuery.data?.items ?? []).filter((movement) => movement.sourceType !== "adjustment").map((movement) => {
+      <section className="ledger-section"><div className="section-title"><h2>最近资金流水</h2><p>展示记账、转账、借款和还款，不含余额校准。最新发生的在上。</p></div><div className="funds-movement-list" onScroll={(event) => {
+        const node = event.currentTarget;
+        if (node.scrollTop + node.clientHeight < node.scrollHeight - 48) return;
+        if (movementsQuery.hasNextPage && !movementsQuery.isFetchingNextPage) void movementsQuery.fetchNextPage();
+      }}>{movementItems.map((movement) => {
         const movementAccount = accountMap.get(movement.accountId);
         return <div className="funds-movement-row" key={movement.id}><span className={movement.deltaMinor >= 0 ? "is-in" : "is-out"}>{movement.deltaMinor >= 0 ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</span><div><strong>{movement.accountName ?? movementAccount?.name ?? "账户"}</strong><small>{movement.localDate} · {movement.sourceType === "transaction" ? "账目" : movement.sourceType === "loan" ? "借出" : movement.sourceType === "loan_repayment" ? "还款" : movement.sourceType === "transfer" ? "转账" : "余额校准"}</small></div><b className={movement.deltaMinor >= 0 ? "income-text" : "expense-text"}>{movement.deltaMinor >= 0 ? "+" : "−"}{formatAccountBalance(Math.abs(movement.deltaMinor), movement.currency)}</b></div>;
-      })}{(movementsQuery.data?.items ?? []).filter((movement) => movement.sourceType !== "adjustment").length === 0 && <p className="muted-copy">还没有资金流水。</p>}</div></section>
+      })}{movementItems.length === 0 && <p className="muted-copy">还没有资金流水。</p>}{movementsQuery.hasNextPage && <button className="secondary-button funds-movements-load-more" type="button" disabled={movementsQuery.isFetchingNextPage} onClick={() => movementsQuery.fetchNextPage()}>{movementsQuery.isFetchingNextPage ? <><LoaderCircle className="spin" size={16} />加载中</> : "加载更多"}</button>}</div></section>
       <section className="ledger-section"><div className="section-title"><h2>转账记录</h2><p>人民币账户的扣到账差额可记录手续费；外币按原币等额转账。</p></div><div className="funds-transfer-list">{(transfersQuery.data ?? []).map((transfer) => {
         const fromAccount = accountMap.get(transfer.fromAccountId);
         const toAccount = accountMap.get(transfer.toAccountId);

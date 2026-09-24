@@ -158,7 +158,7 @@ export function ProposalsPage() {
       <header className="page-heading"><h1>OpenClaw 操作中心</h1><p>管理直接接管模式、撤销最近操作，并处理以前留下的待确认提案。</p></header>
       <section className={`safety-note openclaw-mode-card is-${control.data?.mode ?? "confirm"}`}>
         <ShieldCheck size={22} />
-        <div><strong>{control.data?.mode === "direct" ? "直接接管已开启" : "网页确认已开启"}</strong><p>{control.data?.mode === "direct" ? "账目、分类、借款、订阅、AI、备份和时区操作会立即执行；可逆修改保留 30 天撤销记录。" : "普通账目只会创建待确认提案；借款和订阅只允许查询。"}</p></div>
+        <div><strong>{control.data?.mode === "direct" ? "直接接管已开启" : "网页确认已开启"}</strong><p>{control.data?.mode === "direct" ? "账目、分类、借款、订阅、计划、AI、备份和时区操作会立即执行；可逆修改保留 30 天撤销记录。" : "普通账目只会创建待确认提案；借款、订阅和计划只允许查询。"}</p></div>
         <button className={control.data?.mode === "direct" ? "secondary-button" : "primary-button"} disabled={!control.data || updateMode.isPending} onClick={() => updateMode.mutate(control.data?.mode === "direct" ? "confirm" : "direct")}>{control.data?.mode === "direct" ? "改为需要确认" : "开启直接接管"}</button>
       </section>
 

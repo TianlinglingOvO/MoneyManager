@@ -15,14 +15,14 @@ const category: Category = {
   updatedAt: "2026-01-01T00:00:00.000Z"
 };
 
-function transaction(id: string, localDate: string, amountMinor: number, kind: "expense" | "income" = "expense"): Transaction {
+function transaction(id: string, localDate: string, amountMinor: number, kind: "expense" | "income" = "expense", categoryId = category.id): Transaction {
   return {
     id,
     kind,
     amountMinor,
     currency: "CNY",
     accountAmountMinor: null,
-    categoryId: category.id,
+    categoryId,
     localDate,
     note: null,
     accountId: null,
@@ -123,5 +123,43 @@ describe("周期与金额计算", () => {
     });
     expect(empty.selectedAverageMinor).toBe(0);
     expect(empty.averageDivisor).toBe(29);
+  });
+
+  it("当前月月初只对比上月同一天，而不是整个上月", () => {
+    const period = getPeriodDefinition("month", "2026-09-01", "2026-09-01");
+    expect(period.current).toMatchObject({ start: "2026-09-01", end: "2026-09-01" });
+    expect(period.previous).toMatchObject({ start: "2026-08-01", end: "2026-08-01" });
+    expect(period.isCurrentPeriod).toBe(true);
+  });
+
+  it("当前月5日对比上月1日至5日", () => {
+    const period = getPeriodDefinition("month", "2026-09-05", "2026-09-05");
+    expect(period.current).toMatchObject({ start: "2026-09-01", end: "2026-09-05" });
+    expect(period.previous).toMatchObject({ start: "2026-08-01", end: "2026-08-05" });
+  });
+
+  it("分类按上期同进度计算涨跌，上期为零时为新增，且不计入上月其余日期", () => {
+    const lunch: Category = { ...category, id: "22222222-2222-4222-8222-222222222222", name: "午餐" };
+    const report = calculateFinanceReport({
+      transactions: [
+        transaction("aug-1", "2026-08-01", 1_000),
+        transaction("aug-15", "2026-08-15", 50_000),
+        transaction("sep-1", "2026-09-01", 3_000),
+        transaction("lunch", "2026-09-01", 2_200, "expense", lunch.id)
+      ],
+      categories: [category, lunch],
+      grain: "month",
+      anchor: "2026-09-01",
+      kind: "expense",
+      todayKey: "2026-09-01"
+    });
+    expect(report.isCurrentPeriod).toBe(true);
+    expect(report.previousRange).toMatchObject({ start: "2026-08-01", end: "2026-08-01" });
+    expect(report.selectedTotalMinor).toBe(5_200);
+    expect(report.selectedComparison).toMatchObject({ previous: 1_000, delta: 4_200, percent: 420, state: "up" });
+    expect(report.categories).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "餐饮", amountMinor: 3_000, previousAmountMinor: 1_000, changePercent: 200, changeState: "up" }),
+      expect.objectContaining({ name: "午餐", amountMinor: 2_200, previousAmountMinor: 0, changePercent: null, changeState: "new" })
+    ]));
   });
 });

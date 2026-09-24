@@ -23,6 +23,22 @@ function textResult(data: unknown) {
   };
 }
 
+export function isBodyJsonParseError(error: unknown): boolean {
+  if (!(error instanceof SyntaxError)) return false;
+  const parseError = error as SyntaxError & { type?: string; status?: number };
+  return parseError.type === "entity.parse.failed" || parseError.status === 400;
+}
+
+export function logSafeRequestError(request: { method: string; path: string }, error: unknown): void {
+  const name = error instanceof Error ? error.name : "UnknownError";
+  console.error(`${request.method} ${request.path} ${name}`);
+}
+
+function sendMcpJsonRpcError(response: Response, status: number, code: number, message: string): void {
+  if (response.headersSent) return;
+  response.status(status).json({ jsonrpc: "2.0", error: { code, message }, id: null });
+}
+
 function currentLocalDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -125,14 +141,14 @@ export function createLedgerMcpServer(
   });
 
   server.registerTool("get_finance_summary", {
-    description: "获取某日、周、月或年的确定性收支汇总、趋势、分类排行和上一周期对比。",
+    description: "获取某日、周、月或年的确定性收支汇总、趋势、分类排行和上一周期同进度对比。进行中的月份对比上月同一段日期（例如 9 月 1 日对 8 月 1 日），不是上月整月；分类排行的涨跌相对该同进度金额。",
     inputSchema: {
       grain: z.enum(["day", "week", "month", "year"]),
       anchor: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       kind: z.enum(["expense", "income"]).default("expense")
     }
   }, async ({ grain, anchor, kind }) => {
-    const result = repository.getFinanceReport(grain, anchor, kind);
+    const result = repository.getFinanceReport(grain, anchor, kind, currentLocalDate(config.timezone));
     repository.audit("openclaw", "mcp.get_finance_summary", "report", null, { grain, kind });
     return textResult(result);
   });
@@ -1035,7 +1051,7 @@ function registerDirectTools(
   }, async ({ operationId }) => textResult(openclaw.undo(operationId, "openclaw")));
 }
 
-type MatterSnapshotEntity = "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "transaction";
+type MatterSnapshotEntity = "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "transaction" | "plan";
 type MatterSnapshot = { entityType: MatterSnapshotEntity; entityId: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null };
 
 function appendLinkedTransaction(
@@ -1150,6 +1166,33 @@ function registerMatterTools(
   }, async ({ subscriptionId, includeDeleted }) => {
     const result = matters.listPayments(subscriptionId, includeDeleted);
     repository.audit("openclaw", "mcp.list_subscription_payments", "subscription_payment", subscriptionId, { count: result.length });
+    return textResult(result);
+  });
+
+  server.registerTool("list_plans", {
+    description: "查询一次性财务计划。日期和金额都可选；无到期日的计划不会进入提醒。",
+    inputSchema: { ...matterPage, planStatus: z.enum(["open", "completed", "cancelled"]).optional() }
+  }, async (input) => {
+    const result = matters.listPlans(input);
+    repository.audit("openclaw", "mcp.list_plans", "plan", null, { count: result.items.length });
+    return textResult(result);
+  });
+
+  server.registerTool("get_plan", {
+    description: "读取一项财务计划。",
+    inputSchema: { planId: z.string().uuid() }
+  }, async ({ planId }) => {
+    const result = matters.getPlan(planId, true);
+    repository.audit("openclaw", "mcp.get_plan", "plan", planId);
+    return textResult(result);
+  });
+
+  server.registerTool("get_plan_summary", {
+    description: "获取未完成计划数量、提醒数量和近期到期项。",
+    inputSchema: {}
+  }, async () => {
+    const result = matters.planSummary();
+    repository.audit("openclaw", "mcp.get_plan_summary", "plan", null);
     return textResult(result);
   });
 
@@ -1452,6 +1495,106 @@ function registerMatterTools(
       }
     })));
   }
+
+  server.registerTool("direct_create_plan", {
+    description: "direct 模式下新增一次性财务计划。只需标题；日期、金额可选。不要推断日期或金额，也不要绑定账户。",
+    inputSchema: {
+      requestId,
+      title: z.string().min(1).max(100),
+      amount: amount.optional().nullable(),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      reminderDays: z.number().int().min(0).max(60).optional(),
+      note: z.string().max(240).nullable().optional()
+    }
+  }, async ({ requestId: idempotency, amount: value, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "plan.create", entityType: "plan", summary: "OpenClaw 新增计划", request: { amount: value, ...input },
+    run: () => {
+      const result = matters.createPlan({
+        ...input,
+        amountMinor: value == null ? null : amountToMinor(value)
+      }, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "plan" as const, entityId: result.id, before: null, after: openclaw.planSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_update_plan", {
+    description: "direct 模式下修改未完成且未入账的计划；必须传入当前 updatedAt。不能用此工具完成入账。",
+    inputSchema: {
+      requestId,
+      planId: z.string().uuid(),
+      expectedUpdatedAt,
+      title: z.string().min(1).max(100).optional(),
+      amount: amount.optional().nullable(),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      reminderDays: z.number().int().min(0).max(60).optional(),
+      status: z.enum(["open", "cancelled"]).optional(),
+      note: z.string().max(240).nullable().optional()
+    }
+  }, async ({ requestId: idempotency, planId, expectedUpdatedAt: expected, amount: value, ...changes }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "plan.update", entityType: "plan", summary: "OpenClaw 修改计划", request: { planId, expectedUpdatedAt: expected, amount: value, ...changes },
+    run: () => {
+      const before = matters.getPlan(planId, false);
+      if (before.updatedAt !== expected) throw new Error("计划已经变化，请重新查询后再修改");
+      const patch = { ...changes, expectedUpdatedAt: expected, ...(value === undefined ? {} : { amountMinor: value == null ? null : amountToMinor(value) }) };
+      const result = matters.updatePlan(planId, patch, { actor: "openclaw" });
+      return { result, entityId: result.id, snapshots: [{ entityType: "plan" as const, entityId: result.id, before: openclaw.planSnapshot(before), after: openclaw.planSnapshot(result) }] };
+    }
+  })));
+
+  server.registerTool("direct_complete_plan", {
+    description: "direct 模式下完成一项计划。无金额只改状态；有金额必须创建或关联支出（资金启用后还要支付账户），不要推断分类或账户。",
+    inputSchema: {
+      requestId,
+      planId: z.string().uuid(),
+      expectedUpdatedAt,
+      amount: amount.optional(),
+      localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      note: z.string().max(240).nullable().optional(),
+      ledgerLink: z.record(z.string(), z.unknown()).optional(),
+      account: accountReference
+    }
+  }, async ({ requestId: idempotency, planId, expectedUpdatedAt: expected, amount: value, account, ledgerLink, ...input }) => textResult(openclaw.execute({
+    requestId: idempotency, action: "plan.complete", entityType: "plan", summary: "OpenClaw 完成计划", request: { planId, expectedUpdatedAt: expected, amount: value, account, ledgerLink, ...input },
+    run: () => {
+      const before = matters.getPlan(planId, false);
+      if (before.updatedAt !== expected) throw new Error("计划已经变化，请重新查询后再完成");
+      const accountId = resolveAccount(account);
+      const link = ledgerLink
+        ? { ...ledgerLink, ...(accountId ? { accountId } : {}) }
+        : undefined;
+      const result = matters.completePlan(planId, {
+        ...input,
+        expectedUpdatedAt: expected,
+        amountMinor: value == null ? undefined : amountToMinor(value),
+        ledgerLink: link
+      } as never, { actor: "openclaw" });
+      const snapshots: MatterSnapshot[] = [
+        { entityType: "plan", entityId: result.id, before: openclaw.planSnapshot(before), after: openclaw.planSnapshot(result) }
+      ];
+      appendLinkedTransaction(snapshots, repository, openclaw, result.ledgerLink, new Set());
+      return { result, entityId: result.id, snapshots };
+    }
+  })));
+
+  for (const [name, action, summary, operation] of [
+    ["direct_delete_plan", "plan.delete", "OpenClaw 删除计划", "delete"],
+    ["direct_restore_plan", "plan.restore", "OpenClaw 恢复计划", "restore"]
+  ] as const) {
+    server.registerTool(name, {
+      description: operation === "delete" ? "direct 模式下将计划移入 30 天回收站。不会删除已入账的支出。" : "direct 模式下从回收站恢复计划。",
+      inputSchema: { requestId, planId: z.string().uuid(), expectedUpdatedAt: expectedUpdatedAt.optional() }
+    }, async ({ requestId: idempotency, planId, expectedUpdatedAt: expected }) => textResult(openclaw.execute({
+      requestId: idempotency, action, entityType: "plan", summary, request: { planId, expectedUpdatedAt: expected },
+      run: () => {
+        const before = matters.getPlan(planId, operation === "restore");
+        if (expected && before.updatedAt !== expected) throw new Error("计划已经变化，请重新查询");
+        const result = operation === "delete"
+          ? matters.deletePlan(planId, { actor: "openclaw" }, expected)
+          : matters.restorePlan(planId, { actor: "openclaw" });
+        return { result, entityId: result.id, snapshots: [{ entityType: "plan" as const, entityId: result.id, before: openclaw.planSnapshot(before), after: openclaw.planSnapshot(result) }] };
+      }
+    })));
+  }
 }
 
 export function attachMcpRoutes(
@@ -1488,35 +1631,44 @@ export function attachMcpRoutes(
         await server.connect(transport);
       }
       if (!transport) {
-        response.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "无效或缺少 MCP 会话" }, id: null });
+        sendMcpJsonRpcError(response, 400, -32000, "无效或缺少 MCP 会话");
         return;
       }
       await transport.handleRequest(request, response, request.body);
-    } catch {
-      if (!response.headersSent) {
-        response.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "MCP 内部错误" }, id: null });
-      }
+    } catch (error) {
+      logSafeRequestError(request, error);
+      sendMcpJsonRpcError(response, 500, -32603, "MCP 内部错误");
     }
   });
 
   app.get("/mcp", auth, async (request: Request, response: Response) => {
-    const sessionId = request.header("mcp-session-id");
-    const transport = sessionId ? transports.get(sessionId) : undefined;
-    if (!transport) {
-      response.status(400).send("无效或缺少 MCP 会话");
-      return;
+    try {
+      const sessionId = request.header("mcp-session-id");
+      const transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!transport) {
+        sendMcpJsonRpcError(response, 400, -32000, "无效或缺少 MCP 会话");
+        return;
+      }
+      await transport.handleRequest(request, response);
+    } catch (error) {
+      logSafeRequestError(request, error);
+      sendMcpJsonRpcError(response, 500, -32603, "MCP 内部错误");
     }
-    await transport.handleRequest(request, response);
   });
 
   app.delete("/mcp", auth, async (request: Request, response: Response) => {
-    const sessionId = request.header("mcp-session-id");
-    const transport = sessionId ? transports.get(sessionId) : undefined;
-    if (!transport) {
-      response.status(400).send("无效或缺少 MCP 会话");
-      return;
+    try {
+      const sessionId = request.header("mcp-session-id");
+      const transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!transport) {
+        sendMcpJsonRpcError(response, 400, -32000, "无效或缺少 MCP 会话");
+        return;
+      }
+      await transport.handleRequest(request, response);
+      transports.delete(sessionId!);
+    } catch (error) {
+      logSafeRequestError(request, error);
+      sendMcpJsonRpcError(response, 500, -32603, "MCP 内部错误");
     }
-    await transport.handleRequest(request, response);
-    transports.delete(sessionId!);
   });
 }

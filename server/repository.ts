@@ -104,8 +104,8 @@ interface ProposalRow {
 }
 
 interface LinkedMatterRow {
-  tableName: "loans" | "loan_repayments" | "subscription_payments";
-  entityType: "loan" | "loan_repayment" | "subscription_payment";
+  tableName: "loans" | "loan_repayments" | "subscription_payments" | "plans";
+  entityType: "loan" | "loan_repayment" | "subscription_payment" | "plan";
   id: string;
   updatedAt: string;
 }
@@ -260,7 +260,9 @@ export class LedgerRepository {
       SELECT 'loan_repayments' AS table_name, 'loan_repayment' AS entity_type, id, updated_at FROM loan_repayments WHERE ${clause}
       UNION ALL
       SELECT 'subscription_payments' AS table_name, 'subscription_payment' AS entity_type, id, updated_at FROM subscription_payments WHERE ${clause}
-    `).all(value, value, value) as unknown as Array<{
+      UNION ALL
+      SELECT 'plans' AS table_name, 'plan' AS entity_type, id, updated_at FROM plans WHERE ${clause}
+    `).all(value, value, value, value) as unknown as Array<{
       table_name: LinkedMatterRow["tableName"];
       entity_type: LinkedMatterRow["entityType"];
       id: string;
@@ -332,7 +334,8 @@ export class LedgerRepository {
     const detachStatements = {
       loans: this.database.prepare("UPDATE loans SET ledger_link_mode = 'none', ledger_transaction_id = NULL, updated_at = ? WHERE id = ?"),
       loan_repayments: this.database.prepare("UPDATE loan_repayments SET ledger_link_mode = 'none', ledger_transaction_id = NULL, updated_at = ? WHERE id = ?"),
-      subscription_payments: this.database.prepare("UPDATE subscription_payments SET ledger_link_mode = 'none', ledger_transaction_id = NULL, updated_at = ? WHERE id = ?")
+      subscription_payments: this.database.prepare("UPDATE subscription_payments SET ledger_link_mode = 'none', ledger_transaction_id = NULL, updated_at = ? WHERE id = ?"),
+      plans: this.database.prepare("UPDATE plans SET ledger_link_mode = 'none', ledger_transaction_id = NULL, updated_at = ? WHERE id = ?")
     };
     links.forEach((link) => {
       detachStatements[link.tableName].run(now, link.id);

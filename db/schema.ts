@@ -255,6 +255,26 @@ export const subscriptionPayments = sqliteTable("subscription_payments", {
   uniqueIndex("idx_subscription_payments_ledger_transaction").on(table.ledgerTransactionId)
 ]);
 
+export const plans = sqliteTable("plans", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  amountMinor: integer("amount_minor"),
+  dueDate: text("due_date"),
+  reminderDays: integer("reminder_days").notNull().default(3),
+  status: text("status", { enum: ["open", "completed", "cancelled"] }).notNull().default("open"),
+  note: text("note"),
+  completedAt: text("completed_at"),
+  ledgerLinkMode: text("ledger_link_mode", { enum: ["none", "existing", "create"] }).notNull().default("none"),
+  ledgerTransactionId: text("ledger_transaction_id").references(() => transactions.id),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at")
+}, (table) => [
+  index("idx_plans_status_due").on(table.deletedAt, table.status, table.dueDate),
+  index("idx_plans_title").on(table.title),
+  uniqueIndex("idx_plans_ledger_transaction").on(table.ledgerTransactionId)
+]);
+
 export const matterIdempotency = sqliteTable("matter_idempotency", {
   idempotencyKey: text("idempotency_key").primaryKey(),
   operation: text("operation").notNull(),

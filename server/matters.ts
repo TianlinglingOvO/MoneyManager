@@ -9,6 +9,9 @@ import type {
   LoanRepayment,
   LoanSummary,
   MatterCurrency,
+  Plan,
+  PlanAttentionState,
+  PlanSummary,
   Subscription,
   SubscriptionPayment,
   SubscriptionSummary
@@ -22,6 +25,10 @@ import {
   loanPatchSchema,
   matterDeleteSchema,
   matterQuerySchema,
+  planCompleteSchema,
+  planInputSchema,
+  planPatchSchema,
+  planQuerySchema,
   repaymentInputSchema,
   repaymentPatchSchema,
   subscriptionInputSchema,
@@ -45,6 +52,10 @@ type SubscriptionInput = z.infer<typeof subscriptionInputSchema>;
 type SubscriptionPatch = z.infer<typeof subscriptionPatchSchema>;
 type PaymentInput = z.infer<typeof subscriptionPaymentInputSchema>;
 type PaymentPatch = z.infer<typeof subscriptionPaymentPatchSchema>;
+type PlanInput = z.input<typeof planInputSchema>;
+type PlanPatch = z.input<typeof planPatchSchema>;
+type PlanCompleteInput = z.input<typeof planCompleteSchema>;
+type PlanQuery = z.input<typeof planQuerySchema>;
 type LinkInput = z.infer<typeof ledgerLinkInputSchema>;
 
 type Actor = "user" | "openclaw" | "system";
@@ -109,6 +120,22 @@ interface SubscriptionRow {
   status: "active" | "paused" | "cancelled";
   website: string | null;
   note: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface PlanRow {
+  id: string;
+  title: string;
+  amount_minor: number | null;
+  due_date: string | null;
+  reminder_days: number;
+  status: "open" | "completed" | "cancelled";
+  note: string | null;
+  completed_at: string | null;
+  ledger_link_mode: "none" | "existing" | "create";
+  ledger_transaction_id: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -221,7 +248,7 @@ export class MattersRepository {
     if (expected && current !== expected) throw new ConflictError("记录已经更新，请刷新后重试");
   }
 
-  private getLedgerLinkTransaction(link: LinkInput | undefined, expectedKind: "expense" | "income", amountMinor: number, currency: MatterCurrency, localDate: string): { mode: "none" | "existing" | "create"; transactionId: string | null; amountMinor: number | null } {
+  private getLedgerLinkTransaction(link: LinkInput | undefined, expectedKind: "expense" | "income", amountMinor: number, currency: MatterCurrency, localDate: string, note: string | null = null): { mode: "none" | "existing" | "create"; transactionId: string | null; amountMinor: number | null } {
     const input = ledgerLinkInputSchema.parse(link ?? { mode: "none" });
     if (input.mode === "none") return { mode: "none", transactionId: null, amountMinor: null };
     if (input.mode === "existing") {
@@ -244,7 +271,7 @@ export class MattersRepository {
       amountMinor: ledgerAmount,
       categoryId: input.categoryId!,
       localDate,
-      note: null,
+      note,
       accountId: input.accountId,
       accountAmountMinor
     }, { source: "user", actor: "user", idempotencyKey: `matter-ledger:${randomUUID()}` });
@@ -254,7 +281,8 @@ export class MattersRepository {
   private assertLedgerTransactionUnused(transactionId: string): void {
     const row = this.database.prepare(`SELECT 1 AS value FROM loans WHERE ledger_transaction_id = ?
       UNION ALL SELECT 1 FROM loan_repayments WHERE ledger_transaction_id = ?
-      UNION ALL SELECT 1 FROM subscription_payments WHERE ledger_transaction_id = ? LIMIT 1`).get(transactionId, transactionId, transactionId);
+      UNION ALL SELECT 1 FROM subscription_payments WHERE ledger_transaction_id = ?
+      UNION ALL SELECT 1 FROM plans WHERE ledger_transaction_id = ? LIMIT 1`).get(transactionId, transactionId, transactionId, transactionId);
     if (row) throw new ConflictError("这个账目已经关联了其他财务事项");
   }
 
@@ -982,11 +1010,218 @@ export class MattersRepository {
     return { activeCount: list.filter((item) => item.status !== "paused" && item.status !== "cancelled").length, attentionCount: dueItems.length, dueCount: dueItems.length, upcomingCount: upcoming.length, upcoming: [...dueItems.slice(0, 10), ...upcoming].slice(0, 10), currencies };
   }
 
+  private planAttentionState(row: PlanRow, today = todayInTimezone(this.timezone)): PlanAttentionState {
+    if (row.status !== "open" || row.deleted_at || !row.due_date) return "none";
+    if (row.due_date < today) return "overdue";
+    const due = new Date(`${today}T00:00:00Z`);
+    due.setUTCDate(due.getUTCDate() + Number(row.reminder_days));
+    return row.due_date <= due.toISOString().slice(0, 10) ? "due" : "scheduled";
+  }
+
+  private planFromRow(row: PlanRow, today?: string): Plan {
+    const linked = row.ledger_link_mode === "create" || row.ledger_link_mode === "existing"
+      ? this.linkedTransactionDetails(row.ledger_transaction_id)
+      : null;
+    const amountMinor = row.amount_minor == null ? null : Number(row.amount_minor);
+    return {
+      id: row.id,
+      title: row.title,
+      amountMinor,
+      dueDate: row.due_date,
+      reminderDays: Number(row.reminder_days),
+      status: row.status,
+      note: row.note,
+      completedAt: row.completed_at,
+      attentionState: this.planAttentionState(row, today),
+      ledgerLink: mapLink(row.ledger_link_mode, row.ledger_transaction_id, linked?.amountMinor ?? amountMinor, "CNY", linked?.accountAmountMinor ?? null),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at
+    };
+  }
+
+  listPlans(rawQuery: Partial<PlanQuery> = {}, today = todayInTimezone(this.timezone)): { items: Plan[]; total: number; page: number; pageSize: number } {
+    const query = planQuerySchema.parse(rawQuery);
+    this.purgeExpiredTrash();
+    const clauses: string[] = [];
+    const values: SqlValue[] = [];
+    if (query.status === "active") clauses.push("deleted_at IS NULL");
+    if (query.status === "trash") clauses.push("deleted_at IS NOT NULL");
+    if (query.planStatus) { clauses.push("status = ?"); values.push(query.planStatus); }
+    if (query.search) {
+      clauses.push("(title LIKE ? ESCAPE '\\' OR COALESCE(note, '') LIKE ? ESCAPE '\\')");
+      const term = `%${query.search.replace(/[\\%_]/g, "\\$&")}%`;
+      values.push(term, term);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const count = this.database.prepare(`SELECT COUNT(*) AS count FROM plans ${where}`).get(...values) as { count: number };
+    const rows = this.database.prepare(`SELECT * FROM plans ${where}
+      ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'cancelled' THEN 1 ELSE 2 END,
+        CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date ASC, created_at DESC
+      LIMIT ? OFFSET ?`).all(...values, query.pageSize, (query.page - 1) * query.pageSize) as unknown as PlanRow[];
+    return { items: rows.map((row) => this.planFromRow(row, today)), total: Number(count.count), page: query.page, pageSize: query.pageSize };
+  }
+
+  getPlan(id: string, includeDeleted = true, today = todayInTimezone(this.timezone)): Plan {
+    const deleted = includeDeleted ? "" : " AND deleted_at IS NULL";
+    const row = this.database.prepare(`SELECT * FROM plans WHERE id = ?${deleted}`).get(id) as unknown as PlanRow | undefined;
+    if (!row) throw new NotFoundError("计划不存在");
+    return this.planFromRow(row, today);
+  }
+
+  getPlanByTransactionId(transactionId: string): Plan | null {
+    const row = this.database.prepare(`SELECT * FROM plans WHERE ledger_transaction_id = ? AND deleted_at IS NULL`)
+      .get(transactionId) as unknown as PlanRow | undefined;
+    return row ? this.planFromRow(row) : null;
+  }
+
+  createPlan(rawInput: PlanInput, options: IdempotencyOptions = {}): Plan {
+    const input = planInputSchema.parse(rawInput);
+    return this.executeIdempotent(options, "plan.create", { input }, () => {
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      this.database.prepare(`INSERT INTO plans(id, title, amount_minor, due_date, reminder_days, status, note, completed_at, ledger_link_mode, ledger_transaction_id, created_at, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, 'open', ?, NULL, 'none', NULL, ?, ?, NULL)`)
+        .run(id, input.title, input.amountMinor ?? null, input.dueDate ?? null, input.reminderDays, input.note?.trim() || null, now, now);
+      this.audit(options.actor ?? "user", "plan.create", "plan", id, ["title", "amountMinor", "dueDate", "reminderDays", "note"]);
+      return this.getPlan(id);
+    });
+  }
+
+  updatePlan(id: string, rawPatch: PlanPatch, options: IdempotencyOptions = {}): Plan {
+    const input = planPatchSchema.parse(rawPatch);
+    const current = this.getPlan(id, false);
+    this.assertExpected(current.updatedAt, input.expectedUpdatedAt);
+    if (current.status !== "open" || current.ledgerLink.mode !== "none") {
+      throw new ConflictError("已完成或已入账的计划不能修改，请新建一项或软删除");
+    }
+    return this.executeIdempotent(options, "plan.update", { id, input }, () => {
+      const nextStatus = input.status ?? current.status;
+      if (nextStatus === "cancelled" && current.ledgerLink.mode !== "none") {
+        throw new ConflictError("已入账的计划不能取消");
+      }
+      const now = new Date().toISOString();
+      this.database.prepare(`UPDATE plans SET title = ?, amount_minor = ?, due_date = ?, reminder_days = ?, status = ?, note = ?, completed_at = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL`)
+        .run(
+          input.title ?? current.title,
+          input.amountMinor === undefined ? current.amountMinor : input.amountMinor,
+          input.dueDate === undefined ? current.dueDate : input.dueDate,
+          input.reminderDays ?? current.reminderDays,
+          nextStatus,
+          input.note === undefined ? current.note : input.note?.trim() || null,
+          nextStatus === "open" ? null : current.completedAt,
+          now,
+          id
+        );
+      this.audit(options.actor ?? "user", "plan.update", "plan", id, Object.keys(input).filter((key) => key !== "expectedUpdatedAt"));
+      return this.getPlan(id);
+    });
+  }
+
+  completePlan(id: string, rawInput: PlanCompleteInput, options: IdempotencyOptions = {}): Plan {
+    const input = planCompleteSchema.parse(rawInput);
+    const current = this.getPlan(id, false);
+    this.assertExpected(current.updatedAt, input.expectedUpdatedAt);
+    if (current.status !== "open") throw new ConflictError("只有未完成的计划可以勾选完成");
+    if (current.ledgerLink.mode !== "none") throw new ConflictError("这项计划已经入账");
+    const amountMinor = input.amountMinor ?? current.amountMinor;
+    const paidDate = input.localDate ?? todayInTimezone(this.timezone);
+    const note = input.note === undefined ? current.note : input.note?.trim() || null;
+    return this.executeIdempotent(options, "plan.complete", { id, input }, () => {
+      let link: { mode: "none" | "existing" | "create"; transactionId: string | null; amountMinor: number | null } = {
+        mode: "none",
+        transactionId: null,
+        amountMinor: null
+      };
+      if (amountMinor) {
+        const trackingStarted = this.funds?.startedOn();
+        if (!input.ledgerLink || input.ledgerLink.mode === "none") {
+          throw new ConflictError(trackingStarted && paidDate >= trackingStarted
+            ? "资金追踪启用后，有金额的计划完成必须选择支出分类和支付账户"
+            : "有金额的计划完成必须关联或创建账目");
+        }
+        if (trackingStarted && paidDate >= trackingStarted && input.ledgerLink.mode === "create" && !input.ledgerLink.accountId) {
+          throw new ConflictError("资金追踪启用后，有金额的计划完成必须选择支付账户");
+        }
+        link = this.getLedgerLinkTransaction(input.ledgerLink, "expense", amountMinor, "CNY", paidDate, note ?? current.title);
+        if (trackingStarted && paidDate >= trackingStarted && link.transactionId && !this.ledger.getTransaction(link.transactionId, false).accountId) {
+          throw new ConflictError("计划入账的支出缺少资金账户");
+        }
+      } else if (input.ledgerLink && input.ledgerLink.mode !== "none") {
+        throw new ConflictError("没有金额的计划不能关联账本");
+      }
+      const now = new Date().toISOString();
+      this.database.prepare(`UPDATE plans SET amount_minor = ?, status = 'completed', note = ?, completed_at = ?, ledger_link_mode = ?, ledger_transaction_id = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL`)
+        .run(amountMinor, note, paidDate, link.mode, link.transactionId, now, id);
+      this.audit(options.actor ?? "user", "plan.complete", "plan", id, ["status", "amountMinor", "ledgerLink"]);
+      return this.getPlan(id);
+    });
+  }
+
+  deletePlan(id: string, options: IdempotencyOptions = {}, expectedUpdatedAt?: string): Plan {
+    const current = this.getPlan(id, false);
+    this.assertExpected(current.updatedAt, expectedUpdatedAt);
+    return this.executeIdempotent(options, "plan.delete", { id, expectedUpdatedAt }, () => {
+      const now = new Date().toISOString();
+      this.database.prepare("UPDATE plans SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, now, id);
+      this.audit(options.actor ?? "user", "plan.delete", "plan", id);
+      return this.getPlan(id);
+    });
+  }
+
+  restorePlan(id: string, options: IdempotencyOptions = {}): Plan {
+    return this.executeIdempotent(options, "plan.restore", { id }, () => {
+      const current = this.getPlan(id, true);
+      if (!current.deletedAt) return current;
+      const now = new Date().toISOString();
+      this.database.prepare("UPDATE plans SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(now, id);
+      this.audit(options.actor ?? "user", "plan.restore", "plan", id);
+      return this.getPlan(id);
+    });
+  }
+
+  planSummary(today = todayInTimezone(this.timezone)): PlanSummary {
+    const list = this.allPages((page) => this.listPlans({ page, pageSize: 100, status: "active" }, today));
+    const openItems = list.filter((item) => item.status === "open");
+    const dueItems = openItems.filter((item) => item.attentionState === "due");
+    const overdueItems = openItems.filter((item) => item.attentionState === "overdue");
+    const attention = [...overdueItems, ...dueItems];
+    return {
+      openCount: openItems.length,
+      attentionCount: attention.length,
+      dueCount: dueItems.length,
+      overdueCount: overdueItems.length,
+      openAmountMinor: openItems.reduce((sum, item) => sum + (item.amountMinor ?? 0), 0),
+      upcoming: attention.slice(0, 10)
+    };
+  }
+
+  exportPlansCsv(): string {
+    const cell = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const rows = [
+      ["标题", "待付金额（元）", "到期日", "提醒天数", "状态", "完成日期", "关联账目", "备注"],
+      ...this.allPages((page) => this.listPlans({ status: "all", page, pageSize: 100 })).map((plan) => [
+        plan.title,
+        plan.amountMinor == null ? "" : (plan.amountMinor / 100).toFixed(2),
+        plan.dueDate,
+        plan.reminderDays,
+        plan.status,
+        plan.completedAt,
+        plan.ledgerLink.transactionId,
+        plan.note
+      ])
+    ];
+    return `\uFEFF${rows.map((row) => row.map(cell).join(",")).join("\r\n")}`;
+  }
+
   exportData(): Record<string, unknown> {
     return {
       borrowers: this.allPages((page) => this.listBorrowers({ status: "all", page, pageSize: 100 })),
       loans: this.allPages((page) => this.listLoans({ status: "all", page, pageSize: 100 })),
-      subscriptions: this.allPages((page) => this.listSubscriptions({ status: "all", page, pageSize: 100 }))
+      subscriptions: this.allPages((page) => this.listSubscriptions({ status: "all", page, pageSize: 100 })),
+      plans: this.allPages((page) => this.listPlans({ status: "all", page, pageSize: 100 }))
     };
   }
 
@@ -1028,6 +1263,7 @@ export class MattersRepository {
       count += Number(this.database.prepare("DELETE FROM subscription_payments WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff).changes);
       count += Number(this.database.prepare("DELETE FROM loans WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff).changes);
       count += Number(this.database.prepare("DELETE FROM subscriptions WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff).changes);
+      count += Number(this.database.prepare("DELETE FROM plans WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff).changes);
       count += Number(this.database.prepare("DELETE FROM borrowers WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff).changes);
       count += Number(this.database.prepare("DELETE FROM matter_idempotency WHERE created_at < ?").run(cutoff).changes);
       return count;
@@ -1071,6 +1307,13 @@ function normalizeSubscriptionBody(request: Request): Record<string, unknown> {
   delete body.cycleDays;
   delete body.nextRenewalDate;
   delete body.url;
+  return body;
+}
+
+function normalizePlanBody(request: Request): Record<string, unknown> {
+  const body = bodyWithoutRequestId(request);
+  if (body.dueDate === "") body.dueDate = null;
+  if (body.amountMinor === "") body.amountMinor = null;
   return body;
 }
 
@@ -1197,6 +1440,32 @@ export function attachMatterRoutes(app: Express, matters: MattersRepository): vo
     response.json({ data: matters.restorePayment(String(request.params.paymentId), { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
   });
 
+  matterRoute(app, "get", "/api/v1/plans/summary", (_request, response) => {
+    response.json({ data: matters.planSummary() });
+  });
+  matterRoute(app, "get", "/api/v1/plans", (request, response) => {
+    response.json({ data: matters.listPlans(request.query as Record<string, string>) });
+  });
+  matterRoute(app, "post", "/api/v1/plans", (request, response) => {
+    response.status(201).json({ data: matters.createPlan(normalizePlanBody(request) as PlanInput, { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
+  });
+  matterRoute(app, "get", "/api/v1/plans/:id", (request, response) => {
+    response.json({ data: matters.getPlan(String(request.params.id)) });
+  });
+  matterRoute(app, "patch", "/api/v1/plans/:id", (request, response) => {
+    response.json({ data: matters.updatePlan(String(request.params.id), normalizePlanBody(request), { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
+  });
+  matterRoute(app, "post", "/api/v1/plans/:id/complete", (request, response) => {
+    response.json({ data: matters.completePlan(String(request.params.id), bodyWithoutRequestId(request), { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
+  });
+  matterRoute(app, "delete", "/api/v1/plans/:id", (request, response) => {
+    const body = matters.parseDeleteInput(bodyWithoutRequestId(request));
+    response.json({ data: matters.deletePlan(String(request.params.id), { idempotencyKey: matterIdempotencyKey(request), actor: "user" }, body.expectedUpdatedAt) });
+  });
+  matterRoute(app, "post", "/api/v1/plans/:id/restore", (request, response) => {
+    response.json({ data: matters.restorePlan(String(request.params.id), { idempotencyKey: matterIdempotencyKey(request), actor: "user" }) });
+  });
+
   matterRoute(app, "get", "/api/v1/export.loans.csv", (_request, response) => {
     response.setHeader("Content-Type", "text/csv; charset=utf-8");
     response.setHeader("Content-Disposition", "attachment; filename=\"money-manager-loans.csv\"");
@@ -1206,5 +1475,10 @@ export function attachMatterRoutes(app: Express, matters: MattersRepository): vo
     response.setHeader("Content-Type", "text/csv; charset=utf-8");
     response.setHeader("Content-Disposition", "attachment; filename=\"money-manager-subscriptions.csv\"");
     response.send(matters.exportSubscriptionsCsv());
+  });
+  matterRoute(app, "get", "/api/v1/export.plans.csv", (_request, response) => {
+    response.setHeader("Content-Type", "text/csv; charset=utf-8");
+    response.setHeader("Content-Disposition", "attachment; filename=\"money-manager-plans.csv\"");
+    response.send(matters.exportPlansCsv());
   });
 }

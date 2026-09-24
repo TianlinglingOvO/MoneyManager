@@ -23,15 +23,30 @@ import {
   X
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import type { Account, AccountCurrency, Borrower, Category, LedgerLinkMode, Loan, LoanRepayment, MatterCurrency, Subscription, SubscriptionPayment, Transaction } from "@shared/types";
+import type { Account, AccountCurrency, Borrower, Category, LedgerLinkMode, Loan, LoanRepayment, MatterCurrency, Plan, Subscription, SubscriptionPayment, Transaction } from "@shared/types";
 import { api } from "../api";
 import { AccountPicker } from "../components/AccountPicker";
 import { BottomSheet } from "../components/BottomSheet";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { useLedgerClock } from "../ledger-clock";
 import { money, parseAmountMinor } from "../utils";
 
-type MatterTab = "loans" | "subscriptions";
+type MatterTab = "loans" | "subscriptions" | "plans";
+type PlanView = "open" | "closed";
+type PlanScope = "dated" | "undated";
+
+function parseMatterTab(value: string | null): MatterTab {
+  return value === "subscriptions" || value === "plans" ? value : "loans";
+}
+
+function parsePlanView(value: string | null): PlanView {
+  return value === "closed" ? "closed" : "open";
+}
+
+function parsePlanScope(value: string | null): PlanScope | null {
+  return value === "dated" || value === "undated" ? value : null;
+}
 
 function listOf<T>(value: T[] | { items?: T[] } | undefined): T[] {
   return Array.isArray(value) ? value : value?.items ?? [];
@@ -575,17 +590,213 @@ function SubscriptionsTab({ today }: { today: string }) {
   </>;
 }
 
+function planDateHint(plan: Plan, today: string): string {
+  if (plan.status === "completed") return plan.completedAt ? `${dateLabel(plan.completedAt)} 已完成` : "已完成";
+  if (plan.status === "cancelled") return "已取消";
+  if (!plan.dueDate) return "未设置日期";
+  const days = daysUntil(plan.dueDate, today);
+  if (days < 0) return `已过期 ${Math.abs(days)} 天`;
+  if (days === 0) return "今天到期";
+  if (days <= plan.reminderDays) return `${days} 天后到期`;
+  return dateLabel(plan.dueDate);
+}
+
+function PlanForm({ open, onClose, editing, today }: { open: boolean; onClose: () => void; editing?: Plan; today: string }) {
+  const queryClient = useQueryClient();
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [amount, setAmount] = useState(editing?.amountMinor ? (editing.amountMinor / 100).toFixed(2) : "");
+  const [dueDate, setDueDate] = useState(editing?.dueDate ?? "");
+  const [reminderDays, setReminderDays] = useState(String(editing?.reminderDays ?? 3));
+  const [note, setNote] = useState(editing?.note ?? "");
+  const [error, setError] = useState("");
+  const save = useMutation({
+    mutationFn: () => {
+      const parsedReminderDays = Number(reminderDays);
+      if (!Number.isInteger(parsedReminderDays) || parsedReminderDays < 0 || parsedReminderDays > 60) throw new Error("提醒天数需要在 0 到 60 之间");
+      const amountMinor = amount.trim() ? parseAmountMinor(amount) : null;
+      if (amount.trim() && !amountMinor) throw new Error("请输入有效金额");
+      const payload = {
+        title: title.trim(),
+        amountMinor,
+        dueDate: dueDate || null,
+        reminderDays: parsedReminderDays,
+        note: note.trim() || null
+      };
+      return editing ? api.updatePlan(editing.id, { ...payload, expectedUpdatedAt: editing.updatedAt }) : api.createPlan(payload);
+    },
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
+    onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
+  });
+  return <BottomSheet open={open} title={editing ? "编辑计划" : "添加计划"} closeLabel={editing ? "关闭编辑计划" : "关闭添加计划"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存计划"}</button>}>
+    <form id="plan-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+      <p className="matter-form-intro">先记下以后要做的事。付款时再选账户并记账，现在不用绑定账户。</p>
+      <label className="matter-field"><span>标题</span><input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="预购尾款、想买的东西…" maxLength={100} /></label>
+      <div className="matter-form-grid"><label className="matter-field"><span>待付金额 <small>选填</small></span><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label><label className="matter-field"><span>到期日 <small>选填</small></span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label></div>
+      <label className="matter-field"><span>提前提醒天数</span><input inputMode="numeric" value={reminderDays} onChange={(event) => setReminderDays(event.target.value.replace(/[^\d]/g, ""))} /><small>设置日期后才会提醒。今天是 {dateLabel(today)}。</small></label>
+      <label className="matter-field"><span>备注 <small>选填</small></span><input value={note} onChange={(event) => setNote(event.target.value)} maxLength={240} /></label>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </form>
+  </BottomSheet>;
+}
+
+function PlanCompleteForm({ open, onClose, plan, today }: { open: boolean; onClose: () => void; plan: Plan; today: string }) {
+  const queryClient = useQueryClient();
+  const [amount, setAmount] = useState(plan.amountMinor ? (plan.amountMinor / 100).toFixed(2) : "");
+  const [paidDate, setPaidDate] = useState(today);
+  const [note, setNote] = useState(plan.note ?? "");
+  const [error, setError] = useState("");
+  const categories = useQuery({ queryKey: ["categories", "expense", false], queryFn: () => api.categories("expense", false) });
+  const [linkMode, setLinkMode] = useState<LedgerLinkMode>("create");
+  const [linkTransactionId, setLinkTransactionId] = useState("");
+  const [linkCategory, setLinkCategory] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [accountAmount, setAccountAmount] = useState("");
+  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
+  const fundsRequired = Boolean(funds.data?.enabled && funds.data.startedOn && paidDate >= funds.data.startedOn);
+  const selectedAccountId = accountId || funds.data?.defaultExpenseAccountId || "";
+  const selectedAccount = funds.data?.accounts.find((item) => item.id === selectedAccountId);
+  const transactions = useQuery({ queryKey: ["transactions", "matter-link-plan"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "expense" }), enabled: !fundsRequired && linkMode === "existing" });
+  const save = useMutation({
+    mutationFn: () => {
+      const amountMinor = parseAmountMinor(amount);
+      if (!amountMinor) throw new Error("请输入有效付款金额");
+      const accountAmountMinor = selectedAccount && selectedAccount.currency !== "CNY" ? parseAmountMinor(accountAmount) : undefined;
+      if ((fundsRequired || linkMode === "create") && !linkCategory) throw new Error("请选择支出分类");
+      if (fundsRequired && !selectedAccount) throw new Error("请选择支付账户");
+      if (fundsRequired && selectedAccount?.currency !== "CNY" && !accountAmountMinor) throw new Error(`请填写实际扣款 ${selectedAccount?.currency ?? "外币"}`);
+      if (!fundsRequired && linkMode === "existing" && !linkTransactionId) throw new Error("请选择要关联的账目");
+      const ledgerLink = fundsRequired
+        ? { mode: "create" as const, categoryId: linkCategory, accountId: selectedAccountId, accountAmountMinor }
+        : linkMode === "existing"
+          ? { mode: "existing" as const, transactionId: linkTransactionId }
+          : { mode: "create" as const, categoryId: linkCategory };
+      return api.completePlan(plan.id, { expectedUpdatedAt: plan.updatedAt, amountMinor, localDate: paidDate, note: note.trim() || null, ledgerLink });
+    },
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["transactions"] }); await queryClient.invalidateQueries({ queryKey: ["funds"] }); onClose(); },
+    onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
+  });
+  return <BottomSheet open={open} title="完成并记账" closeLabel="关闭完成计划" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-complete-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款并记账</button>}>
+    <form id="plan-complete-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+      <p className="matter-form-intro">{plan.title} · 会按实际付款金额记一笔支出，之后计划与账单不再同步。</p>
+      <div className="matter-form-grid"><label className="matter-field"><span>实际付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>付款日期</span><input required type="date" value={paidDate} onChange={(event) => setPaidDate(event.target.value)} /></label></div>
+      <label className="matter-field"><span>备注 <small>选填</small></span><input value={note} onChange={(event) => setNote(event.target.value)} /></label>
+      {fundsRequired ? <>
+        <label className="matter-field"><span>支出分类</span><select required value={linkCategory} onChange={(event) => setLinkCategory(event.target.value)}><option value="">选择分类</option>{(categories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>
+        <FundsAccountField accounts={funds.data?.accounts ?? []} value={selectedAccountId} onChange={(value) => { setAccountId(value); setAccountAmount(""); }} label="支付账户" />
+        {selectedAccount && selectedAccount.currency !== "CNY" && <label className="matter-field"><span>实际扣款 {selectedAccount.currency} <small>必填</small></span><input required inputMode="decimal" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label>}
+      </> : <>
+        <SegmentedControl value={linkMode === "existing" ? "existing" : "create"} label="入账方式" options={[{ value: "create", label: "创建支出" }, { value: "existing", label: "已有账目" }]} onChange={(value) => setLinkMode(value)} />
+        {linkMode === "create" && <label className="matter-field"><span>支出分类</span><select required value={linkCategory} onChange={(event) => setLinkCategory(event.target.value)}><option value="">选择分类</option>{(categories.data ?? []).map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>}
+        {linkMode === "existing" && <label className="matter-field"><span>选择账目</span><select value={linkTransactionId} onChange={(event) => setLinkTransactionId(event.target.value)}><option value="">请选择一笔支出</option>{(transactions.data?.items ?? []).map((item) => <option key={item.id} value={item.id}>{dateLabel(item.localDate)} · {item.category?.name ?? "未分类"} · −{money(item.amountMinor)}</option>)}</select></label>}
+      </>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </form>
+  </BottomSheet>;
+}
+
+function PlanCard({ plan, today, trash, onEdit, onComplete }: { plan: Plan; today: string; trash?: boolean; onEdit: (plan: Plan) => void; onComplete: (plan: Plan) => void }) {
+  const queryClient = useQueryClient();
+  const [confirm, setConfirm] = useState<"complete" | "delete" | null>(null);
+  const due = plan.attentionState === "due" || plan.attentionState === "overdue";
+  const remove = useMutation({
+    mutationFn: () => api.deletePlan(plan.id, plan.updatedAt),
+    onSuccess: () => { setConfirm(null); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }
+  });
+  const restore = useMutation({ mutationFn: () => api.restorePlan(plan.id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
+  const completeOpen = useMutation({
+    mutationFn: () => api.completePlan(plan.id, { expectedUpdatedAt: plan.updatedAt }),
+    onSuccess: () => { setConfirm(null); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }
+  });
+  const hint = planDateHint(plan, today);
+  return <>
+    <article className={`subscription-card ${due ? "is-due" : ""}`}>
+    <div className="subscription-card__top"><span className="subscription-card__logo">{plan.title.slice(0, 1)}</span><div className="subscription-card__identity"><strong>{plan.title}</strong><small>{plan.amountMinor == null ? "未填写金额" : amountText(plan.amountMinor, "CNY")}</small></div><span className={`matter-status matter-status--${due ? "due" : plan.status === "completed" ? "active" : plan.status}`}>{plan.status === "open" ? hint : plan.status === "completed" ? "已完成" : "已取消"}</span></div>
+    <div className="subscription-card__summary"><div><span>待付金额</span><strong>{plan.amountMinor == null ? "—" : amountText(plan.amountMinor, "CNY")}</strong></div><div><span>到期日</span><strong>{plan.dueDate ? dateLabel(plan.dueDate) : "未设置"}</strong><small>{hint}</small></div><div><span>入账</span><strong>{plan.ledgerLink.mode === "none" ? "尚未记账" : "已关联账单"}</strong><small>{plan.completedAt ? dateLabel(plan.completedAt) : ""}</small></div></div>
+    {plan.note && <p className="subscription-card__note">{plan.note}</p>}
+    <div className="matter-card-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate()}><ArchiveRestore size={16} />恢复计划</button> : <><button type="button" className="primary-button" onClick={() => plan.amountMinor ? onComplete(plan) : setConfirm("complete")} disabled={plan.status !== "open"}><Check size={16} />{plan.amountMinor ? "完成并记账" : "完成"}</button>{plan.status === "open" && <button className="icon-button" type="button" aria-label="编辑计划" onClick={() => onEdit(plan)}><Pencil size={16} /></button>}<button className="icon-button danger-icon" type="button" aria-label="删除计划" onClick={() => setConfirm("delete")}><Trash2 size={16} /></button></>}</div>
+    </article>
+    {confirm === "complete" && <ConfirmSheet open title="完成计划" closeLabel="关闭完成确认" description="没有金额，完成不会记入账单。" confirmLabel="确认完成" isPending={completeOpen.isPending} onConfirm={() => completeOpen.mutate()} onClose={() => { if (!completeOpen.isPending) setConfirm(null); }} />}
+    {confirm === "delete" && <ConfirmSheet open title="移入回收站" closeLabel="关闭删除确认" description="将计划移入回收站？已入账的支出会留在账单里。" confirmLabel="移入回收站" danger isPending={remove.isPending} onConfirm={() => remove.mutate()} onClose={() => { if (!remove.isPending) setConfirm(null); }} />}
+  </>;
+}
+
+function PlansTab({ today }: { today: string }) {
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [form, setForm] = useState<{ open: boolean; editing?: Plan }>({ open: false });
+  const [completing, setCompleting] = useState<Plan>();
+  const [showTrash, setShowTrash] = useState(false);
+  const planView = parsePlanView(searchParams.get("planView"));
+  const planScopeFromUrl = parsePlanScope(searchParams.get("planScope"));
+  const plansQuery = useQuery({ queryKey: ["matters", "plans", showTrash], queryFn: () => api.plans({ status: showTrash ? "trash" : "active", pageSize: 100 }) });
+  const plans = listOf(plansQuery.data);
+  const openPlans = plans.filter((item) => item.status === "open");
+  const attention = openPlans.filter((item) => item.attentionState === "due" || item.attentionState === "overdue");
+  const undated = openPlans.filter((item) => !item.dueDate && !attention.includes(item));
+  const scheduled = openPlans.filter((item) => item.dueDate && item.attentionState === "scheduled");
+  const closed = plans.filter((item) => item.status !== "open");
+  const completed = closed.filter((item) => item.status === "completed");
+  const cancelled = closed.filter((item) => item.status === "cancelled");
+  const defaultScope: PlanScope = attention.length > 0 || scheduled.length > 0 ? "dated" : "undated";
+  const planScope = planScopeFromUrl ?? defaultScope;
+  const openAmount = openPlans.reduce((sum, item) => sum + (item.amountMinor ?? 0), 0);
+  const editPlan = (value: Plan) => setForm({ open: true, editing: value });
+  const renderCards = (items: Plan[]) => items.map((item) => <PlanCard key={item.id} plan={item} today={today} onEdit={editPlan} onComplete={setCompleting} />);
+  const updatePlanParams = (patch: { planView?: PlanView; planScope?: PlanScope }) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "plans");
+    const nextView = patch.planView ?? planView;
+    if (nextView === "open") next.delete("planView");
+    else next.set("planView", "closed");
+    if (patch.planScope) next.set("planScope", patch.planScope);
+    setSearchParams(next, { replace: true });
+  };
+  return <>
+    {!showTrash && <div className="matter-summary-grid"><article className="matter-summary-grid__main"><span>未完成</span><strong>{openPlans.length} 项</strong></article><article><span>需要留意</span><strong className={attention.length ? "expense-text" : ""}>{attention.length} 项</strong></article><article><span>未完成金额</span><strong>{openAmount ? money(openAmount) : "未填写"}</strong></article></div>}
+    <div className="matter-section-heading"><div><h2>{showTrash ? "计划回收站" : "计划列表"}</h2><p>{showTrash ? "删除满 30 天后会自动清理。" : "有金额的计划在完成时才会选账户并记入账单。"}</p></div><div className="matter-heading-actions"><button className="secondary-button" onClick={() => setShowTrash((value) => !value)}>{showTrash ? <RotateCcw size={17} /> : <Archive size={17} />}{showTrash ? "返回计划" : "回收站"}</button>{!showTrash && <button className="primary-button" onClick={() => setForm({ open: true })}><Plus size={17} />添加计划</button>}</div></div>
+    {!showTrash && !plansQuery.isLoading && plans.length > 0 && <div className="view-tabs plan-view-tabs" role="tablist" aria-label="计划进度"><button role="tab" aria-selected={planView === "open"} className={planView === "open" ? "is-active" : ""} onClick={() => updatePlanParams({ planView: "open" })}>未完成</button><button role="tab" aria-selected={planView === "closed"} className={planView === "closed" ? "is-active" : ""} onClick={() => updatePlanParams({ planView: "closed" })}>已结束</button></div>}
+    {plansQuery.isLoading ? <div className="skeleton matter-skeleton" /> : showTrash ? (plans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>回收站为空</strong><p>删除的计划会在这里保留 30 天。</p></div> : <div className="subscription-list">{plans.map((item) => <PlanCard key={item.id} plan={item} today={today} trash onEdit={() => undefined} onComplete={() => undefined} />)}</div>) : plans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>还没有计划</strong><p>预购尾款、某天要付的一笔，或还没定日期的打算，都可以放在这里。</p><button className="secondary-button" onClick={() => setForm({ open: true })}><Plus size={16} />添加第一项</button></div> : planView === "open" ? (openPlans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>没有未完成的计划</strong><p>已完成或已取消的计划在「已结束」里。</p></div> : <>
+      <SegmentedControl className="plan-scope-switch" label="未完成计划范围" value={planScope} options={[{ value: "dated", label: "有日期" }, { value: "undated", label: "无日期" }]} onChange={(value) => updatePlanParams({ planScope: value })} />
+      <div className="plan-open-columns" data-scope={planScope}>
+        <div className="plan-column plan-column--dated">
+          {attention.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>需要留意</h3><p>已经到期或进入提醒窗口的计划。</p></div><span className="matter-count-badge">{attention.length}</span></div><div className="subscription-list">{renderCards(attention)}</div></section>}
+          {scheduled.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>尚未到期</h3><p>{scheduled.length} 项还没进入提醒窗口。</p></div></div><div className="subscription-list">{renderCards(scheduled)}</div></section>}
+          {attention.length === 0 && scheduled.length === 0 && <div className="content-card matter-empty"><Clock3 size={28} /><strong>没有带日期的计划</strong><p>到期日会让计划出现在这一侧。</p></div>}
+        </div>
+        <div className="plan-column plan-column--undated">
+          {undated.length > 0 ? <section><div className="matter-section-heading matter-section-heading--small"><div><h3>未定期限</h3><p>想做但还没有日期的计划。</p></div></div><div className="subscription-list">{renderCards(undated)}</div></section> : <div className="content-card matter-empty"><Clock3 size={28} /><strong>没有未定期限的计划</strong><p>还没定日期的打算会出现在这一侧。</p></div>}
+        </div>
+      </div>
+    </>) : closed.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>没有已结束的计划</strong><p>完成或取消后会出现在这里。</p></div> : <div className="subscription-groups">
+      {completed.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>已完成</h3></div></div><div className="subscription-list">{renderCards(completed)}</div></section>}
+      {cancelled.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>已取消</h3></div></div><div className="subscription-list">{renderCards(cancelled)}</div></section>}
+    </div>}
+    {form.open && <PlanForm key={form.editing?.id ?? "new-plan"} open onClose={() => { setForm({ open: false }); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }} editing={form.editing} today={today} />}
+    {completing && <PlanCompleteForm key={completing.id} open onClose={() => { setCompleting(undefined); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }} plan={completing} today={today} />}
+  </>;
+}
+
 export function MattersPage() {
   const { today } = useLedgerClock();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab: MatterTab = searchParams.get("tab") === "subscriptions" ? "subscriptions" : "loans";
-  const setTab = (value: MatterTab) => setSearchParams({ tab: value }, { replace: true });
+  const tab = parseMatterTab(searchParams.get("tab"));
+  const setTab = (value: MatterTab) => {
+    if (value === "plans") {
+      const next = new URLSearchParams(searchParams);
+      next.set("tab", "plans");
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    setSearchParams({ tab: value }, { replace: true });
+  };
   const subscriptionSummaryQuery = useQuery({ queryKey: ["matters", "subscriptions", "badge"], queryFn: api.subscriptionSummary, staleTime: 60_000 });
+  const planSummaryQuery = useQuery({ queryKey: ["matters", "plans", "badge"], queryFn: api.planSummary, staleTime: 60_000 });
   const attentionCount = subscriptionSummaryQuery.data?.attentionCount ?? 0;
+  const planAttentionCount = planSummaryQuery.data?.attentionCount ?? 0;
   return <div className="page matters-page">
-    <header className="page-heading page-heading--row"><div><p className="eyebrow">财务事项</p><h1>借款与订阅</h1><p>把不适合放进日常账单的财务承诺，放在一个容易回看的地方。</p></div><div className="matters-heading-icon"><WalletCards size={25} /></div></header>
-    <div className="view-tabs matters-tabs" role="tablist" aria-label="财务事项分类"><button role="tab" aria-selected={tab === "loans"} className={tab === "loans" ? "is-active" : ""} onClick={() => setTab("loans")}>借款</button><button role="tab" aria-selected={tab === "subscriptions"} aria-label={attentionCount > 0 ? `订阅，${attentionCount}项需要留意` : "订阅"} className={tab === "subscriptions" ? "is-active" : ""} onClick={() => setTab("subscriptions")}><span>订阅</span>{attentionCount > 0 && <em className="matter-tab-badge">{attentionCount}</em>}</button></div>
-    {tab === "loans" ? <LoansTab today={today} /> : <SubscriptionsTab today={today} />}
+    <header className="page-heading page-heading--row"><div><p className="eyebrow">财务事项</p><h1>借款、订阅与计划</h1><p>把不适合放进日常账单的财务承诺，放在一个容易回看的地方。</p></div><div className="matters-heading-icon"><WalletCards size={25} /></div></header>
+    <div className="view-tabs matters-tabs" role="tablist" aria-label="财务事项分类"><button role="tab" aria-selected={tab === "loans"} className={tab === "loans" ? "is-active" : ""} onClick={() => setTab("loans")}>借款</button><button role="tab" aria-selected={tab === "subscriptions"} aria-label={attentionCount > 0 ? `订阅，${attentionCount}项需要留意` : "订阅"} className={tab === "subscriptions" ? "is-active" : ""} onClick={() => setTab("subscriptions")}><span>订阅</span>{attentionCount > 0 && <em className="matter-tab-badge">{attentionCount}</em>}</button><button role="tab" aria-selected={tab === "plans"} aria-label={planAttentionCount > 0 ? `计划，${planAttentionCount}项需要留意` : "计划"} className={tab === "plans" ? "is-active" : ""} onClick={() => setTab("plans")}><span>计划</span>{planAttentionCount > 0 && <em className="matter-tab-badge">{planAttentionCount}</em>}</button></div>
+    {tab === "loans" ? <LoansTab today={today} /> : tab === "subscriptions" ? <SubscriptionsTab today={today} /> : <PlansTab today={today} />}
   </div>;
 }
 

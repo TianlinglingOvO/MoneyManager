@@ -214,6 +214,7 @@ export function calculateFinanceReport(input: {
     kind: input.kind,
     range: definition.current,
     previousRange: definition.previous,
+    isCurrentPeriod: definition.isCurrentPeriod,
     incomeMinor,
     expenseMinor,
     balanceMinor: incomeMinor - expenseMinor,

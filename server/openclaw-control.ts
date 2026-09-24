@@ -11,6 +11,7 @@ import type {
   OpenClawOperation,
   OpenClawOperationDetail,
   Proposal,
+  Plan,
   Subscription,
   SubscriptionPayment,
   Transaction
@@ -24,7 +25,7 @@ import { AppError, ConflictError, NotFoundError } from "./errors";
 import type { FundsService } from "./funds";
 
 type EntityType = "transaction" | "category" | "proposal" | "setting"
-  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "budget" | "account" | "transfer" | "account_adjustment";
+  | "borrower" | "loan" | "loan_repayment" | "subscription" | "subscription_payment" | "budget" | "account" | "transfer" | "account_adjustment" | "plan";
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 function sql(value: unknown): SqlValue {
@@ -202,6 +203,14 @@ function subscriptionSnapshot(subscription: Subscription): Record<string, unknow
     status: subscription.status, website: subscription.website, note: subscription.note,
     createdAt: subscription.createdAt, updatedAt: subscription.updatedAt,
     deletedAt: subscription.deletedAt
+  };
+}
+
+function planSnapshot(plan: Plan): Record<string, unknown> {
+  return {
+    id: plan.id, title: plan.title, amountMinor: plan.amountMinor, dueDate: plan.dueDate,
+    reminderDays: plan.reminderDays, status: plan.status, note: plan.note, completedAt: plan.completedAt,
+    ledgerLink: plan.ledgerLink, createdAt: plan.createdAt, updatedAt: plan.updatedAt, deletedAt: plan.deletedAt
   };
 }
 
@@ -457,6 +466,7 @@ export class OpenClawControlService {
   repaymentSnapshot(repayment: LoanRepayment): Record<string, unknown> { return repaymentSnapshot(repayment); }
   subscriptionSnapshot(subscription: Subscription): Record<string, unknown> { return subscriptionSnapshot(subscription); }
   paymentSnapshot(payment: SubscriptionPayment): Record<string, unknown> { return paymentSnapshot(payment); }
+  planSnapshot(plan: Plan): Record<string, unknown> { return planSnapshot(plan); }
   budgetSnapshot(month: string): BudgetSnapshot | null {
     if (!this.budgets) throw new ConflictError("预算服务尚未启用");
     return this.budgets.snapshot(month);
@@ -516,6 +526,7 @@ export class OpenClawControlService {
     if (item.entity_type === "loan_repayment") return this.restoreLoanRepaymentSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription") return this.restoreSubscriptionSnapshot(item.entity_id, before, after);
     if (item.entity_type === "subscription_payment") return this.restoreSubscriptionPaymentSnapshot(item.entity_id, before, after);
+    if (item.entity_type === "plan") return this.restorePlanSnapshot(item.entity_id, before, after);
     if (item.entity_type === "account") return this.restoreAccountSnapshot(item.entity_id, before, after);
     if (item.entity_type === "transfer") return this.restoreTransferSnapshot(item.entity_id, before, after);
     if (item.entity_type === "account_adjustment") return this.restoreAdjustmentSnapshot(item.entity_id, before, after);
@@ -621,7 +632,7 @@ export class OpenClawControlService {
    * the operation log, so using the small fixed SQL maps here keeps undo
    * atomic and avoids a second repository dependency. */
   private restoreMatterRecord(
-    table: "borrowers" | "loans" | "loan_repayments" | "subscriptions" | "subscription_payments",
+    table: "borrowers" | "loans" | "loan_repayments" | "subscriptions" | "subscription_payments" | "plans",
     id: string,
     before: Record<string, unknown> | null,
     after: Record<string, unknown> | null,
@@ -698,6 +709,19 @@ export class OpenClawControlService {
           sql(snapshotField(snapshot, "localDate")), sql(snapshotField(snapshot, "note")), sql(snapshotField(snapshot, "paymentType")),
           mode, transactionId, sql(snapshotField(snapshot, "nextBillingDateBefore")), sql(snapshotField(snapshot, "nextBillingDateAfter")),
           sql(snapshotField(snapshot, "refundedAt")), sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")), sql(snapshotField(snapshot, "deletedAt"))];
+      });
+  }
+
+  private restorePlanSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {
+    this.restoreMatterRecord("plans", id, before, after,
+      ["title", "amount_minor", "due_date", "reminder_days", "status", "note", "completed_at", "ledger_link_mode", "ledger_transaction_id", "created_at", "updated_at", "deleted_at"],
+      (snapshot) => {
+        const [mode, transactionId] = ledgerLinkValues(snapshot);
+        return [sql(snapshotField(snapshot, "title")), sql(snapshotField(snapshot, "amountMinor")),
+          sql(snapshotField(snapshot, "dueDate")), sql(snapshotField(snapshot, "reminderDays")),
+          sql(snapshotField(snapshot, "status")), sql(snapshotField(snapshot, "note")),
+          sql(snapshotField(snapshot, "completedAt")), mode, transactionId,
+          sql(snapshotField(snapshot, "createdAt")), sql(snapshotField(snapshot, "updatedAt")), sql(snapshotField(snapshot, "deletedAt"))];
       });
   }
 

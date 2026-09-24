@@ -17,6 +17,7 @@ import type {
   OpenClawOperationDetail,
   OpenClawOperation,
   PermanentDeletionResult,
+  SystemReload,
   Proposal,
   SystemStatus,
   Transaction,
@@ -32,6 +33,8 @@ import type {
   HealthReport,
   MonthlyBudget,
   MonthlyBudgetInput,
+  Plan,
+  PlanSummary,
   Subscription,
   SubscriptionPayment,
   SubscriptionSummary
@@ -242,6 +245,7 @@ export const api = {
   analyze: (input: Record<string, unknown>) =>
     request<AiAnalysis>("/api/v1/ai/analyze", { method: "POST", body: JSON.stringify(input) }),
   status: () => request<SystemStatus>("/api/v1/status"),
+  reloadService: () => request<SystemReload>("/api/v1/system/reload", { method: "POST", body: "{}" }),
   settings: () => request<{
     currency: "CNY";
     timezone?: string;
@@ -300,6 +304,18 @@ export const api = {
     request<SubscriptionPayment>(`/api/v1/subscriptions/${id}/payments`, { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
   deleteSubscriptionPayment: (subscriptionId: string, paymentId: string, expectedUpdatedAt?: string) => request<SubscriptionPayment>(`/api/v1/subscriptions/${subscriptionId}/payments/${paymentId}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }) }),
   restoreSubscriptionPayment: (subscriptionId: string, paymentId: string) => request<SubscriptionPayment>(`/api/v1/subscriptions/${subscriptionId}/payments/${paymentId}/restore`, { method: "POST" }),
+  planSummary: () => request<PlanSummary>("/api/v1/plans/summary"),
+  plans: (filters: { status?: string; planStatus?: "open" | "completed" | "cancelled"; includeDeleted?: boolean; page?: number; pageSize?: number } = {}) =>
+    request<Plan[] | MatterList<Plan>>(`/api/v1/plans${queryString(filters)}`),
+  plan: (id: string) => request<Plan>(`/api/v1/plans/${id}`),
+  createPlan: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
+    request<Plan>("/api/v1/plans", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
+  updatePlan: (id: string, input: Record<string, unknown>) =>
+    request<Plan>(`/api/v1/plans/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  completePlan: (id: string, input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
+    request<Plan>(`/api/v1/plans/${id}/complete`, { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
+  deletePlan: (id: string, expectedUpdatedAt?: string) => request<Plan>(`/api/v1/plans/${id}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }) }),
+  restorePlan: (id: string) => request<Plan>(`/api/v1/plans/${id}/restore`, { method: "POST" }),
   fundsSummary: () => request<FundsSummary>("/api/v1/funds/summary"),
   activateFunds: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<FundsSummary>("/api/v1/funds/activate", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
@@ -316,7 +332,7 @@ export const api = {
     request<Account>(`/api/v1/accounts/${id}/restore`, { method: "POST", body: JSON.stringify({ expectedUpdatedAt }) }),
   deleteAccount: (id: string, expectedUpdatedAt: string) =>
     request<void>(`/api/v1/accounts/${id}`, { method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }) }),
-  accountMovements: (filters: { accountId?: string; sourceType?: string; page?: number; pageSize?: number } = {}) =>
+  accountMovements: (filters: { accountId?: string; sourceType?: string; sort?: "recent" | "oldest"; page?: number; pageSize?: number } = {}) =>
     request<AccountMovementList>(`/api/v1/funds/movements${queryString(filters)}`),
   transfers: (includeDeleted = false) => request<Transfer[]>(`/api/v1/transfers${queryString({ includeDeleted })}`),
   createTransfer: (input: Record<string, unknown>) =>

@@ -24,6 +24,7 @@ describe("主题与导航状态", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 0, attentionCount: 0, dueCount: 0, upcomingCount: 0, upcoming: [], currencies: [] });
+    vi.spyOn(api, "planSummary").mockResolvedValue({ openCount: 0, attentionCount: 0, dueCount: 0, overdueCount: 0, openAmountMinor: 0, upcoming: [] });
   });
   afterEach(() => { cleanup(); vi.restoreAllMocks(); delete document.documentElement.dataset.theme; delete document.documentElement.dataset.density; delete document.documentElement.dataset.background; delete document.documentElement.dataset.deviceBackground; });
 
@@ -91,6 +92,24 @@ describe("主题与导航状态", () => {
     const links = await screen.findAllByRole("link", { name: "事项，2项订阅需要留意" });
     expect(links.length).toBeGreaterThan(0);
     links.forEach((link) => expect(link).toHaveAttribute("href", "/matters?tab=subscriptions"));
+  });
+
+  it("仅计划需要留意时导航徽标进入计划页", async () => {
+    vi.spyOn(api, "proposals").mockResolvedValue([]);
+    vi.mocked(api.planSummary).mockResolvedValue({ openCount: 1, attentionCount: 1, dueCount: 0, overdueCount: 1, openAmountMinor: 0, upcoming: [] });
+    render(
+      <QueryClientProvider client={client()}>
+        <EntryContext.Provider value={{ openEntry: () => undefined, closeEntry: () => undefined }}>
+          <MemoryRouter initialEntries={["/"]}>
+            <Routes><Route element={<AppShell />}><Route index element={<div>页面内容</div>} /></Route></Routes>
+          </MemoryRouter>
+        </EntryContext.Provider>
+      </QueryClientProvider>
+    );
+
+    const links = await screen.findAllByRole("link", { name: "事项，1项计划需要留意" });
+    expect(links.length).toBeGreaterThan(0);
+    links.forEach((link) => expect(link).toHaveAttribute("href", "/matters?tab=plans"));
   });
 
   it("桌面快捷键只在非输入状态触发，并能聚焦账单搜索", async () => {

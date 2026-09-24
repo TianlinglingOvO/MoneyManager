@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { amountToMinor, createLedgerMcpServer } from "../server/mcp";
+import { APP_VERSION } from "../shared/app-metadata";
 import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
 import { OpenClawControlService } from "../server/openclaw-control";
@@ -40,7 +41,7 @@ describe("OpenClaw MCP", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: "2.4.1" });
+      expect(client.getServerVersion()).toEqual({ name: "sutady-money-manager", version: APP_VERSION });
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "direct_add_transaction",
@@ -288,6 +289,68 @@ describe("OpenClaw MCP", () => {
         }
       });
       expect(matters.listLoans({ borrowerId: borrower.id }).items[0]?.accountId).toBe(funds.resolveAccountId("支付宝"));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("direct 模式可以创建和完成计划，缺分类时拒绝且不推断", async () => {
+    const category = expenseCategory(context);
+    const funds = new FundsService(context.database, context.repository, () => "2026-08-26");
+    context.repository.attachFundsService(funds);
+    const matters = new MattersRepository(context.database, context.repository, context.config.timezone, funds);
+    const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
+    const openclaw = new OpenClawControlService(context.database, context.repository, context.config, budgets, funds);
+    openclaw.setMode("direct");
+    const server = createLedgerMcpServer(context.repository, context.config, {
+      ai: new AiService(context.database, context.repository, context.config),
+      backup: new BackupService(context.database, context.repository, context.config),
+      openclaw,
+      matters,
+      budgets,
+      health: new HealthService(context.database, context.repository, budgets, new AiService(context.database, context.repository, context.config)),
+      funds
+    });
+    const client = new Client({ name: "test-plans", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const tools = await client.listTools();
+      for (const name of ["list_plans", "get_plan", "get_plan_summary", "direct_create_plan", "direct_complete_plan"]) {
+        expect(tools.tools.map((tool) => tool.name)).toContain(name);
+      }
+      const created = await client.callTool({
+        name: "direct_create_plan",
+        arguments: { requestId: "plan-mcp-create-001", title: "预购尾款", amount: 88, dueDate: "2026-08-28" }
+      });
+      const createdText = (created.content as Array<{ type: string; text?: string }>).find((item) => item.type === "text")?.text;
+      const createdPayload = JSON.parse(createdText ?? "{}") as { result: { id: string; updatedAt: string; amountMinor: number } };
+      expect(createdPayload.result.amountMinor).toBe(8_800);
+      expect(context.repository.listTransactions().total).toBe(0);
+
+      const missing = await client.callTool({
+        name: "direct_complete_plan",
+        arguments: {
+          requestId: "plan-mcp-complete-missing-001",
+          planId: createdPayload.result.id,
+          expectedUpdatedAt: createdPayload.result.updatedAt
+        }
+      });
+      expect(missing.isError).toBe(true);
+
+      const completed = await client.callTool({
+        name: "direct_complete_plan",
+        arguments: {
+          requestId: "plan-mcp-complete-001",
+          planId: createdPayload.result.id,
+          expectedUpdatedAt: createdPayload.result.updatedAt,
+          ledgerLink: { mode: "create", categoryId: category.id }
+        }
+      });
+      expect(completed.isError).toBeUndefined();
+      expect(context.repository.listTransactions().total).toBe(1);
     } finally {
       await client.close();
       await server.close();

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { loadConfig, validateProductionConfig } from "./config";
 import { closeDatabase, getDatabase } from "./database";
 import { createApp } from "./app";
+import { RELOAD_EXIT_CODE, setReloadExitHandler } from "./reload";
 
 const config = loadConfig();
 validateProductionConfig(config);
@@ -18,14 +19,18 @@ server.listen(config.port, config.host, () => {
   console.log(`SMB 已启动：http://${config.host}:${config.port}（${authLabel}）`);
 });
 
-function shutdown(): void {
+function shutdown(code = 0): void {
   if (backupTimer) clearInterval(backupTimer);
   server.close(() => {
     closeDatabase();
-    process.exit(0);
+    process.exit(code);
   });
-  setTimeout(() => process.exit(1), 8_000).unref();
+  setTimeout(() => process.exit(code || 1), 8_000).unref();
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+setReloadExitHandler(() => {
+  setTimeout(() => shutdown(RELOAD_EXIT_CODE), 300).unref();
+});
+
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));

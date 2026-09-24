@@ -2,6 +2,79 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.5.3 — 2026-09-01
+
+### Insights
+
+- Same-progress comparison is unchanged: a month in progress is compared with the matching days of the previous month, not the whole previous month.
+- The summary card now says **较上月同期** (or week/year equivalents) and shows the actual previous date range, e.g. `8月1日–8月1日`.
+- Category detail rows show the previous-period amount next to the percentage so a +200% change is readable against last period’s ¥10.00.
+- Finance reports use the ledger timezone’s today instead of the process clock.
+- Documented the same-progress labels in AGENTS, deployment acceptance, the roadmap, and the OpenClaw `get_finance_summary` tool description.
+
+## 2.5.2 — 2026-08-29
+
+### Operations
+
+- Settings **检查并刷新** now reloads the local Node process when a newer production build is already on disk, then updates the PWA. `打开 SMB.cmd` / `npm start` / `start-production.ps1` run a supervisor so that restart does not require closing the SMB Service window.
+- The first time this version is installed, the SMB Service still needs one manual restart so the supervisor and reload API are loaded. After that, the button keeps the running service aligned with `dist-server`.
+- Reload does not compile source. Change code, run `npm.cmd run build`, then tap 检查并刷新. Unsupervised processes (including `tsx` dev) only refresh the webpage.
+- Status exposes whether the launcher is supervising the process, without paths or commands.
+
+## 2.5.1 — 2026-08-29
+
+### Ledger health
+
+- Budget warning fingerprints now use month, scope, and near/over band instead of spent or forecast amounts, so acknowledging an overspend survives later entries in the same band. Crossing from near-limit to overspend still creates a new finding.
+- The health sheet lists only unacknowledged issues. Acknowledged items stay in the API payload and as a count, but no longer occupy the list.
+
+### Funds
+
+- Recent movements default to occurrence date descending. The funds page uses a fixed-height scrolling list with “load more”, so newer dates are no longer hidden behind the first page of oldest rows.
+- Full JSON / CSV funds dumps keep creation order for archival stability.
+
+### Plans
+
+- The plans tab splits **未完成** and **已结束**. On desktop, open plans are two columns (dated | undated); on mobile they switch with a segmented control.
+- Completing a plan without an amount, and moving a plan to trash, use in-app sheets instead of the browser `confirm` bar.
+
+### Appearance
+
+- Desktop ranking rows in Insights 分类明细 are larger from 901px. From 1200px the UI type tokens bump one pixel and the main column uses a bit more of the leftover side space, without filling the whole viewport.
+
+## 2.5.0 — 2026-08-27
+
+### Plans
+
+- Added a one-shot **计划** tab under Matters for preorders, remaining payments, and undated financial follow-ups that do not belong in subscriptions.
+- Creating a plan records title, optional due date, optional CNY amount, and reminder days. It does not bind an account or write the ledger.
+- Completing a plan without an amount only marks it done. Completing with an amount requires creating or linking an expense, and after funds activation also requires a payment account (foreign accounts still need the actual `accountAmount`).
+- Reminder attention appears on the plan tab, the Matters nav badge (subscription + plan), the Insights summary card, and health `plan_due` findings.
+- OpenClaw can list, create, update, complete, delete, and restore plans in direct mode with `requestId` and reversible snapshots. Confirm mode stays query-only.
+- Added migration 11 (`plans`) and `/api/v1/export.plans.csv`. Full JSON export includes plans without stopping at the page limit.
+- Clarified that Settings “检查并刷新” only updates the PWA cache; API and migration upgrades still require restarting the local Node process. The Matters nav badge now names subscription and plan attention separately.
+
+## 2.4.2 — 2026-08-27
+
+### Reliability
+
+- Returned JSON-RPC errors for malformed `/mcp` JSON, missing or stale MCP sessions, and GET/DELETE session failures instead of the generic HTTP 500 page copy.
+- Logged only the HTTP method, path, and error name for those failures, without request bodies, amounts, notes, or tokens.
+
+## 2.4.1 — 2026-08-26
+
+### Funds activation baseline and currencies
+
+- Added migration 10: activation snapshots existing transactions into `funds_baseline_transactions`, accounts store `CNY`/`USD`/`USDT`, and ordinary entries can keep a separate foreign `accountAmount`.
+- Same-day records that already existed at activation stay baseline: no required account, no movements, and no missing-account health finding. New records after activation still require an account.
+- Health reports one aggregated missing-account issue per month with related IDs; the health sheet can preview net funds impact and batch-assign a CNY account.
+- Ledger amount remains CNY. Foreign-account writes must supply the actual foreign debit or credit and must not infer an exchange rate.
+- Added the in-app account picker, dual-amount entry, and funds missing-account review in the health sheet.
+
+### Packaging
+
+- Replaced production hostnames in deploy templates with `money.example.com` and removed the obsolete `打开寸金记账.cmd` launcher alias.
+
 ## 2.3.0 — 2026-08-23
 
 ### Lightweight funds tracking

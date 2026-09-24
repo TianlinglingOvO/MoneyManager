@@ -15,3 +15,9 @@ Thumbs.db
 优化建议*
 *.assets/
 *.tmp
+
+# 个人截图、笔记与本机专用的 Claude 配置（不上传到公开仓库）
+bug_photo/
+优化升级说明*
+CLAUDE.local.md
+.claude/settings.local.json

@@ -193,6 +193,7 @@ export const fundsAssignTransactionsSchema = z.object({
 export const accountMovementQuerySchema = z.object({
   accountId: z.string().uuid().optional(),
   sourceType: z.enum(["transaction", "loan", "loan_repayment", "transfer", "adjustment"]).optional(),
+  sort: z.enum(["recent", "oldest"]).default("recent"),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50)
 });
@@ -436,3 +437,30 @@ export const subscriptionPaymentPatchSchema = subscriptionPaymentInputSchema.par
 }).strict().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "至少需要修改一个字段");
 
 export const matterDeleteSchema = z.object({ expectedUpdatedAt: z.string().datetime().optional() }).strict();
+
+export const planStatusSchema = z.enum(["open", "completed", "cancelled"]);
+
+export const planInputSchema = z.object({
+  title: z.string().trim().min(1).max(100),
+  amountMinor: z.number().int().positive().max(100_000_000_000).optional().nullable(),
+  dueDate: matterDateSchema.optional().nullable(),
+  reminderDays: z.number().int().min(0).max(60).default(3),
+  note: z.string().trim().max(240).optional().nullable()
+}).strict();
+
+export const planPatchSchema = planInputSchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime().optional(),
+  status: z.enum(["open", "cancelled"]).optional()
+}).strict().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "至少需要修改一个字段");
+
+export const planCompleteSchema = z.object({
+  expectedUpdatedAt: z.string().datetime().optional(),
+  amountMinor: z.number().int().positive().max(100_000_000_000).optional(),
+  localDate: matterDateSchema.optional(),
+  note: z.string().trim().max(240).optional().nullable(),
+  ledgerLink: ledgerLinkInputSchema.optional()
+}).strict();
+
+export const planQuerySchema = matterQuerySchema.extend({
+  planStatus: planStatusSchema.optional()
+});

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Account, Borrower, Category, Loan, Subscription } from "../shared/types";
+import type { Account, Borrower, Category, Loan, Plan, Subscription } from "../shared/types";
 import { api } from "../src/api";
 import { MattersPage } from "../src/pages/MattersPage";
 
@@ -16,6 +16,8 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 0, attentionCount: 0, dueCount: 0, upcomingCount: 0, upcoming: [], currencies: [] });
+  vi.spyOn(api, "planSummary").mockResolvedValue({ openCount: 0, attentionCount: 0, dueCount: 0, overdueCount: 0, openAmountMinor: 0, upcoming: [] });
+  vi.spyOn(api, "plans").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 });
 });
 
 function renderPage(path = "/matters?tab=loans") {
@@ -187,6 +189,112 @@ describe("财务事项页面", () => {
         ledgerAmountMinor: 7_200
       })
     })));
+  });
+
+  it("计划页展示提醒并在有金额时进入完成记账", async () => {
+    const plan: Plan = {
+      id: "55555555-5555-4555-8555-555555555555",
+      title: "预购尾款",
+      amountMinor: 12_800,
+      dueDate: "2026-08-20",
+      reminderDays: 3,
+      status: "open",
+      note: null,
+      completedAt: null,
+      attentionState: "overdue",
+      ledgerLink: { mode: "none", transactionId: null, amountMinor: null, accountAmountMinor: null, currency: "CNY" },
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      deletedAt: null
+    };
+    vi.spyOn(api, "plans").mockResolvedValue({ items: [plan], total: 1, page: 1, pageSize: 100 });
+    vi.mocked(api.planSummary).mockResolvedValue({ openCount: 1, attentionCount: 1, dueCount: 0, overdueCount: 1, openAmountMinor: 12_800, upcoming: [plan] });
+    vi.spyOn(api, "fundsSummary").mockResolvedValue({ enabled: false, startedOn: null, totalMinor: 0, currencyTotals: { CNY: 0, USD: 0, USDT: 0 }, accountCount: 0, defaultExpenseAccountId: null, defaultIncomeAccountId: null, defaultFeeCategoryId: null, accounts: [] });
+    vi.spyOn(api, "categories").mockResolvedValue([expenseCategory]);
+    renderPage("/matters?tab=plans");
+    expect(await screen.findByText("预购尾款")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "计划，1项需要留意" })).toHaveTextContent("1");
+    fireEvent.click(screen.getByRole("button", { name: /完成并记账/ }));
+    expect(await screen.findByRole("button", { name: "确认已付款并记账" })).toBeInTheDocument();
+  });
+
+  it("计划未完成页隔离已结束项，删除改用应用内确认", async () => {
+    const openPlan: Plan = {
+      id: "55555555-5555-4555-8555-555555555555",
+      title: "预购尾款",
+      amountMinor: 12_800,
+      dueDate: "2026-08-20",
+      reminderDays: 3,
+      status: "open",
+      note: null,
+      completedAt: null,
+      attentionState: "overdue",
+      ledgerLink: { mode: "none", transactionId: null, amountMinor: null, accountAmountMinor: null, currency: "CNY" },
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      deletedAt: null
+    };
+    const undatedPlan: Plan = {
+      ...openPlan,
+      id: "66666666-6666-4666-8666-666666666666",
+      title: "想买显示器",
+      amountMinor: null,
+      dueDate: null,
+      attentionState: "none"
+    };
+    const donePlan: Plan = {
+      ...openPlan,
+      id: "77777777-7777-4777-8777-777777777777",
+      title: "已付尾款",
+      status: "completed",
+      completedAt: "2026-08-21",
+      attentionState: "none"
+    };
+    vi.spyOn(api, "plans").mockResolvedValue({ items: [openPlan, undatedPlan, donePlan], total: 3, page: 1, pageSize: 100 });
+    vi.mocked(api.planSummary).mockResolvedValue({ openCount: 2, attentionCount: 1, dueCount: 0, overdueCount: 1, openAmountMinor: 12_800, upcoming: [openPlan] });
+    const remove = vi.spyOn(api, "deletePlan").mockResolvedValue(openPlan);
+    const confirm = vi.spyOn(window, "confirm");
+    renderPage("/matters?tab=plans");
+    expect(await screen.findByText("预购尾款")).toBeInTheDocument();
+    expect(screen.getByText("想买显示器")).toBeInTheDocument();
+    expect(screen.queryByText("已付尾款")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "未完成" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "已结束" }));
+    expect(await screen.findByText("已付尾款")).toBeInTheDocument();
+    expect(screen.queryByText("预购尾款")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "未完成" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "删除计划" })[0]!);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: "移入回收站" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "移入回收站" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(openPlan.id, openPlan.updatedAt));
+  });
+
+  it("无金额完成计划使用应用内确认而不是浏览器弹窗", async () => {
+    const plan: Plan = {
+      id: "88888888-8888-4888-8888-888888888888",
+      title: "周末整理账单",
+      amountMinor: null,
+      dueDate: null,
+      reminderDays: 3,
+      status: "open",
+      note: null,
+      completedAt: null,
+      attentionState: "none",
+      ledgerLink: { mode: "none", transactionId: null, amountMinor: null, accountAmountMinor: null, currency: "CNY" },
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      deletedAt: null
+    };
+    vi.spyOn(api, "plans").mockResolvedValue({ items: [plan], total: 1, page: 1, pageSize: 100 });
+    const complete = vi.spyOn(api, "completePlan").mockResolvedValue(plan);
+    const confirm = vi.spyOn(window, "confirm");
+    renderPage("/matters?tab=plans");
+    fireEvent.click(await screen.findByRole("button", { name: "完成" }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: "完成计划" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认完成" }));
+    await waitFor(() => expect(complete).toHaveBeenCalledWith(plan.id, { expectedUpdatedAt: plan.updatedAt }));
   });
 
   it("事项回收站使用独立查询，不把已删除内容混入正常列表", async () => {
