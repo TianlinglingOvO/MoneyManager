@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import type { Category, MonthlyBudget, MonthlyBudgetInput } from "@shared/types";
@@ -40,6 +40,10 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
   const [totalValue, setTotalValue] = useState("");
   const [categoryValues, setCategoryValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
+  const deletePromptShown = useRef(false);
   const expenseCategories = useMemo(() => categories.filter((category) => category.kind === "expense"), [categories]);
 
   useEffect(() => {
@@ -51,6 +55,8 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
     initialSignature.current = draftSignature(nextTotal, nextCategories);
     setError(null);
     setPickerOpen(false);
+    deletePromptShown.current = false;
+    setConfirmingDelete(false);
   }, [budget, open]);
 
   const save = useMutation({
@@ -119,10 +125,15 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
   };
   const isDirty = open && draftSignature(totalValue, categoryValues) !== initialSignature.current;
 
-  const beforeClose = useCallback(() => {
-    if (save.isPending || remove.isPending) return false;
-    return !isDirty || window.confirm("放弃未保存的预算修改？");
-  }, [isDirty, remove.isPending, save.isPending]);
+  useEffect(() => {
+    if (confirmingDelete) {
+      deletePromptShown.current = true;
+      window.requestAnimationFrame(() => cancelDeleteRef.current?.focus());
+    } else if (deletePromptShown.current) {
+      deletePromptShown.current = false;
+      window.requestAnimationFrame(() => deleteTriggerRef.current?.focus());
+    }
+  }, [confirmingDelete]);
 
   const submit = () => {
     const trimmedTotal = totalValue.trim();
@@ -149,10 +160,16 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
     save.mutate({ totalMinor, categories: categoryBudgets, expectedUpdatedAt: budget?.updatedAt });
   };
 
-  const footer = <div className="sheet-actions budget-sheet__actions">
-    {hasSavedBudget && <button className="text-button danger-button" type="button" disabled={remove.isPending || save.isPending} onClick={() => { if (window.confirm(`删除${monthLabel(month)}的预算？账目不会受到影响。`)) remove.mutate(); }}>删除预算</button>}
-    <button className="primary-button" type="button" disabled={save.isPending || remove.isPending} onClick={submit}>{save.isPending ? "保存中…" : "保存预算"}</button>
-  </div>;
+  const footer = confirmingDelete
+    ? <div className="sheet-actions budget-sheet__actions budget-sheet__actions--confirm" role="group" aria-label="确认删除预算">
+      <p>删除{monthLabel(month)}的预算？账目不会受到影响。</p>
+      <button ref={cancelDeleteRef} className="secondary-button" type="button" disabled={remove.isPending} onClick={() => setConfirmingDelete(false)}>取消</button>
+      <button className="danger-button" type="button" disabled={remove.isPending} onClick={() => remove.mutate()}>{remove.isPending ? "删除中…" : "确认删除"}</button>
+    </div>
+    : <div className="sheet-actions budget-sheet__actions">
+      {hasSavedBudget && <button ref={deleteTriggerRef} className="text-button danger-button" type="button" disabled={remove.isPending || save.isPending} onClick={() => { remove.reset(); setConfirmingDelete(true); }}>删除预算</button>}
+      <button className="primary-button" type="button" disabled={save.isPending || remove.isPending} onClick={submit}>{save.isPending ? "保存中…" : "保存预算"}</button>
+    </div>;
 
   return <BottomSheet
     ref={sheetRef}
@@ -160,7 +177,9 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
     title={`管理 ${monthLabel(month)}预算`}
     closeLabel="关闭预算"
     onClose={onClose}
-    beforeClose={beforeClose}
+    dirty={isDirty}
+    discardDescription="未保存的预算修改会丢失。"
+    busy={save.isPending || remove.isPending}
     initialFocusRef={totalInputRef}
     footer={footer}
     className="budget-sheet"

@@ -30,6 +30,7 @@ import { BottomSheet } from "../components/BottomSheet";
 import { ConfirmSheet } from "../components/ConfirmSheet";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { useLedgerClock } from "../ledger-clock";
+import { offerUndo, useToast } from "../toast-context";
 import { money, parseAmountMinor } from "../utils";
 
 type MatterTab = "loans" | "subscriptions" | "plans";
@@ -190,7 +191,7 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
       });
       return api.createLoan(input);
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["loan"] }); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["loan"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} closeLabel={editing ? "关闭编辑借款" : "关闭记录借款"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="loan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>}>
@@ -316,7 +317,7 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
       const ledgerLink = fundsRequired ? undefined : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", ledgerAmountMinor: amountMinor, categoryId: linkCategory };
       return api.createLoanRepayment(loan.id, { amountMinor, localDate: repaidDate, note: note.trim() || null, ledgerLink, accountId: fundsRequired ? selectedAccountId : null });
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["loan", loan?.id] }); setAmount(""); setNote(""); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["loan", loan?.id] }); setAmount(""); setNote(""); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-income"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "income" }) });
@@ -335,6 +336,7 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
 
 function LoanRepaymentHistory({ loan }: { loan: Loan }) {
   const queryClient = useQueryClient();
+  const notify = useToast();
   const [showTrash, setShowTrash] = useState(false);
   const active = loan.repayments;
   const trashQuery = useQuery({
@@ -344,7 +346,10 @@ function LoanRepaymentHistory({ loan }: { loan: Loan }) {
   });
   const remove = useMutation({
     mutationFn: (repayment: LoanRepayment) => api.deleteLoanRepayment(loan.id, repayment.id, repayment.updatedAt),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); }
+    onSuccess: (_deleted, repayment) => {
+      void queryClient.invalidateQueries({ queryKey: ["matters"] });
+      offerUndo(notify, "还款已移入回收站", () => api.restoreLoanRepayment(loan.id, repayment.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+    }
   });
   const restore = useMutation({
     mutationFn: (repayment: LoanRepayment) => api.restoreLoanRepayment(loan.id, repayment.id),
@@ -357,14 +362,22 @@ function LoanRepaymentHistory({ loan }: { loan: Loan }) {
   return <details className="matter-history">
     <summary>还款记录（{active.length}）</summary>
     <div className="matter-history__toolbar"><button type="button" className="text-button" onClick={(event) => { event.preventDefault(); setShowTrash((value) => !value); }}>{showTrash ? "返回记录" : "还款回收站"}</button></div>
-    <div className="matter-history__list">{repayments.length === 0 ? <small>{showTrash ? "没有已删除的还款" : "还没有还款记录"}</small> : repayments.map((repayment) => <div key={repayment.id}><span><strong>{money(repayment.amountMinor)}</strong><small>{dateLabel(repayment.localDate)}{repayment.note ? ` · ${repayment.note}` : ""}</small></span>{showTrash ? <button type="button" className="icon-button" aria-label="恢复还款" onClick={() => restore.mutate(repayment)}><ArchiveRestore size={15} /></button> : <button type="button" className="icon-button danger-icon" aria-label="删除还款" onClick={() => { if (window.confirm("将这笔还款移入回收站？")) remove.mutate(repayment); }}><Trash2 size={15} /></button>}</div>)}</div>
+    <div className="matter-history__list">{repayments.length === 0 ? <small>{showTrash ? "没有已删除的还款" : "还没有还款记录"}</small> : repayments.map((repayment) => <div key={repayment.id}><span><strong>{money(repayment.amountMinor)}</strong><small>{dateLabel(repayment.localDate)}{repayment.note ? ` · ${repayment.note}` : ""}</small></span>{showTrash ? <button type="button" className="icon-button" aria-label="恢复还款" onClick={() => restore.mutate(repayment)}><ArchiveRestore size={15} /></button> : <button type="button" className="icon-button danger-icon" aria-label="删除还款" onClick={() => remove.mutate(repayment)}><Trash2 size={15} /></button>}</div>)}</div>
   </details>;
 }
 
 function LoanCard({ borrower, loans, trash, onEdit, onRepay, onRefresh }: { borrower: Borrower; loans: Loan[]; trash?: boolean; onEdit: (loan: Loan) => void; onRepay: (loan: Loan) => void; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const queryClient = useQueryClient();
-  const archive = useMutation({ mutationFn: (loan: Loan) => api.deleteLoan(loan.id, loan.updatedAt), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onRefresh(); } });
+  const notify = useToast();
+  const archive = useMutation({
+    mutationFn: (loan: Loan) => api.deleteLoan(loan.id, loan.updatedAt),
+    onSuccess: (_deleted, loan) => {
+      void queryClient.invalidateQueries({ queryKey: ["matters"] });
+      onRefresh();
+      offerUndo(notify, "借款已移入回收站", () => api.restoreLoan(loan.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+    }
+  });
   const restore = useMutation({ mutationFn: (id: string) => api.restoreLoan(id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onRefresh(); } });
   const toggleBorrower = useMutation({ mutationFn: () => api.updateBorrower(borrower.id, { isArchived: !borrower.isArchived, expectedUpdatedAt: borrower.updatedAt }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onRefresh(); } });
   return <article className="matter-person-card">
@@ -372,7 +385,7 @@ function LoanCard({ borrower, loans, trash, onEdit, onRepay, onRefresh }: { borr
       <span className="matter-person-card__avatar">{borrower.name.slice(0, 1)}</span><span className="matter-person-card__identity"><strong>{borrower.name}{borrower.isArchived ? " · 已停用" : ""}</strong><small>{loans.length} 笔借款 · 已还 {money(borrower.totalRepaidMinor)}</small></span><span className="matter-person-card__balance"><small>还欠</small><b>{money(borrower.outstandingMinor)}</b></span><ChevronDown className={expanded ? "is-rotated" : ""} size={19} />
     </button>
     {expanded && <div className="matter-loan-list">{loans.map((loan) => <div className="matter-loan-row" key={loan.id}>
-      <span className="matter-loan-row__icon"><WalletCards size={18} /></span><span className="matter-loan-row__body"><strong>{loan.purpose || "未注明用途"}</strong><small>{dateLabel(loan.localDate)} · 已还 {money(loan.repaidMinor)}</small>{loan.note && <small>{loan.note}</small>}{!trash && <LoanRepaymentHistory loan={loan} />}</span><span className={`matter-status matter-status--${loan.status}`}>{loan.status === "settled" ? "已结清" : `未还 ${money(loan.outstandingMinor)}`}</span><span className="matter-row-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate(loan.id)}><ArchiveRestore size={16} />恢复</button> : <><button type="button" className="icon-button" aria-label="编辑借款" onClick={() => onEdit(loan)}><Pencil size={16} /></button>{loan.status !== "settled" && <button type="button" className="secondary-button matter-repay-button" onClick={() => onRepay(loan)}><ArrowDownLeft size={15} />还款</button>}<button type="button" className="icon-button danger-icon" aria-label="移入回收站" onClick={() => { if (window.confirm("将这笔借款移入回收站？")) archive.mutate(loan); }}><Trash2 size={16} /></button></>}</span>
+      <span className="matter-loan-row__icon"><WalletCards size={18} /></span><span className="matter-loan-row__body"><strong>{loan.purpose || "未注明用途"}</strong><small>{dateLabel(loan.localDate)} · 已还 {money(loan.repaidMinor)}</small>{loan.note && <small>{loan.note}</small>}{!trash && <LoanRepaymentHistory loan={loan} />}</span><span className={`matter-status matter-status--${loan.status}`}>{loan.status === "settled" ? "已结清" : `未还 ${money(loan.outstandingMinor)}`}</span><span className="matter-row-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate(loan.id)}><ArchiveRestore size={16} />恢复</button> : <><button type="button" className="icon-button" aria-label="编辑借款" onClick={() => onEdit(loan)}><Pencil size={16} /></button>{loan.status !== "settled" && <button type="button" className="secondary-button matter-repay-button" onClick={() => onRepay(loan)}><ArrowDownLeft size={15} />还款</button>}<button type="button" className="icon-button danger-icon" aria-label="移入回收站" onClick={() => archive.mutate(loan)}><Trash2 size={16} /></button></>}</span>
     </div>)}{loans.length === 0 && <p className="muted-copy">暂无借款。</p>}{!trash && <button type="button" className="text-button matter-borrower-toggle" onClick={() => toggleBorrower.mutate()}>{borrower.isArchived ? "恢复借款人" : "停用借款人"}</button>}</div>}
   </article>;
 }
@@ -463,7 +476,7 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
         : undefined;
       return api.createSubscription({ ...base, initialPayment: firstPayment ? { amountMinor: firstPayment, currency, localDate: startDate, paymentType: "initial", ledgerLink } : undefined });
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   return <BottomSheet open={open} title={editing ? "编辑订阅" : "添加订阅"} closeLabel={editing ? "关闭编辑订阅" : "关闭添加订阅"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存订阅"}</button>}>
@@ -528,7 +541,7 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
         : linkMode === "none" ? undefined : linkMode === "existing" ? { mode: "existing", transactionId: linkAmount } : { mode: "create", categoryId: linkCategory, ledgerAmountMinor: actualLedgerAmount! };
       return api.createSubscriptionPayment(subscription.id, { amountMinor, currency, localDate: paidDate, paymentType: "renewal", note: note.trim() || null, ledgerLink });
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); setNote(""); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); setNote(""); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-subscription"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "expense" }) });
@@ -556,9 +569,23 @@ function SubscriptionCard({ subscription, today, trash, onEdit, onPay }: { subsc
   const [showPaymentTrash, setShowPaymentTrash] = useState(false);
   const paymentsQuery = useQuery({ queryKey: ["matters", "subscription-payments", subscription.id, showPaymentTrash], queryFn: () => api.subscriptionPayments(subscription.id, showPaymentTrash ? "trash" : "active"), enabled: showPayments });
   const update = useMutation({ mutationFn: (status: "active" | "paused" | "cancelled") => api.updateSubscription(subscription.id, { status, expectedUpdatedAt: subscription.updatedAt }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
-  const remove = useMutation({ mutationFn: () => api.deleteSubscription(subscription.id, subscription.updatedAt), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
+  const notify = useToast();
+  const remove = useMutation({
+    mutationFn: () => api.deleteSubscription(subscription.id, subscription.updatedAt),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["matters"] });
+      offerUndo(notify, "订阅已移入回收站", () => api.restoreSubscription(subscription.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+    }
+  });
   const restore = useMutation({ mutationFn: () => api.restoreSubscription(subscription.id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
-  const removePayment = useMutation({ mutationFn: (payment: SubscriptionPayment) => api.deleteSubscriptionPayment(subscription.id, payment.id, payment.updatedAt), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] }); } });
+  const removePayment = useMutation({
+    mutationFn: (payment: SubscriptionPayment) => api.deleteSubscriptionPayment(subscription.id, payment.id, payment.updatedAt),
+    onSuccess: (_deleted, payment) => {
+      void queryClient.invalidateQueries({ queryKey: ["matters"] });
+      void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] });
+      offerUndo(notify, "付款已移入回收站", () => api.restoreSubscriptionPayment(subscription.id, payment.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+    }
+  });
   const restorePayment = useMutation({ mutationFn: (payment: SubscriptionPayment) => api.restoreSubscriptionPayment(subscription.id, payment.id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] }); } });
   const hint = subscriptionDateHint(subscription, today);
   const due = subscription.renewalState === "due" || subscription.renewalState === "overdue" || (subscription.nextBillingDate ? daysUntil(subscription.nextBillingDate, today) <= subscription.reminderDays : false);
@@ -566,8 +593,8 @@ function SubscriptionCard({ subscription, today, trash, onEdit, onPay }: { subsc
     <div className="subscription-card__top"><span className="subscription-card__logo">{subscription.name.slice(0, 1)}</span><div className="subscription-card__identity"><strong>{subscription.name}</strong><small>{subscription.plan || "订阅服务"} · {subscription.cycle === "month" ? "每月" : subscription.cycle === "year" ? "每年" : `每 ${subscription.customDays} 天`}</small></div><span className={`matter-status matter-status--${due ? "due" : subscription.status}`}>{subscription.renewalState === "active" || subscription.renewalState === "upcoming" ? hint : subscription.renewalState === "due" || subscription.renewalState === "overdue" ? "待确认" : subscription.renewalState === "paused" ? "已暂停" : "已取消"}</span></div>
     <div className="subscription-card__summary"><div><span>常规价格</span><strong>{amountText(subscription.recurringAmountMinor, subscription.currency)}</strong></div><div><span>下次续费</span><strong>{subscription.nextBillingDate ? dateLabel(subscription.nextBillingDate) : "未设置"}</strong><small>{hint}</small></div><div><span>上次付款</span><strong>{subscription.lastPaymentDate ? dateLabel(subscription.lastPaymentDate) : "尚未记录"}</strong><small>{subscription.payments[0] ? amountText(subscription.payments[0].amountMinor, subscription.payments[0].currency) : ""}</small></div></div>
     {subscription.note && <p className="subscription-card__note">{subscription.note}</p>}
-    <div className="matter-card-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate()}><ArchiveRestore size={16} />恢复订阅</button> : <><button type="button" className="primary-button" onClick={() => onPay(subscription)} disabled={subscription.status === "cancelled"}><Check size={16} />记录续费</button><button type="button" className="secondary-button" onClick={() => setShowPayments((value) => !value)}>{showPayments ? "收起付款记录" : "付款记录"}<ChevronDown size={15} /></button>{subscription.website && <a className="icon-button" href={subscription.website} target="_blank" rel="noreferrer" aria-label="打开订阅网址"><ExternalLink size={16} /></a>}<button className="icon-button" type="button" aria-label="编辑订阅" onClick={() => onEdit(subscription)}><Pencil size={16} /></button><button className="icon-button danger-icon" type="button" aria-label="删除订阅" onClick={() => { if (window.confirm("将订阅移入回收站？")) remove.mutate(); }}><Trash2 size={16} /></button><button className="secondary-button" type="button" onClick={() => update.mutate(subscription.status === "paused" ? "active" : "paused")}>{subscription.status === "paused" ? "恢复" : "暂停"}</button>{subscription.status !== "cancelled" && <button className="text-button" type="button" onClick={() => update.mutate("cancelled")}>取消订阅</button>}</>}</div>
-    {showPayments && <div className="subscription-payments"><div className="subscription-payments__toolbar"><button type="button" className="text-button" onClick={() => setShowPaymentTrash((value) => !value)}>{showPaymentTrash ? "返回付款记录" : "付款回收站"}</button></div>{paymentsQuery.isLoading ? <span>正在读取付款记录…</span> : (paymentsQuery.data ?? []).length === 0 ? <span>{showPaymentTrash ? "没有已删除的付款" : "还没有付款记录"}</span> : (paymentsQuery.data ?? []).map((payment: SubscriptionPayment) => <div key={payment.id}><span>{dateLabel(payment.localDate)}</span><strong>{amountText(payment.amountMinor, payment.currency)}</strong><small>{payment.paymentType === "initial" ? "首笔付款" : payment.paymentType === "renewal" ? "续费" : "手动记录"}</small>{showPaymentTrash ? <button type="button" className="icon-button" aria-label="恢复付款" onClick={() => restorePayment.mutate(payment)}><ArchiveRestore size={15} /></button> : <button type="button" className="icon-button danger-icon" aria-label="删除付款" onClick={() => { if (window.confirm("将这笔付款移入回收站？")) removePayment.mutate(payment); }}><Trash2 size={15} /></button>}</div>)}</div>}
+    <div className="matter-card-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate()}><ArchiveRestore size={16} />恢复订阅</button> : <><button type="button" className="primary-button" onClick={() => onPay(subscription)} disabled={subscription.status === "cancelled"}><Check size={16} />记录续费</button><button type="button" className="secondary-button" onClick={() => setShowPayments((value) => !value)}>{showPayments ? "收起付款记录" : "付款记录"}<ChevronDown size={15} /></button>{subscription.website && <a className="icon-button" href={subscription.website} target="_blank" rel="noreferrer" aria-label="打开订阅网址"><ExternalLink size={16} /></a>}<button className="icon-button" type="button" aria-label="编辑订阅" onClick={() => onEdit(subscription)}><Pencil size={16} /></button><button className="icon-button danger-icon" type="button" aria-label="删除订阅" onClick={() => remove.mutate()}><Trash2 size={16} /></button><button className="secondary-button" type="button" onClick={() => update.mutate(subscription.status === "paused" ? "active" : "paused")}>{subscription.status === "paused" ? "恢复" : "暂停"}</button>{subscription.status !== "cancelled" && <button className="text-button" type="button" onClick={() => update.mutate("cancelled")}>取消订阅</button>}</>}</div>
+    {showPayments && <div className="subscription-payments"><div className="subscription-payments__toolbar"><button type="button" className="text-button" onClick={() => setShowPaymentTrash((value) => !value)}>{showPaymentTrash ? "返回付款记录" : "付款回收站"}</button></div>{paymentsQuery.isLoading ? <span>正在读取付款记录…</span> : (paymentsQuery.data ?? []).length === 0 ? <span>{showPaymentTrash ? "没有已删除的付款" : "还没有付款记录"}</span> : (paymentsQuery.data ?? []).map((payment: SubscriptionPayment) => <div key={payment.id}><span>{dateLabel(payment.localDate)}</span><strong>{amountText(payment.amountMinor, payment.currency)}</strong><small>{payment.paymentType === "initial" ? "首笔付款" : payment.paymentType === "renewal" ? "续费" : "手动记录"}</small>{showPaymentTrash ? <button type="button" className="icon-button" aria-label="恢复付款" onClick={() => restorePayment.mutate(payment)}><ArchiveRestore size={15} /></button> : <button type="button" className="icon-button danger-icon" aria-label="删除付款" onClick={() => removePayment.mutate(payment)}><Trash2 size={15} /></button>}</div>)}</div>}
   </article>;
 }
 
@@ -624,7 +651,7 @@ function PlanForm({ open, onClose, editing, today }: { open: boolean; onClose: (
       };
       return editing ? api.updatePlan(editing.id, { ...payload, expectedUpdatedAt: editing.updatedAt }) : api.createPlan(payload);
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   return <BottomSheet open={open} title={editing ? "编辑计划" : "添加计划"} closeLabel={editing ? "关闭编辑计划" : "关闭添加计划"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存计划"}</button>}>
@@ -672,7 +699,7 @@ function PlanCompleteForm({ open, onClose, plan, today }: { open: boolean; onClo
           : { mode: "create" as const, categoryId: linkCategory };
       return api.completePlan(plan.id, { expectedUpdatedAt: plan.updatedAt, amountMinor, localDate: paidDate, note: note.trim() || null, ledgerLink });
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["matters"] }); await queryClient.invalidateQueries({ queryKey: ["transactions"] }); await queryClient.invalidateQueries({ queryKey: ["funds"] }); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["transactions"] }); void queryClient.invalidateQueries({ queryKey: ["funds"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   return <BottomSheet open={open} title="完成并记账" closeLabel="关闭完成计划" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-complete-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款并记账</button>}>

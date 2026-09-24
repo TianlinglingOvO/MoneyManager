@@ -9,6 +9,7 @@ export function ConfirmSheet({
   confirmLabel,
   danger = false,
   isPending = false,
+  error = null,
   onConfirm,
   onClose
 }: {
@@ -19,6 +20,7 @@ export function ConfirmSheet({
   confirmLabel: string;
   danger?: boolean;
   isPending?: boolean;
+  error?: string | null;
   onConfirm: () => void;
   onClose: () => void;
 }) {
@@ -37,6 +39,7 @@ export function ConfirmSheet({
       }
     >
       <p className="sheet-intro">{description}</p>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
     </BottomSheet>
   );
 }

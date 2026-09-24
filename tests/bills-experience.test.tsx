@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { FinanceReport, TransactionList } from "../shared/types";
+import type { FinanceReport, FundsSummary, Transaction, TransactionList } from "../shared/types";
 import { api } from "../src/api";
 import { EntryContext } from "../src/entry-context";
 import { BillsPage } from "../src/pages/BillsPage";
@@ -87,5 +87,64 @@ describe("账单页移动查询", () => {
     expect(dialog.closest(".modal-backdrop")).toHaveClass("is-closing");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "账单筛选" })).not.toBeInTheDocument());
     await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+});
+
+describe("账单页退款确认", () => {
+  const accountId = "22222222-2222-4222-8222-222222222222";
+  const funds: FundsSummary = {
+    enabled: true,
+    startedOn: "2026-08-01",
+    totalMinor: 10_000,
+    accountCount: 1,
+    defaultExpenseAccountId: accountId,
+    defaultIncomeAccountId: accountId,
+    defaultFeeCategoryId: null,
+    accounts: [],
+    currencyTotals: { CNY: 10_000, USD: 0, USDT: 0 }
+  };
+  const transaction: Transaction = {
+    id: "33333333-3333-4333-8333-333333333333",
+    kind: "expense",
+    amountMinor: 2_000,
+    currency: "CNY",
+    accountAmountMinor: null,
+    categoryId: "11111111-1111-4111-8111-111111111111",
+    category: { id: "11111111-1111-4111-8111-111111111111", name: "餐饮", icon: "饭", color: "#D66A4C" },
+    localDate: "2026-08-10",
+    note: null,
+    accountId,
+    account: null,
+    refundedAt: null,
+    fundsBaseline: false,
+    refundAccountId: null,
+    source: "user",
+    createdAt: "2026-08-10T00:00:00.000Z",
+    updatedAt: "2026-08-10T00:00:00.000Z",
+    deletedAt: null
+  };
+
+  it("全额退款使用应用内确认，关闭不会退款", async () => {
+    const confirm = vi.spyOn(window, "confirm");
+    vi.spyOn(api, "report").mockResolvedValue(report);
+    vi.spyOn(api, "categories").mockResolvedValue([]);
+    vi.spyOn(api, "dailyTotals").mockResolvedValue([]);
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(funds);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [transaction], total: 1, page: 1, pageSize: 100 });
+    const refund = vi.spyOn(api, "refundTransaction").mockResolvedValue({ ...transaction, refundedAt: "2026-08-11T00:00:00.000Z" });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "全额退款" }));
+    let dialog = await screen.findByRole("dialog", { name: "确认全额退款" });
+    expect(dialog).toHaveTextContent("原账会保留，但不再计入收支和预算");
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭全额退款确认" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "确认全额退款" })).not.toBeInTheDocument());
+    expect(refund).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "全额退款" }));
+    dialog = await screen.findByRole("dialog", { name: "确认全额退款" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认全额退款" }));
+    await waitFor(() => expect(refund).toHaveBeenCalledWith(transaction.id, transaction.updatedAt, undefined));
+    expect(confirm).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { addMonths, addWeeks, addYears, format } from "date-fns";
 import { ArrowDownRight, ArrowUpRight, CalendarDays, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import type { ReportGrain, TransactionKind } from "@shared/types";
+import type { ReportGrain, SubscriptionSummary, TransactionKind } from "@shared/types";
 import { api } from "../api";
 import { buildCategoryComposition, categoryCompositionPercent } from "../category-composition";
 import { formatAccountBalance } from "../components/AccountPicker";
@@ -54,6 +54,13 @@ function parseInsightState(searchParams: URLSearchParams, fallbackAnchor: string
     kind,
     anchor: isLocalDate(searchParams.get("anchor")) ? searchParams.get("anchor")! : fallbackAnchor
   };
+}
+
+/** The headline counts renewals needing confirmation; the hint must not relabel not-yet-due ones as needing it. */
+export function subscriptionRenewalHint(summary: Pick<SubscriptionSummary, "attentionCount" | "activeCount">): string {
+  if (summary.attentionCount > 0) return `${summary.attentionCount} 项待确认续费`;
+  if (summary.activeCount > 0) return `暂无待确认，共 ${summary.activeCount} 项订阅`;
+  return "暂无订阅";
 }
 
 export function InsightsPage() {
@@ -254,7 +261,7 @@ export function InsightsPage() {
             </Link>}
             {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insight-matter-card insight-matter-card--subscription">
               <span className="insight-matter-card__icon"><Clock3 size={18} /></span>
-              <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><em>{subscriptionSummaryQuery.data.upcoming.length} 项近期需要确认 · 查看订阅</em></span>
+              <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><em>{subscriptionRenewalHint(subscriptionSummaryQuery.data)} · 查看订阅</em></span>
               <ChevronRight size={17} />
             </Link>}
             {planSummaryQuery.data && <Link to="/matters?tab=plans" className="insight-matter-card insight-matter-card--plan">

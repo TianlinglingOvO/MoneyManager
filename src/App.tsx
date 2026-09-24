@@ -10,7 +10,7 @@ import { QuickEntry } from "./components/QuickEntry";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { InsightsPage } from "./pages/InsightsPage";
 import { useLedgerClock } from "./ledger-clock";
-import { ToastContext } from "./toast-context";
+import { ToastContext, type ToastOptions } from "./toast-context";
 
 const BillsPage = lazy(() => import("./pages/BillsPage").then((module) => ({ default: module.BillsPage })));
 const FundsPage = lazy(() => import("./pages/FundsPage").then((module) => ({ default: module.FundsPage })));
@@ -38,7 +38,8 @@ export default function App() {
     setEditing(undefined);
     window.requestAnimationFrame(() => entryTrigger.current?.focus());
   }, []);
-  const notify = useCallback((text: string) => setToast({ id: Date.now(), text }), []);
+  const notify = useCallback((text: string, options?: ToastOptions) => setToast({ id: Date.now(), text, ...options }), []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,7 +88,7 @@ export default function App() {
         onClose={closeEntry}
         onSaved={notify}
       />
-      <Toast message={toast} onDismiss={() => setToast(null)} />
+      <Toast message={toast} onDismiss={dismissToast} />
     </EntryContext.Provider>
     </ToastContext.Provider>
   );

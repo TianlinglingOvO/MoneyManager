@@ -124,17 +124,46 @@ describe("SMB 2.1.2 响应式弹层基线", () => {
     await waitFor(() => expect(document.activeElement).toBe(input));
   });
 
-  it("预算有改动时所有关闭入口都会经过放弃确认", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  it("预算有改动时所有关闭入口都会经过应用内放弃确认", async () => {
+    const confirm = vi.spyOn(window, "confirm");
     renderWithQuery(<BudgetSheet open month="2026-08" budget={budget} categories={[category]} onClose={() => undefined} />);
     fireEvent.change(screen.getByRole("textbox", { name: /本月总支出预算/ }), { target: { value: "3500.00" } });
+    const sheet = () => screen.getByRole("dialog", { name: "管理 2026年8月预算" }).closest(".modal-backdrop");
     const close = screen.getByRole("button", { name: "关闭预算" });
+
     fireEvent.click(close);
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("dialog", { name: "管理 2026年8月预算" }).closest(".modal-backdrop")).not.toHaveClass("is-closing");
+    const prompt = screen.getByRole("alertdialog", { name: "放弃这次修改？" });
+    expect(prompt).toHaveTextContent("未保存的预算修改会丢失。");
+    await waitFor(() => expect(screen.getByRole("button", { name: "继续编辑" })).toHaveFocus());
+    expect(sheet()).not.toHaveClass("is-closing");
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog", { name: "放弃这次修改？" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(sheet()).not.toHaveClass("is-closing");
+
     fireEvent.click(close);
-    expect(confirm).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("dialog", { name: "管理 2026年8月预算" }).closest(".modal-backdrop")).toHaveClass("is-closing");
+    fireEvent.click(screen.getByRole("button", { name: "放弃并关闭" }));
+    expect(sheet()).toHaveClass("is-closing");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("删除预算在弹层内二次确认，取消不会调用接口", async () => {
+    const remove = vi.spyOn(api, "deleteBudget").mockResolvedValue(undefined as never);
+    renderWithQuery(<BudgetSheet open month="2026-08" budget={budget} categories={[category]} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "删除预算" }));
+    expect(screen.getByRole("group", { name: "确认删除预算" })).toHaveTextContent("删除2026年8月的预算？账目不会受到影响。");
+    await waitFor(() => expect(screen.getByRole("button", { name: "取消" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(remove).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "保存预算" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "删除预算" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "删除预算" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("2026-08", budget.updatedAt));
   });
 
   it("保存预算后提供全局反馈并通过共享退出动画关闭", async () => {

@@ -17,7 +17,11 @@ interface BottomSheetProps {
   closeLabel?: string;
   className?: string;
   initialFocusRef?: RefObject<HTMLElement | null>;
-  beforeClose?: () => boolean;
+  /** When true, closing asks inside the sheet before discarding edits. */
+  dirty?: boolean;
+  discardDescription?: string;
+  /** Ignore close requests while a save or delete is in flight. */
+  busy?: boolean;
 }
 
 const focusableSelector = "button:not(:disabled):not([tabindex='-1']), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]";
@@ -36,13 +40,19 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
   closeLabel,
   className = "",
   initialFocusRef,
-  beforeClose
+  dirty = false,
+  discardDescription = "未保存的修改会丢失。",
+  busy = false
 }, forwardedRef) {
   const sheetRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
-  const beforeCloseRef = useRef(beforeClose);
+  const dirtyRef = useRef(dirty);
+  const busyRef = useRef(busy);
+  const discardOpenRef = useRef(false);
+  const keepEditingRef = useRef<HTMLButtonElement | null>(null);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const historyEntryActive = useRef(false);
   const [dragOffset, setDragOffset] = useState(0);
   const [closing, setClosing] = useState(false);
@@ -55,8 +65,18 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
 
   useEffect(() => {
     onCloseRef.current = onClose;
-    beforeCloseRef.current = beforeClose;
-  }, [beforeClose, onClose]);
+    dirtyRef.current = dirty;
+    busyRef.current = busy;
+  }, [busy, dirty, onClose]);
+
+  const showDiscard = useCallback((value: boolean) => {
+    discardOpenRef.current = value;
+    setDiscardOpen(value);
+  }, []);
+
+  useEffect(() => {
+    if (discardOpen) window.requestAnimationFrame(() => keepEditingRef.current?.focus());
+  }, [discardOpen]);
 
   const finishClose = useCallback(() => {
     closingRef.current = false;
@@ -67,8 +87,10 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
 
   const requestClose = useCallback((historyAlreadyPopped = false, skipBeforeClose = false) => {
     if (closingRef.current) return;
-    if (!skipBeforeClose && beforeCloseRef.current && !beforeCloseRef.current()) {
+    if (!skipBeforeClose && busyRef.current) return;
+    if (!skipBeforeClose && dirtyRef.current) {
       setDragOffset(0);
+      showDiscard(true);
       if (historyAlreadyPopped && !historyEntryActive.current) {
         window.history.pushState({ ...window.history.state, moneyManagerSheet: true }, "");
         historyEntryActive.current = true;
@@ -76,6 +98,7 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
       return;
     }
     closingRef.current = true;
+    showDiscard(false);
     if (historyEntryActive.current && !historyAlreadyPopped) {
       historyEntryActive.current = false;
       window.history.back();
@@ -84,7 +107,7 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
     setClosing(true);
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
     closeTimer.current = window.setTimeout(finishClose, reducedMotion ? 0 : motionDurations.dialogExit);
-  }, [finishClose, reducedMotion]);
+  }, [finishClose, reducedMotion, showDiscard]);
 
   useImperativeHandle(forwardedRef, () => ({
     close: (options) => requestClose(false, options?.skipBeforeClose ?? false)
@@ -94,6 +117,7 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
     if (!open) return;
     closingRef.current = false;
     setClosing(false);
+    showDiscard(false);
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.classList.add("modal-open");
     const isMobile = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches;
@@ -111,7 +135,8 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        requestClose();
+        if (discardOpenRef.current) showDiscard(false);
+        else requestClose();
         return;
       }
       if (event.key !== "Tab") return;
@@ -144,7 +169,7 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
         window.history.back();
       }
     };
-  }, [initialFocusRef, open, requestClose]);
+  }, [initialFocusRef, open, requestClose, showDiscard]);
 
   if (!open) return null;
 
@@ -184,6 +209,16 @@ export const BottomSheet = forwardRef<BottomSheetHandle, BottomSheetProps>(funct
         </header>
         <div className="bottom-sheet__body">{children}</div>
         {footer ? <footer className="bottom-sheet__footer">{footer}</footer> : null}
+        {discardOpen && (
+          <div className="discard-confirm" role="alertdialog" aria-modal="true" aria-labelledby={`${titleId}-discard`}>
+            <h3 id={`${titleId}-discard`}>放弃这次修改？</h3>
+            <p>{discardDescription}</p>
+            <div className="confirm-action-group">
+              <button ref={keepEditingRef} className="secondary-button" type="button" onClick={() => showDiscard(false)}>继续编辑</button>
+              <button className="primary-button" type="button" onClick={() => requestClose(false, true)}>放弃并关闭</button>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   ), document.body);

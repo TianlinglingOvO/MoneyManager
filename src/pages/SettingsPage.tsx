@@ -34,6 +34,7 @@ import type { AppearanceBackgroundPreset, AppearancePreferences, AppearancePrese
 import { APP_VERSION } from "@shared/app-metadata";
 import { api } from "../api";
 import { useAppearance } from "../appearance";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { BudgetSheet } from "../components/BudgetSheet";
 import { useLedgerClock } from "../ledger-clock";
@@ -204,7 +205,7 @@ function CategoryDialog({ category, kind, onClose }: { category?: Category; kind
     mutationFn: () => category
       ? api.updateCategory(category.id, { name, icon, color })
       : api.createCategory({ kind, name, icon, color }),
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["categories"] }); onClose(); }
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["categories"] }); onClose(); }
   });
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
@@ -225,6 +226,7 @@ function CategoryDispositionDialog({ category, targets, onClose }: { category: C
   const queryClient = useQueryClient();
   const [targetCategoryId, setTargetCategoryId] = useState(targets[0]?.id ?? "");
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const [migrateConfirmOpen, setMigrateConfirmOpen] = useState(false);
   const impact = useQuery({
     queryKey: ["category-deletion-impact", category.id],
     queryFn: () => api.categoryDeletionImpact(category.id),
@@ -233,15 +235,24 @@ function CategoryDispositionDialog({ category, targets, onClose }: { category: C
   });
   const disposition = useMutation({
     mutationFn: (input: { action: "archive" | "restore" | "delete" } | { action: "migrate"; targetCategoryId: string } | { action: "purge"; expectedRevision: string; confirmName: string }) => api.manageCategory(category.id, input),
-    onSuccess: async () => { await queryClient.invalidateQueries(); onClose(); }
+    onSuccess: () => { void queryClient.invalidateQueries(); onClose(); }
   });
-  const migrate = () => {
-    if (!targetCategoryId) return;
-    const target = targets.find((item) => item.id === targetCategoryId);
-    if (window.confirm(`将“${category.name}”的 ${category.transactionCount} 笔账目全部迁移到“${target?.name ?? "目标分类"}”，然后删除原分类？`)) {
-      disposition.mutate({ action: "migrate", targetCategoryId });
-    }
-  };
+  const migrateTarget = targets.find((item) => item.id === targetCategoryId);
+  if (migrateConfirmOpen) {
+    return (
+      <ConfirmSheet
+        open
+        title="迁移并删除原分类"
+        closeLabel="关闭迁移确认"
+        description={`将“${category.name}”的 ${category.transactionCount} 笔账目全部迁移到“${migrateTarget?.name ?? "目标分类"}”，然后删除原分类？`}
+        confirmLabel="迁移并删除"
+        isPending={disposition.isPending}
+        error={disposition.isError ? (disposition.error instanceof Error ? disposition.error.message : "迁移失败") : null}
+        onConfirm={() => { if (targetCategoryId) disposition.mutate({ action: "migrate", targetCategoryId }); }}
+        onClose={() => { if (!disposition.isPending) setMigrateConfirmOpen(false); }}
+      />
+    );
+  }
   if (purgeOpen) {
     const item = impact.data;
     return (
@@ -287,7 +298,7 @@ function CategoryDispositionDialog({ category, targets, onClose }: { category: C
             <select value={targetCategoryId} onChange={(event) => setTargetCategoryId(event.target.value)} disabled={targets.length === 0 || disposition.isPending} aria-label="迁移目标分类">
               {targets.length === 0 ? <option value="">请先创建另一个同类型分类</option> : targets.map((item) => <option value={item.id} key={item.id}>{item.icon} {item.name}</option>)}
             </select>
-            <button className="secondary-button" disabled={!targetCategoryId || disposition.isPending} onClick={migrate}>开始迁移</button>
+            <button className="secondary-button" disabled={!targetCategoryId || disposition.isPending} onClick={() => { disposition.reset(); setMigrateConfirmOpen(true); }}>开始迁移</button>
           </div>
 
           <button className="category-delete-action" disabled={disposition.isPending} onClick={() => setPurgeOpen(true)}>

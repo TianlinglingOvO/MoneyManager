@@ -215,6 +215,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .budget-category-option > strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .budget-sheet__actions { width: 100%; display: flex; justify-content: space-between; gap: 12px; }
 .budget-sheet__actions .primary-button { margin-left: auto; }
+.budget-sheet__actions--confirm { align-items: center; }
+.budget-sheet__actions--confirm p { flex: 1; margin: 0; color: var(--muted); font-size: var(--text-control); line-height: 1.5; }
 .health-score { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 3px 16px; padding: 16px; border-radius: 15px; background: var(--surface-subtle); }
 .health-score > span { color: var(--muted); font-size: 12px; }
 .health-score strong { grid-row: span 2; font-family: var(--font-number); font-size: 34px; font-variant-numeric: tabular-nums; }
@@ -761,6 +763,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .budget-settings-summary { display: grid; gap: 5px; }
   .budget-sheet__actions { align-items: stretch; flex-direction: column-reverse; }
   .budget-sheet__actions > * { min-height: 44px; width: 100%; }
+  .budget-sheet__actions--confirm { flex-direction: column; }
+  .budget-sheet__actions--confirm p { min-height: 0; }
   .health-issue { grid-template-columns: 22px minmax(0, 1fr); }
   .health-issue > button, .health-issue > em { grid-column: 2; justify-self: start; min-height: 44px; }
   .health-explain { align-items: stretch; flex-direction: column; }
@@ -1338,7 +1342,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .app-toast > svg { color: var(--income); }
 .app-toast span { font-size: var(--text-control); font-weight: 750; }
-.app-toast button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+.app-toast__close { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+.app-toast__action { min-height: 36px; padding: 0 12px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line)); border-radius: 10px; color: var(--accent); background: var(--accent-soft); font-size: var(--text-control); font-weight: 800; cursor: pointer; transition: filter var(--motion-micro, 140ms) ease; }
+.app-toast__action:hover { filter: brightness(1.08); }
+.app-toast.is-error { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
+.app-toast.is-error > svg { color: var(--danger); }
 @keyframes toast-enter { from { opacity: 0; transform: translateY(12px) scale(.97); } }
 
 .entry-sheet { transform: translateY(var(--sheet-drag, 0)); transition: transform 190ms var(--ease-ledger); }
@@ -1470,7 +1478,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .mobile-nav__add { align-self: start; width: 50px; height: 50px; min-height: 50px; margin: 2px 0 0 auto; border-radius: 16px; box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 24%, transparent); transition: transform 200ms var(--ease-spring), filter var(--motion-fast) ease; }
   .mobile-nav__add:active { transform: scale(.94); }
   .app-toast { right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); left: 12px; justify-content: center; }
-  .app-toast button { margin-left: auto; }
+  .app-toast > span { margin-right: auto; }
+  .app-toast__action { min-height: 44px; }
+  .app-toast__close { width: 44px; height: 44px; }
   .ai-controls.is-collapsed { padding-bottom: 14px; }
   .ai-controls.is-collapsed .ai-mark small { display: none; }
   .ai-controls__compact .secondary-button { flex: none; }

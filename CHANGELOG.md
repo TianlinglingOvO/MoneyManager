@@ -2,6 +2,19 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.5.4 — 2026-09-24
+
+### Interaction
+
+- Every remaining browser-native `window.confirm` is gone. Refund / undo-refund, transfer delete, and category migrate-then-delete use the in-app confirm sheet; deleting a monthly budget asks inside the budget sheet.
+- Closing a dirty budget or account form shows the in-sheet “放弃这次修改？” prompt (Escape, backdrop, close button, and Android back). Escape or 继续编辑 returns to the form.
+- Moving a transaction, loan, repayment, subscription, or subscription payment to trash happens immediately and shows a toast with **撤销** for 6 seconds (paused while hovered or focused). Plans keep their existing confirm sheet; permanent deletes keep explicit confirmation.
+- Saving a transaction or closing a matter, transfer, adjustment, account, or category form no longer waits for every page query to refetch; data refreshes in the background.
+
+### Insights
+
+- The 近期续费 card no longer labels not-yet-due subscriptions as “近期需要确认”. It shows 待确认续费 only for due or overdue renewals, otherwise the total subscription count.
+
 ## 2.5.3 — 2026-09-01
 
 ### Insights

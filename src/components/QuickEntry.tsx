@@ -8,6 +8,7 @@ import { api, ApiError } from "../api";
 import { AccountPicker, formatAccountBalance } from "./AccountPicker";
 import { useLedgerClock } from "../ledger-clock";
 import { motionDurations, useReducedMotion } from "../motion";
+import { offerUndo, useToast } from "../toast-context";
 import { money, parseAmountMinor } from "../utils";
 
 interface QuickEntryProps {
@@ -44,6 +45,7 @@ function asDraft(value: Record<string, unknown>): TransactionDraft {
 export function QuickEntry({ open, transaction, proposal, onClose, onConflict, onSaved }: QuickEntryProps) {
   const { today } = useLedgerClock();
   const queryClient = useQueryClient();
+  const notify = useToast();
   const [kind, setKind] = useState<TransactionKind>("expense");
   const [amount, setAmount] = useState("");
   const [categoryId, setCategoryId] = useState("");
@@ -257,9 +259,9 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       if (transaction) return api.updateTransaction(transaction.id, input, transaction.updatedAt);
       return api.createTransaction(input, crypto.randomUUID());
     },
-    onSuccess: async () => {
+    onSuccess: () => {
       savingRef.current = false;
-      await queryClient.invalidateQueries();
+      void queryClient.invalidateQueries();
       setSaved(true);
       initialDraft.current = "";
       onSaved?.(proposal ? "修订已保存，仍等待确认" : transaction ? "账目已更新" : "已记入账本");
@@ -334,7 +336,11 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
 
   const remove = useMutation({
     mutationFn: () => api.deleteTransaction(transaction!.id, transaction!.updatedAt),
-    onSuccess: async () => { await queryClient.invalidateQueries(); requestClose(); },
+    onSuccess: (deleted) => {
+      void queryClient.invalidateQueries();
+      beginClose();
+      offerUndo(notify, "已移入回收站", () => api.restoreTransaction(deleted.id), () => { void queryClient.invalidateQueries(); });
+    },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "删除失败")
   });
 
@@ -441,7 +447,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
             {error && <p className="form-error" role="alert">{error}</p>}
             {saved && <p className="entry-success" role="status"><CheckCircle2 size={18} />已保存</p>}
             <div className="entry-sheet__actions">
-              {transaction && !proposal && <button className="danger-ghost" disabled={remove.isPending} onClick={() => { if (window.confirm("移入回收站？30 天内可以恢复。")) remove.mutate(); }}><Trash2 size={17} />移入回收站</button>}
+              {transaction && !proposal && <button className="danger-ghost" disabled={remove.isPending} onClick={() => remove.mutate()} title="30 天内可以在回收站恢复"><Trash2 size={17} />移入回收站</button>}
               <button type="button" className="primary-button save-button" disabled={save.isPending || saved} onClick={() => save.mutate()} title="Ctrl + Enter 保存">
                 {save.isPending && <LoaderCircle className="spin" size={18} />}
                 {saved ? <><Check size={18} />已保存</> : proposal ? "保存修订（仍待确认）" : transaction ? "保存修改" : `保存${kind === "expense" ? "支出" : "收入"}`}

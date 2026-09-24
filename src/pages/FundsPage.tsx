@@ -21,6 +21,7 @@ import type { Account, AccountAdjustment, AccountCurrency, Transfer } from "@sha
 import { api } from "../api";
 import { AccountPicker, formatAccountBalance } from "../components/AccountPicker";
 import { BottomSheet } from "../components/BottomSheet";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { MoneyValue } from "../components/MoneyValue";
 import { useLedgerClock } from "../ledger-clock";
@@ -152,10 +153,10 @@ function AccountForm({ account, today, isDefault, onClose }: { account?: Account
         ...(balanceChanged ? { balanceChange: { targetBalanceMinor: parsedBalanceMinor, localDate: account.isUnused ? today : balanceDate, note: account.isUnused ? null : balanceNote.trim() || null, requestId: crypto.randomUUID() } } : {})
       });
     },
-    onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ["funds"] }), queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["insights"] })]); onClose(); },
+    onSuccess: () => { void Promise.all([queryClient.invalidateQueries({ queryKey: ["funds"] }), queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["insights"] })]); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open title={account ? "编辑资金账户" : "新增资金账户"} closeLabel="关闭账户编辑" onClose={onClose} beforeClose={() => !isDirty || window.confirm("当前账户修改尚未保存，确定放弃吗？")} className="funds-sheet" footer={<button className="primary-button" type="submit" form="account-form" disabled={save.isPending}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存账户</button>}>
+  return <BottomSheet open title={account ? "编辑资金账户" : "新增资金账户"} closeLabel="关闭账户编辑" onClose={onClose} dirty={isDirty} discardDescription="当前账户修改尚未保存，关闭后会丢失。" busy={save.isPending} className="funds-sheet" footer={<button className="primary-button" type="submit" form="account-form" disabled={save.isPending}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存账户</button>}>
     <form id="account-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <div className="matter-form-grid"><label className="matter-field"><span>图标</span><input value={icon} maxLength={8} onChange={(event) => setIcon(event.target.value)} /></label><label className="matter-field"><span>账户名称</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} /></label></div>
       <label className="matter-field"><span>币种 <small id="account-currency-help">{canEditCurrency ? "只更改资金单位，不会换算数值" : currencyReason}</small></span><select value={currency} disabled={!canEditCurrency} aria-describedby="account-currency-help" onChange={(event) => setCurrency(event.target.value as AccountCurrency)}>{accountCurrencies.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
@@ -196,7 +197,7 @@ function TransferForm({ accounts, transfer, today, onClose }: { accounts: Accoun
       const input = { fromAccountId: fromId, toAccountId: toId, debitedMinor, creditedMinor, feeCategoryId: categoryId || undefined, localDate: date, note: note.trim() || null, requestId: crypto.randomUUID() };
       return transfer ? api.updateTransfer(transfer.id, { ...input, expectedUpdatedAt: transfer.updatedAt }) : api.createTransfer(input);
     },
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["funds"] }); await queryClient.invalidateQueries({ queryKey: ["transactions"] }); onClose(); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["funds"] }); void queryClient.invalidateQueries({ queryKey: ["transactions"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   return <BottomSheet open title={transfer ? "编辑转账" : "记录转账"} closeLabel="关闭转账" onClose={onClose} className="funds-sheet" footer={<button className="primary-button" type="submit" form="transfer-form" disabled={save.isPending}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{transfer ? "保存转账" : "确认转账"}</button>}>
@@ -225,7 +226,7 @@ function AdjustmentForm({ accounts, account, today, onClose }: { accounts: Accou
       if (targetBalanceMinor === null) throw new Error("请输入实际余额");
       return api.adjustAccount({ accountId, targetBalanceMinor, localDate: date, note: note.trim() || null, requestId: crypto.randomUUID() });
     },
-    onSuccess: async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: ["funds"] }), queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["insights"] })]); onClose(); },
+    onSuccess: () => { void Promise.all([queryClient.invalidateQueries({ queryKey: ["funds"] }), queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["insights"] })]); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "校准失败")
   });
   return <BottomSheet open title="校准账户余额" closeLabel="关闭余额校准" onClose={onClose} className="funds-sheet" footer={<button className="primary-button" type="submit" form="adjustment-form" disabled={save.isPending}><RefreshCcw size={17} />保存校准</button>}>
@@ -248,6 +249,7 @@ export function FundsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [showAdjustments, setShowAdjustments] = useState(false);
   const [adjustmentActionError, setAdjustmentActionError] = useState("");
+  const [transferToDelete, setTransferToDelete] = useState<Transfer | null>(null);
   const summaryQuery = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
   const accountsQuery = useQuery({ queryKey: ["accounts", showArchived], queryFn: () => api.accounts(showArchived), enabled: summaryQuery.data?.enabled === true });
   const movementsQuery = useInfiniteQuery({
@@ -299,7 +301,11 @@ export function FundsPage() {
 
   const removeTransfer = useMutation({
     mutationFn: (transfer: Transfer) => transfer.deletedAt ? api.restoreTransfer(transfer.id, transfer.updatedAt) : api.deleteTransfer(transfer.id, transfer.updatedAt),
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["funds"] }); await queryClient.invalidateQueries({ queryKey: ["transactions"] }); }
+    onSuccess: () => {
+      setTransferToDelete(null);
+      void queryClient.invalidateQueries({ queryKey: ["funds"] });
+      void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    }
   });
 
   if (summaryQuery.isLoading) return <div className="page"><div className="skeleton page-skeleton" /></div>;
@@ -338,7 +344,7 @@ export function FundsPage() {
         const fromAccount = accountMap.get(transfer.fromAccountId);
         const toAccount = accountMap.get(transfer.toAccountId);
         const currency = transfer.currency;
-        return <div className={`funds-transfer-row ${transfer.deletedAt ? "is-deleted" : ""}`} key={transfer.id}><div><strong>{fromAccount?.name ?? "账户"} → {toAccount?.name ?? "账户"}</strong><small>{transfer.localDate}{transfer.feeMinor && currency === "CNY" ? ` · 手续费 ${money(transfer.feeMinor)}` : ""}</small></div><b>{formatAccountBalance(transfer.creditedMinor, currency)}</b><button className="icon-button" type="button" aria-label={transfer.deletedAt ? "恢复转账" : "编辑转账"} onClick={() => transfer.deletedAt ? removeTransfer.mutate(transfer) : setSheet({ type: "transfer", transfer })}>{transfer.deletedAt ? <ArchiveRestore size={15} /> : <Pencil size={15} />}</button>{!transfer.deletedAt && <button className="icon-button danger-icon" type="button" aria-label="删除转账" onClick={() => { if (window.confirm("删除转账会同时冲销本金和手续费资金影响，是否继续？")) removeTransfer.mutate(transfer); }}><Trash2 size={15} /></button>}</div>;
+        return <div className={`funds-transfer-row ${transfer.deletedAt ? "is-deleted" : ""}`} key={transfer.id}><div><strong>{fromAccount?.name ?? "账户"} → {toAccount?.name ?? "账户"}</strong><small>{transfer.localDate}{transfer.feeMinor && currency === "CNY" ? ` · 手续费 ${money(transfer.feeMinor)}` : ""}</small></div><b>{formatAccountBalance(transfer.creditedMinor, currency)}</b><button className="icon-button" type="button" aria-label={transfer.deletedAt ? "恢复转账" : "编辑转账"} onClick={() => transfer.deletedAt ? removeTransfer.mutate(transfer) : setSheet({ type: "transfer", transfer })}>{transfer.deletedAt ? <ArchiveRestore size={15} /> : <Pencil size={15} />}</button>{!transfer.deletedAt && <button className="icon-button danger-icon" type="button" aria-label="删除转账" onClick={() => { removeTransfer.reset(); setTransferToDelete(transfer); }}><Trash2 size={15} /></button>}</div>;
       })}{transfersQuery.data?.length === 0 && <p className="muted-copy">还没有转账记录。</p>}</div></section>
     </div>
 
@@ -380,6 +386,18 @@ export function FundsPage() {
       onConfirm={() => removeAccount.mutate(deleteTarget)}
       onClose={() => { if (!removeAccount.isPending) { setDeleteTarget(null); setAccountActionError(""); } }}
     />}
+    <ConfirmSheet
+      open={Boolean(transferToDelete)}
+      title="删除转账"
+      closeLabel="关闭删除转账确认"
+      description="删除转账会同时冲销本金和手续费的资金影响。之后可在“查看停用账户”中找到并恢复这笔转账。"
+      confirmLabel="删除转账"
+      danger
+      isPending={removeTransfer.isPending}
+      error={removeTransfer.isError ? (removeTransfer.error instanceof Error ? removeTransfer.error.message : "删除转账失败") : null}
+      onConfirm={() => transferToDelete && removeTransfer.mutate(transferToDelete)}
+      onClose={() => { if (!removeTransfer.isPending) setTransferToDelete(null); }}
+    />
   </div>;
 }
 

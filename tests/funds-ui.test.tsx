@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Account, FundsSummary } from "../shared/types";
+import type { Account, FundsSummary, Transfer } from "../shared/types";
 import { api } from "../src/api";
 import { FundsPage } from "../src/pages/FundsPage";
 import { DangerConfirmDialog } from "../src/components/DangerConfirmDialog";
@@ -285,7 +285,6 @@ it("脏账户表单会拦截 Escape、遮罩和 Android 返回，确认后才关
       addEventListener: vi.fn(),
       removeEventListener: vi.fn()
     }));
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.spyOn(api, "fundsSummary").mockResolvedValue(summary({ accountCount: 2, accounts: [account, unused] }));
     vi.spyOn(api, "accounts").mockResolvedValue([account, unused]);
     vi.spyOn(api, "accountMovements").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 30 });
@@ -294,16 +293,59 @@ it("脏账户表单会拦截 Escape、遮罩和 Android 返回，确认后才关
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "编辑 Bybit" }));
     fireEvent.change(screen.getByLabelText("账户名称"), { target: { value: "Bybit 卡" } });
+    const keepEditing = () => fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
     fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog", { name: "放弃这次修改？" })).toBeInTheDocument();
+    keepEditing();
     expect(screen.getByRole("heading", { name: "编辑资金账户" })).toBeInTheDocument();
     fireEvent.mouseDown(document.querySelector(".bottom-sheet-backdrop")!);
-    expect(screen.getByRole("heading", { name: "编辑资金账户" })).toBeInTheDocument();
+    expect(screen.getByRole("alertdialog", { name: "放弃这次修改？" })).toBeInTheDocument();
+    keepEditing();
     fireEvent.popState(window);
+    expect(screen.getByRole("alertdialog", { name: "放弃这次修改？" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "编辑资金账户" })).toBeInTheDocument();
 
-    confirm.mockReturnValue(true);
-    fireEvent.popState(window);
+    fireEvent.click(screen.getByRole("button", { name: "放弃并关闭" }));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "编辑资金账户" })).not.toBeInTheDocument());
+  });
+
+  it("删除转账使用应用内确认并说明资金影响", async () => {
+    const confirm = vi.spyOn(window, "confirm");
+    const savings: Account = { ...account, id: "99999999-9999-4999-8999-999999999999", name: "储蓄卡" };
+    const transfer: Transfer = {
+      id: "44444444-4444-4444-8444-444444444444",
+      fromAccountId: account.id,
+      toAccountId: savings.id,
+      currency: "CNY",
+      debitedMinor: 10_100,
+      creditedMinor: 10_000,
+      feeMinor: 100,
+      feeTransactionId: null,
+      localDate: "2026-08-24",
+      note: null,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+      deletedAt: null
+    };
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(summary({ accountCount: 2, accounts: [account, savings] }));
+    vi.spyOn(api, "accounts").mockResolvedValue([account, savings]);
+    vi.spyOn(api, "accountMovements").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 30 });
+    vi.spyOn(api, "transfers").mockResolvedValue([transfer]);
+    const remove = vi.spyOn(api, "deleteTransfer").mockResolvedValue({ ...transfer, deletedAt: "2026-08-25T00:00:00.000Z" });
+
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "删除转账" }));
+    let dialog = await screen.findByRole("dialog", { name: "删除转账" });
+    expect(dialog).toHaveTextContent("同时冲销本金和手续费");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "删除转账" })).not.toBeInTheDocument());
+    expect(remove).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除转账" }));
+    dialog = await screen.findByRole("dialog", { name: "删除转账" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除转账" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(transfer.id, transfer.updatedAt));
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it("校准记录可逐页加载且展开状态保持不变", async () => {

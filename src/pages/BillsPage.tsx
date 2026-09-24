@@ -6,6 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import type { Transaction, TransactionKind } from "@shared/types";
 import { api } from "../api";
 import { BottomSheet } from "../components/BottomSheet";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { FilterSummary } from "../components/FilterSummary";
 import { RecentRecordedList } from "../components/RecentRecordedList";
@@ -80,6 +81,7 @@ export function BillsPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [permanentlyDeleting, setPermanentlyDeleting] = useState<Transaction>();
   const [refunding, setRefunding] = useState<Transaction>();
+  const [refundConfirm, setRefundConfirm] = useState<Transaction>();
   const [refundAccountId, setRefundAccountId] = useState("");
   const returnTo = useRef(initialState.returnTo);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -192,9 +194,9 @@ export function BillsPage() {
   });
   const permanentDelete = useMutation({
     mutationFn: (transaction: Transaction) => api.permanentlyDeleteTransaction(transaction.id, transaction.updatedAt),
-    onSuccess: async () => {
+    onSuccess: () => {
       setPermanentlyDeleting(undefined);
-      await queryClient.invalidateQueries();
+      void queryClient.invalidateQueries();
     }
   });
   const refund = useMutation({
@@ -202,23 +204,17 @@ export function BillsPage() {
       transaction.refundedAt
         ? api.undoTransactionRefund(transaction.id, transaction.updatedAt)
         : api.refundTransaction(transaction.id, transaction.updatedAt, accountId),
-    onSuccess: async () => {
+    onSuccess: () => {
       setRefunding(undefined);
+      setRefundConfirm(undefined);
       setRefundAccountId("");
-      await queryClient.invalidateQueries();
+      void queryClient.invalidateQueries();
     }
   });
   const requestRefund = (transaction: Transaction) => {
-    if (transaction.refundedAt) {
-      if (window.confirm("撤销这笔账的退款状态？它会重新计入收支并扣回资金。")) {
-        refund.mutate({ transaction });
-      }
-      return;
-    }
-    if (transaction.accountId) {
-      if (window.confirm("确认这笔账已全额退款？原账会保留，但不再计入收支和预算。")) {
-        refund.mutate({ transaction });
-      }
+    if (transaction.refundedAt || transaction.accountId) {
+      refund.reset();
+      setRefundConfirm(transaction);
       return;
     }
     setRefundAccountId(funds.data?.defaultIncomeAccountId ?? funds.data?.accounts[0]?.id ?? "");
@@ -373,6 +369,19 @@ export function BillsPage() {
               {refund.isError && <p className="form-error" role="alert">{refund.error instanceof Error ? refund.error.message : "退款失败"}</p>}
             </div>
           </BottomSheet>
+          <ConfirmSheet
+            open={Boolean(refundConfirm)}
+            title={refundConfirm?.refundedAt ? "撤销退款" : "确认全额退款"}
+            closeLabel={refundConfirm?.refundedAt ? "关闭撤销退款确认" : "关闭全额退款确认"}
+            description={refundConfirm?.refundedAt
+              ? "撤销这笔账的退款状态？它会重新计入收支并扣回资金。"
+              : "确认这笔账已全额退款？原账会保留，但不再计入收支和预算。"}
+            confirmLabel={refundConfirm?.refundedAt ? "撤销退款" : "确认全额退款"}
+            isPending={refund.isPending}
+            error={refund.isError ? (refund.error instanceof Error ? refund.error.message : "操作失败") : null}
+            onConfirm={() => refundConfirm && refund.mutate({ transaction: refundConfirm })}
+            onClose={() => { if (!refund.isPending) setRefundConfirm(undefined); }}
+          />
         </div>
       )}
       {permanentlyDeleting && <DangerConfirmDialog
