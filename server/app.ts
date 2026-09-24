@@ -59,6 +59,7 @@ import { BudgetService } from "./budgets";
 import { HealthService } from "./health";
 import { FundsService } from "./funds";
 import { applyReloadRequest, inspectReload } from "./reload";
+import { OpenClawReminderService } from "./openclaw-reminder";
 
 function localDate(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -103,6 +104,7 @@ export interface AppServices {
   budgets: BudgetService;
   health: HealthService;
   funds: FundsService;
+  reminder: OpenClawReminderService;
 }
 
 export function createApp(config: AppConfig, database: DatabaseSync): { app: express.Express; services: AppServices } {
@@ -119,6 +121,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   openclaw.reconcileStaleRunningOperations();
   const appearance = new AppearanceService(database, repository);
   const matters = new MattersRepository(database, repository, config.timezone, funds);
+  const reminder = new OpenClawReminderService(database, config, matters);
   const userAuth = createUserAuth(config);
   const distPath = path.resolve(process.cwd(), "dist");
   const indexPath = path.join(distPath, "index.html");
@@ -220,7 +223,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
   });
 
-  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health, funds);
+  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health, funds, reminder);
 
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -698,7 +701,8 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
       deepseek: config.deepseekApiKey ? "configured" : "missing",
       backup: backup.status(),
       version: APP_VERSION,
-      reload
+      reload,
+      openclawReminder: reminder.status()
     } });
   });
 
@@ -796,5 +800,5 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });
   });
 
-  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health, funds } };
+  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health, funds, reminder } };
 }

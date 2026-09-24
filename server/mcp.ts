@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { isInitializeRequest, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { AppConfig } from "./config";
 import type { LedgerRepository } from "./repository";
 import { APP_VERSION } from "../shared/app-metadata";
@@ -14,6 +14,7 @@ import type { MattersRepository } from "./matters";
 import type { BudgetService } from "./budgets";
 import type { HealthService } from "./health";
 import type { FundsService } from "./funds";
+import type { OpenClawReminderService } from "./openclaw-reminder";
 import { createMcpAuth } from "./auth";
 import { categoryDispositionSchema, categoryInputSchema, categoryPatchSchema, requestIdSchema, transactionPatchSchema } from "../shared/schemas";
 
@@ -21,6 +22,25 @@ function textResult(data: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
   };
+}
+
+/**
+ * MCP safety hints derived from the tool naming contract, so clients such as
+ * OpenClaw can auto-allow read-only lookups and flag destructive writes.
+ */
+export function toolAnnotations(name: string): ToolAnnotations {
+  if (/^(get|list)_/.test(name)) return { readOnlyHint: true, openWorldHint: false };
+  if (name.startsWith("propose_") || name === "revise_pending_proposal") return { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+  if (/delete|permanently/.test(name) || name === "direct_manage_category" || name === "undo_openclaw_operation") {
+    return { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+  }
+  return { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: name === "direct_generate_ai_analysis" };
+}
+
+function annotateTools(server: McpServer): void {
+  const register = server.registerTool.bind(server) as (name: string, config: { annotations?: ToolAnnotations }, callback: unknown) => unknown;
+  server.registerTool = ((name: string, config: { annotations?: ToolAnnotations }, callback: unknown) =>
+    register(name, { ...config, annotations: { ...toolAnnotations(name), ...config.annotations } }, callback)) as unknown as McpServer["registerTool"];
 }
 
 export function isBodyJsonParseError(error: unknown): boolean {
@@ -93,9 +113,11 @@ export function createLedgerMcpServer(
     budgets?: BudgetService;
     health?: HealthService;
     funds?: FundsService;
+    reminder?: OpenClawReminderService;
   }
 ): McpServer {
   const server = new McpServer({ name: "sutady-money-manager", version: APP_VERSION });
+  annotateTools(server);
 
   server.registerTool("list_categories", {
     description: "列出可用于记账的收入或支出分类。",
@@ -341,6 +363,7 @@ function registerDirectTools(
     matters?: MattersRepository;
     budgets?: BudgetService;
     funds?: FundsService;
+    reminder?: OpenClawReminderService;
   }
 ): void {
   const { ai, backup, openclaw, matters, budgets, funds } = services;
@@ -1009,9 +1032,9 @@ function registerDirectTools(
   })));
 
   server.registerTool("get_app_status", {
-    description: "查看服务、数据库、DeepSeek 和备份配置状态，不返回真实密钥或本机路径。",
+    description: "查看服务、数据库、DeepSeek、备份和每日提醒状态，不返回真实密钥、提醒地址或本机路径。",
     inputSchema: {}
-  }, async () => textResult({ service: "ok", database: "ok", deepseekConfigured: Boolean(config.deepseekApiKey), backup: { lastSuccessAt: backup.status().lastSuccessAt, remoteConfigured: backup.status().remoteConfigured }, timezone: config.timezone, openclaw: openclaw.settings() }));
+  }, async () => textResult({ service: "ok", database: "ok", deepseekConfigured: Boolean(config.deepseekApiKey), backup: { lastSuccessAt: backup.status().lastSuccessAt, remoteConfigured: backup.status().remoteConfigured }, timezone: config.timezone, openclaw: openclaw.settings(), dailyReminder: services.reminder?.status() ?? null }));
 
   server.registerTool("get_app_settings", {
     description: "读取可公开给 OpenClaw 的应用设置。只返回人民币、时区、AI 模型/思考模式和接管模式，不返回任何密钥或令牌。",
@@ -1607,7 +1630,8 @@ export function attachMcpRoutes(
   matters?: MattersRepository,
   budgets?: BudgetService,
   health?: HealthService,
-  funds?: FundsService
+  funds?: FundsService,
+  reminder?: OpenClawReminderService
 ): void {
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const auth = createMcpAuth(config);
@@ -1624,7 +1648,7 @@ export function attachMcpRoutes(
             transports.set(newSessionId, transport!);
           }
         });
-        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health, funds });
+        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health, funds, reminder });
         server.server.onclose = () => {
           if (transport?.sessionId) transports.delete(transport.sessionId);
         };

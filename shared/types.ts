@@ -382,6 +382,17 @@ export interface SystemStatus {
   };
   version: string;
   reload: Omit<SystemReload, "restarting">;
+  openclawReminder: OpenClawReminderStatus;
+}
+
+/** Daily SMB → OpenClaw reminder state. Never includes the hook address or token. */
+export interface OpenClawReminderStatus {
+  configured: boolean;
+  time: string;
+  lastCheckedDate: string | null;
+  lastSentDate: string | null;
+  lastAttemptAt: string | null;
+  state: "not_configured" | "idle" | "nothing" | "sent" | "failed";
 }
 
 export interface BackupCheckStatus {

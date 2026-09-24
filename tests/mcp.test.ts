@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { amountToMinor, createLedgerMcpServer } from "../server/mcp";
+import { amountToMinor, createLedgerMcpServer, toolAnnotations } from "../server/mcp";
 import { APP_VERSION } from "../shared/app-metadata";
 import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
@@ -357,4 +357,47 @@ describe("OpenClaw MCP", () => {
     }
   });
 
+  it("每个工具都带有安全标注，只读查询与写入、破坏性操作区分清楚", async () => {
+    const funds = new FundsService(context.database, context.repository, () => "2026-08-26");
+    context.repository.attachFundsService(funds);
+    const matters = new MattersRepository(context.database, context.repository, context.config.timezone, funds);
+    const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
+    const ai = new AiService(context.database, context.repository, context.config);
+    const server = createLedgerMcpServer(context.repository, context.config, {
+      ai,
+      backup: new BackupService(context.database, context.repository, context.config),
+      openclaw: new OpenClawControlService(context.database, context.repository, context.config, budgets, funds),
+      matters,
+      budgets,
+      health: new HealthService(context.database, context.repository, budgets, ai),
+      funds
+    });
+    const client = new Client({ name: "test-annotations", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.length).toBeGreaterThan(70);
+      for (const tool of tools) {
+        expect(tool.annotations, tool.name).toEqual(toolAnnotations(tool.name));
+        const isLookup = /^(get|list)_/.test(tool.name);
+        expect(tool.annotations?.readOnlyHint, tool.name).toBe(isLookup);
+        if (tool.name.startsWith("direct_") || tool.name.startsWith("propose_") || tool.name.startsWith("undo_")) {
+          expect(tool.annotations?.readOnlyHint, tool.name).toBe(false);
+        }
+      }
+      const byName = new Map(tools.map((tool) => [tool.name, tool.annotations]));
+      expect(byName.get("get_subscription_summary")).toMatchObject({ readOnlyHint: true });
+      expect(byName.get("get_plan_summary")).toMatchObject({ readOnlyHint: true });
+      expect(byName.get("direct_permanently_delete_transaction")).toMatchObject({ destructiveHint: true });
+      expect(byName.get("direct_delete_plan")).toMatchObject({ destructiveHint: true });
+      expect(byName.get("direct_add_transaction")).toMatchObject({ destructiveHint: false, idempotentHint: true });
+      expect(byName.get("direct_generate_ai_analysis")).toMatchObject({ openWorldHint: true });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
+

@@ -129,6 +129,16 @@ Telegram 等新会话在 SMB 当时没开时，可能拿不到 `money-manager` �
 
 直接写入必须携带唯一 `requestId`；修改或删除还会校验最近查询到的更新时间。账户可使用 ID 或标准化后的精确名称/别名，歧义时必须先询问用户。可逆操作保留 30 天撤销期，且不会覆盖后来发生的新修改。永久删除必须显式调用专用工具并携带确认字段；密钥、Access 配置和服务启停永不开放给 OpenClaw。
 
+### 每日待办提醒（SMB → OpenClaw）
+
+可选功能。每天到了 `OPENCLAW_REMINDER_TIME`（默认 09:00，按账本时区），SMB 会检查是否有待确认的订阅续费或临近/逾期的计划；只有存在待办时，才调用 OpenClaw Gateway 的 `/hooks/agent`，由 OpenClaw 通过 MCP 只读工具查看详情并发消息提醒。没有待办时不会调用 OpenClaw。
+
+1. 在 OpenClaw 中启用 HTTP hooks（专用随机令牌，不要复用 Gateway 令牌），只允许 `main` agent，然后 `openclaw config validate` 并 `openclaw gateway restart`：`hooks.enabled=true`、`hooks.path=/hooks`、`hooks.token=<随机值>`、`hooks.allowedAgentIds=["main"]`、`hooks.allowRequestSessionKey=false`。
+2. 在 SMB 的 `.env` 中填写 `OPENCLAW_HOOK_URL=http://127.0.0.1:18789/hooks/agent`、`OPENCLAW_HOOK_TOKEN`（与上一步相同）、`OPENCLAW_REMINDER_CHANNEL=telegram`、`OPENCLAW_REMINDER_TO=<Telegram chat id>`，可选 `OPENCLAW_REMINDER_TIME`。
+3. 重启 SMB 服务。设置 → 运行状态会显示「OpenClaw 每日提醒」的当天状态；页面和 MCP 都不会显示 hook 地址或令牌。
+
+Gateway 只监听本机回环地址；WSL 需使用 mirrored 网络（或能从 Windows 访问 WSL 的 18789 端口）。
+
 ## 6. Windows 自动启动
 
 先手动验证生产服务：

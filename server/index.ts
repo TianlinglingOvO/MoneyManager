@@ -12,15 +12,20 @@ if (storedTimezone?.value) config.timezone = storedTimezone.value;
 const { app, services } = createApp(config, database);
 const server = createServer(app);
 let backupTimer: NodeJS.Timeout | null = null;
+let reminderTimer: NodeJS.Timeout | null = null;
 
 server.listen(config.port, config.host, () => {
-  if (config.nodeEnv === "production") backupTimer = services.backup.startDailyScheduler();
+  if (config.nodeEnv === "production") {
+    backupTimer = services.backup.startDailyScheduler();
+    if (services.reminder.configured) reminderTimer = services.reminder.startDailyScheduler();
+  }
   const authLabel = config.authMode === "cloudflare" ? "Cloudflare Access" : "本地开发模式";
   console.log(`SMB 已启动：http://${config.host}:${config.port}（${authLabel}）`);
 });
 
 function shutdown(code = 0): void {
   if (backupTimer) clearInterval(backupTimer);
+  if (reminderTimer) clearInterval(reminderTimer);
   server.close(() => {
     closeDatabase();
     process.exit(code);

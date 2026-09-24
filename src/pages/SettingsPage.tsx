@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
+  BellRing,
   ArrowRightLeft,
   Bot,
   Check,
@@ -39,6 +40,7 @@ import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { BudgetSheet } from "../components/BudgetSheet";
 import { useLedgerClock } from "../ledger-clock";
 import { refreshApplication } from "../pwa-update";
+import { reminderHeadline } from "../reminder-status";
 
 const colors = ["#D66A4C", "#B66A8C", "#D49B45", "#2E7D61", "#4E87A6", "#5963A6", "#9A6FB0", "#7A7A73"];
 
@@ -394,6 +396,7 @@ export function SettingsPage() {
           <div><span className="status-icon"><Bot size={20} /></span><p>DeepSeek</p><strong>{status.data?.deepseek === "configured" ? "已配置" : "尚未配置"}</strong><small>密钥仅保存在本机</small></div>
           <div><span className="status-icon"><HardDrive size={20} /></span><p>最近备份</p><strong>{status.data?.backup.lastSuccessAt ? new Date(status.data.backup.lastSuccessAt).toLocaleDateString("zh-CN") : "尚未备份"}</strong><small>{status.data?.backup.remoteConfigured ? "本地 + Google Drive" : "本地快照可用"}</small></div>
           <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>{status.data?.reload?.stale ? `运行 ${status.data.version} · 磁盘 ${status.data.reload.builtVersion}` : "私人账本"}</small></div>
+          <div><span className="status-icon"><BellRing size={20} /></span><p>OpenClaw 每日提醒</p><strong>{reminderHeadline(status.data?.openclawReminder, today)}</strong><small>{status.data?.openclawReminder?.configured ? `每天 ${status.data.openclawReminder.time} · 只在有待办时提醒` : "未配置"}</small></div>
         </div>
       </section>
 

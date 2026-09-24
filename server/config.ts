@@ -32,6 +32,12 @@ export interface AppConfig {
   backupAgeRecipient: string;
   rcloneRemote: string;
   rcloneBackupPath: string;
+  openclawHookUrl: string;
+  openclawHookToken: string;
+  openclawHookAgentId: string;
+  openclawReminderChannel: string;
+  openclawReminderTo: string;
+  openclawReminderTime: string;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -55,7 +61,13 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     backupRetentionCount: numberFromEnv(process.env.BACKUP_RETENTION_COUNT, 14),
     backupAgeRecipient: process.env.BACKUP_AGE_RECIPIENT ?? "",
     rcloneRemote: process.env.RCLONE_REMOTE ?? "",
-    rcloneBackupPath: process.env.RCLONE_BACKUP_PATH ?? "MoneyManagerBackups"
+    rcloneBackupPath: process.env.RCLONE_BACKUP_PATH ?? "MoneyManagerBackups",
+    openclawHookUrl: (process.env.OPENCLAW_HOOK_URL ?? "").trim(),
+    openclawHookToken: (process.env.OPENCLAW_HOOK_TOKEN ?? "").trim(),
+    openclawHookAgentId: (process.env.OPENCLAW_HOOK_AGENT_ID ?? "main").trim() || "main",
+    openclawReminderChannel: (process.env.OPENCLAW_REMINDER_CHANNEL ?? "telegram").trim(),
+    openclawReminderTo: (process.env.OPENCLAW_REMINDER_TO ?? "").trim(),
+    openclawReminderTime: (process.env.OPENCLAW_REMINDER_TIME ?? "09:00").trim()
   };
   return { ...config, ...overrides };
 }

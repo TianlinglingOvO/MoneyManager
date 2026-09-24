@@ -13,6 +13,7 @@ import { api } from "../src/api";
 import { QuickEntry } from "../src/components/QuickEntry";
 import { Toast, toastDurations } from "../src/components/Toast";
 import { subscriptionRenewalHint } from "../src/pages/InsightsPage";
+import { reminderHeadline } from "../src/reminder-status";
 import { offerUndo, ToastContext, type ToastOptions } from "../src/toast-context";
 
 afterEach(() => {
@@ -127,6 +128,18 @@ describe("近期续费卡片文案", () => {
     expect(subscriptionRenewalHint({ attentionCount: 2, activeCount: 5 })).toBe("2 项待确认续费");
     expect(subscriptionRenewalHint({ attentionCount: 0, activeCount: 5 })).toBe("暂无待确认，共 5 项订阅");
     expect(subscriptionRenewalHint({ attentionCount: 0, activeCount: 0 })).toBe("暂无订阅");
+  });
+});
+
+describe("OpenClaw 每日提醒状态文案", () => {
+  it("区分未启用、已提醒、无待办、失败和尚未检查", () => {
+    const base = { configured: true, time: "09:00", lastCheckedDate: null, lastSentDate: null, lastAttemptAt: null, state: "idle" as const };
+    expect(reminderHeadline(undefined, "2026-09-24")).toBe("未启用");
+    expect(reminderHeadline({ ...base, configured: false, state: "not_configured" }, "2026-09-24")).toBe("未启用");
+    expect(reminderHeadline({ ...base, state: "sent", lastCheckedDate: "2026-09-24", lastSentDate: "2026-09-24" }, "2026-09-24")).toBe("今日已提醒");
+    expect(reminderHeadline({ ...base, state: "nothing", lastCheckedDate: "2026-09-24" }, "2026-09-24")).toBe("今日无待办");
+    expect(reminderHeadline({ ...base, state: "failed", lastCheckedDate: "2026-09-24" }, "2026-09-24")).toBe("今日提醒失败，稍后重试");
+    expect(reminderHeadline({ ...base, state: "sent", lastCheckedDate: "2026-09-23", lastSentDate: "2026-09-23" }, "2026-09-24")).toBe("今天尚未检查");
   });
 });
 

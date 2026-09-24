@@ -9,8 +9,10 @@ import { shouldRetryRequest } from "./api";
 import "./generated-fonts.css";
 import "./styles.css";
 import { startAppUpdates } from "./pwa-update";
+import { startViewportHeightSync } from "./viewport-height";
 
 startAppUpdates();
+startViewportHeightSync();
 
 const queryClient = new QueryClient({
   defaultOptions: {

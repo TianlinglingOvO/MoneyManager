@@ -2,6 +2,23 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.6.0 — 2026-09-24
+
+### OpenClaw daily reminder
+
+- New opt-in `OpenClawReminderService`: once per ledger day after `OPENCLAW_REMINDER_TIME` (default 09:00, ledger timezone), SMB counts subscriptions needing renewal confirmation and due/overdue plans. Only when something is pending does it call the OpenClaw Gateway `/hooks/agent` endpoint, with a dedicated hook token and a per-day `Idempotency-Key`. The message carries counts only; OpenClaw reads details through the read-only MCP tools and delivers a short reminder to the configured channel.
+- Failed hook calls retry on later checks (at most 6 per day). The feature is off unless `OPENCLAW_HOOK_URL`, `OPENCLAW_HOOK_TOKEN`, `OPENCLAW_REMINDER_CHANNEL`, and `OPENCLAW_REMINDER_TO` are set.
+- Settings → 运行状态 and MCP `get_app_status` show the reminder state without the hook address or token.
+
+### MCP
+
+- Every MCP tool now declares safety annotations: `get_`/`list_` tools are read-only, delete/permanent/undo tools are destructive, and other `direct_` writes are idempotent via `requestId`. Clients such as OpenClaw can auto-allow lookups instead of prompting for every call. Tool names and schemas are unchanged.
+
+### Mobile
+
+- In mobile browsers (Chrome without installing the PWA), the bottom navigation no longer slips below the screen on first load: the document no longer scrolls behind the app shell, and the shell height follows the measured viewport.
+- The 事项 badge sits on the icon instead of falling below the navigation bar.
+
 ## 2.5.4 — 2026-09-24
 
 ### Interaction
