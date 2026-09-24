@@ -1,5 +1,7 @@
 # SMB 部署指南
 
+> 💡 **提示**：如果你仅打算在单机个人电脑上使用，无需阅读本指南，直接双击根目录 `打开 SMB.cmd` 即可开箱即用。本指南面向需要通过 Cloudflare Tunnel 实现手机跨网外网记账的高级部署场景。
+
 下面的账号授权步骤必须由账本所有者亲自完成。所有模板都不含真实密钥，也不会修改 OpenClaw 的 18789 端口。
 
 ## 1. 本机配置
@@ -111,7 +113,7 @@ MONEY_CF_ACCESS_CLIENT_SECRET=Cloudflare Service Token Client Secret
 然后在 WSL 中执行：
 
 ```bash
-openclaw mcp set money-manager "$(cat /mnt/d/Application/MoneyManager/deploy/openclaw-money-manager.json)"
+openclaw mcp set money-manager "$(cat ./deploy/openclaw-money-manager.json)"
 openclaw mcp doctor money-manager --probe
 openclaw mcp reload
 ```

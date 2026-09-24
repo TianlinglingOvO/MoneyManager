@@ -73,4 +73,3 @@ OpenClaw (WSL) ──HTTPS /mcp──► Cloudflare Access app "mcp" (path /mcp;
 ## Repo notes
 
 - The repository is published publicly as an open-source template. Keep real domains, emails, Access AUD tags, tokens, and personal screenshots or notes out of tracked files, including test fixtures; use `money.example.com`-style placeholders.
-- Some launcher and error strings mention Codex, which maintained the project earlier. Those strings are user-facing copy, not instructions.

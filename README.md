@@ -1,6 +1,6 @@
 # SMB — Sutady Moneybook
 
-SMB 是 Sutady 的私人账本。它在 Windows 笔记本上运行，通过浏览器同时支持 Windows、Linux 和 Android；账本唯一数据源是本机 SQLite，浏览器不保存账目副本。当前版本以 `package.json` 为准。
+SMB (Sutady Moneybook) 是一款基于 SQLite 和 MCP (Model Context Protocol) 的全栈个人记账系统。它原生支持本地单机运行与离线保存，也可通过 Cloudflare Tunnel 实现跨网安全访问；账本唯一数据源为本机 SQLite，浏览器不保存账目副本，不依赖外部云端数据库，数据完全自主掌控。当前版本以 `package.json` 为准。
 
 ## 已实现
 
@@ -46,28 +46,42 @@ SMB 是 Sutady 的私人账本。它在 Windows 笔记本上运行，通过浏�
 - 选择“纯净、纸张、织纹、薄雾”会暂时停用个人图片，但图片仍保留在当前设备，可随时点击“使用图片”恢复。
 - 每个浏览会话首次冷启动会短暂显示一次 SMB 品牌开屏；刷新数据和页面切换不会重播，系统开启“减少动画”时直接跳过。
 
-## 本机预览
+## 快速上手与本地运行
 
-需要 Node.js 22 或更高版本。在项目目录打开 PowerShell：
+需要 Node.js 22 或更高版本。
 
-最简单的方法是直接双击项目根目录的 `打开 SMB.cmd`。它会启动本机服务并打开浏览器；请保留标题为“SMB Service”的窗口，关闭该窗口即停止服务。已经用该启动器打开的服务，构建完成后可在设置里点「检查并刷新」加载新的 `dist-server`；不必每次都关窗口。首次启用这一能力时仍需手动重启一次。
+### 方式一：Windows 一键启动（最推荐）
+直接双击项目根目录下的 **`打开 SMB.cmd`**。
+- 首次运行会自动检查依赖、自动根据模板生成 `.env` 默认配置并完成编译打包；
+- 随后会自动启动服务并在默认浏览器中打开记账首页（默认访问 `http://127.0.0.1:8788`，免登录单机模式）。
+- 请保留标题为“SMB Service”的窗口，关闭该窗口即停止服务。代码更新并重新构建后，可在“设置 → 运行状态”点「检查并刷新」加载新的 `dist-server`，不必每次都关窗口。
 
-也可以手动启动：
+### 方式二：命令行手动启动（跨平台通用：Windows / Linux / macOS）
+在项目根目录打开终端：
 
-```powershell
-npm.cmd start
+```bash
+# 1. 安装项目依赖
+npm install
+
+# 2. 初始化本地配置（默认开启免登录单机模式）
+cp .env.example .env
+
+# 3. 运行开发模式（推荐本地体验，支持代码热重载）
+npm run dev
+# 浏览器访问 http://127.0.0.1:5173
+
+# 或者编译并启动正式生产服务：
+npm run build
+npm start
+# 浏览器访问 http://127.0.0.1:8788
 ```
 
-然后访问 `http://127.0.0.1:8788`。本机预览默认只监听这台电脑并关闭登录验证；录入的数据会保存在 `data/money-manager.sqlite`，下次启动仍然存在。
+## 质量检查
 
-需要修改程序时，开发模式仍可使用 `npm.cmd run dev`，页面地址为 `http://127.0.0.1:5173`。
-
-## 检查
-
-```powershell
-npm.cmd test
-npm.cmd run typecheck
-npm.cmd run build
+```bash
+npm test
+npm run typecheck
+npm run build
 ```
 
 正式更新前可额外创建一份经过完整性检查的快照：
@@ -77,9 +91,16 @@ npm.cmd run backup:snapshot -- manual-update
 npm.cmd run backup:verify-restore
 ```
 
-## 正式部署
+## 进阶功能与部署指南
 
-完整步骤见 [部署指南](docs/DEPLOYMENT.md)，账户与余额见 [资金追踪指南](docs/FUNDS.md)，借款、订阅与计划见 [事项使用指南](docs/MATTERS.md)，备份解密与恢复见 [恢复指南](docs/RECOVERY.md)。正式启用前需要你亲自完成三件事：Cloudflare 账号授权、Google Drive 授权，以及在本机安全输入 DeepSeek API Key。
+如果你仅在个人电脑上单机记账，**无需配置任何外部服务，开箱即用**。
+
+若需要以下进阶能力，可参考对应指南按需配置：
+- **手机跨网远程记账**：通过 Cloudflare Tunnel 实现免公网 IP 穿透与 Access 身份验证，详见 [部署指南](docs/DEPLOYMENT.md)。
+- **AI 智能消费分析**：双击根目录 `配置DeepSeek密钥.cmd` 或在 `.env` 中填入 DeepSeek API Key 即可启用消费洞察与节省建议。
+- **异地加密自动云备份**：配置 Google Drive 与 `age` 加密密钥，实现每日自动快照上传，详见 [恢复指南](docs/RECOVERY.md)。
+- **资金与账户管理**：多账户资产流水、转账与余额校准，详见 [资金追踪指南](docs/FUNDS.md)。
+- **借款、订阅与计划**：跟进外部欠款、分次归还、周期订阅扣费和一次性计划，详见 [事项使用指南](docs/MATTERS.md)。
 
 ## 目录
 
