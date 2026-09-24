@@ -106,8 +106,8 @@ describe("账本仓库", () => {
     const newerOccurrence = context.repository.createTransaction(transactionInput(category.id, { localDate: "2026-08-20" }));
     context.repository.softDeleteTransaction(olderOccurrence.id);
     context.repository.softDeleteTransaction(newerOccurrence.id);
-    context.database.prepare("UPDATE transactions SET deleted_at = ? WHERE id = ?").run("2026-08-18T00:00:00.000Z", olderOccurrence.id);
-    context.database.prepare("UPDATE transactions SET deleted_at = ? WHERE id = ?").run("2026-08-17T00:00:00.000Z", newerOccurrence.id);
+    context.database.prepare("UPDATE transactions SET deleted_at = ? WHERE id = ?").run(new Date(Date.now() - 86_400_000).toISOString(), olderOccurrence.id);
+    context.database.prepare("UPDATE transactions SET deleted_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 86_400_000).toISOString(), newerOccurrence.id);
     expect(context.repository.listTransactions({ deleted: "trash", sort: "deleted" }).items.map((item) => item.id)).toEqual([
       olderOccurrence.id,
       newerOccurrence.id

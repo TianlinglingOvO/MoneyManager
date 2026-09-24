@@ -251,6 +251,7 @@ describe("待确认操作修订", () => {
 
 describe("OpenClaw 操作中心", () => {
   it("显示直接模式、最近操作和网页撤销入口", async () => {
+    const undoExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
     vi.spyOn(api, "proposals").mockResolvedValue([]);
     vi.spyOn(api, "categories").mockResolvedValue([]);
     vi.spyOn(api, "openClawSettings").mockResolvedValue({
@@ -259,19 +260,19 @@ describe("OpenClaw 操作中心", () => {
     vi.spyOn(api, "openClawOperations").mockResolvedValue([{
       id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
       entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "applied", undoable: true,
-      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: null, failedAt: null
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: undoExpiresAt, undoneAt: null, failedAt: null
     }]);
     vi.spyOn(api, "openClawOperation").mockResolvedValue({
       id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
       entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "applied", undoable: true,
-      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: null, failedAt: null,
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: undoExpiresAt, undoneAt: null, failedAt: null,
       result: null,
       items: [{ sequence: 0, entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", before: null, after: { amountMinor: 2420, note: "敏感备注" } }]
     });
     const undo = vi.spyOn(api, "undoOpenClawOperation").mockResolvedValue({
       id: "33333333-3333-4333-8333-333333333333", requestId: "ui-operation-001", action: "transaction.create",
       entityType: "transaction", entityId: "44444444-4444-4444-8444-444444444444", status: "undone", undoable: true,
-      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: "2026-09-11T00:00:00.000Z", undoneAt: "2026-08-12T01:00:00.000Z", failedAt: null
+      summary: "OpenClaw 新增账目", createdAt: "2026-08-12T00:00:00.000Z", expiresAt: undoExpiresAt, undoneAt: "2026-08-12T01:00:00.000Z", failedAt: null
     });
     renderWithProviders(<ProposalsPage />);
 
