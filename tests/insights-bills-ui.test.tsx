@@ -153,6 +153,7 @@ describe("洞察与账单下钻", () => {
     expect(screen.queryByText("其他")).not.toBeInTheDocument();
   });
 
+  // 首次渲染会加载 Recharts；整套测试并行时可能超过默认 5 秒。
   it("分类明细和环比卡片写出上期同进度窗口与金额", async () => {
     vi.spyOn(api, "report").mockResolvedValue({
       ...report,
@@ -179,7 +180,7 @@ describe("洞察与账单下钻", () => {
     expect(screen.getByText("上期 ¥10.00")).toBeInTheDocument();
     expect(screen.getAllByText("+200.0%").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /较上期 ¥10.00 增加 200.0%/ })).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("从账单 URL 初始化筛选，并在切换筛选时同步 URL", async () => {
     const calls: Array<Record<string, string | number | boolean | undefined>> = [];

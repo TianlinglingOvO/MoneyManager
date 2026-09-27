@@ -87,7 +87,7 @@ SMB 自 2.7.0 起不再内置 AI 分析，也不保存任何大模型密钥。�
 
 ## 5. OpenClaw
 
-已只读检查本机现有版本：`OpenClaw 2026.7.1-2`，它支持 `transport: "streamable-http"`，无需升级。现有 MCP 名称 `filesystem`、`memory-kg` 也不会与新名称冲突。
+OpenClaw 需要支持 `transport: "streamable-http"`（2026.7 及以后的版本均可，本机当前为 2026.9.4）。`money-manager` 不会与已有的 `filesystem`、`memory-kg` 等 MCP 名称冲突。OpenClaw 的网关服务不继承代理环境变量，因此不要给它添加需要联网下载的 `npx -y` MCP 服务，否则启动超时会让网关崩溃。
 
 在 WSL 的 `~/.openclaw/.env` 中加入三项；不要把真实值写进项目文件：
 
@@ -146,8 +146,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startu
 
 按照 [恢复指南](RECOVERY.md) 配置 `age` 和 `rclone`。应用每天 03:00 后生成一次一致快照并做 `PRAGMA integrity_check`：
 
-- 本地仅保留最新 14 份 SQLite 快照。
-- Google Drive 仅保存 `.sqlite.age` 加密文件，保留最新 30 份。
+- 本地仅保留最新 14 份 SQLite 快照。建议用 `BACKUP_LOCAL_DIR` 把快照放到与账本不同的物理硬盘。
+- Google Drive 仅保存 `.sqlite.age` 加密文件，保留最新 30 份。必须使用自己的 Google OAuth 桌面客户端（见恢复指南），rclone 的公用 client_id 正在停用且额度经常耗尽。
+- rclone 不读取 Windows 系统代理。若本机访问 Google 需要代理，在 `.env` 中设置 `HTTPS_PROXY` 与 `NO_PROXY=127.0.0.1,localhost`；SMB 自身不使用它，只会传给 rclone。
+- 上传失败不影响本地快照，当天不会重试，第二天随下一次备份再上传。
 - 数据库迁移前额外生成并校验一份本地快照。
 
 ## 8. 上线验收

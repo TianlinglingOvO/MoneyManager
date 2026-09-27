@@ -8,7 +8,6 @@ import {
   ArchiveRestore,
   Check,
   ChevronDown,
-  Landmark,
   LoaderCircle,
   Pencil,
   Plus,

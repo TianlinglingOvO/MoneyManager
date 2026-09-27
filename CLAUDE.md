@@ -22,7 +22,7 @@ npm.cmd run backup:verify-restore              # restore latest snapshot into a 
 
 There is no linter; `typecheck` is the static gate. Run PowerShell scripts in `scripts/` with `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\<name>.ps1`, because the machine's execution policy blocks direct `.ps1` runs.
 
-Tests never touch the real ledger. `tests/helpers.ts#createTestContext` builds a fresh temp-dir SQLite database with `authMode: "disabled"`. API tests use Supertest against `createApp(config, database)`.
+Tests never touch the real ledger. `tests/helpers.ts#createTestContext` builds a fresh temp-dir SQLite database with `authMode: "disabled"` and blanks the backup upload and OpenClaw hook settings that `.env` would otherwise supply, so tests never reach Google Drive or OpenClaw. API tests use Supertest against `createApp(config, database)`.
 
 ## Dev and production share `.env`
 
@@ -59,7 +59,7 @@ OpenClaw (WSL) ──HTTPS /mcp──► Cloudflare Access app "mcp" (path /mcp;
 
 - `打开 SMB.cmd`, `npm.cmd start`, and `scripts/start-production.ps1` all run `scripts/start-server.mjs`. It is a supervisor that spawns `dist-server/index.js` with `SMB_SUPERVISED=1` and restarts it when the child exits with code **82** (`RELOAD_EXIT_CODE` in `server/reload.ts`; the two values must stay equal). `scripts/install-startup-task.ps1` registers a Windows logon task. The tunnel is a separate Windows service.
 - Deploy flow: `backup:snapshot` → `test`, `typecheck`, `build` → in the app, Settings → 检查并刷新 (`POST /api/v1/system/reload`, same-origin only), which restarts onto the new `dist-server` → confirm `http://127.0.0.1:8788/health` reports the `package.json` version. The reload never compiles; it only loads what `build` produced.
-- Backups: a daily scheduler in production (`server/backup.ts`) writes local snapshots plus `age`-encrypted uploads to Google Drive via `rclone`. Restore steps are in `docs/RECOVERY.md`.
+- Backups: a daily scheduler in production (`server/backup.ts`) writes local snapshots plus `age`-encrypted uploads to Google Drive via `rclone`, using the owner's own Google OAuth client (`配置Google Drive授权.cmd`). Restore steps are in `docs/RECOVERY.md`.
 
 ## Architecture
 

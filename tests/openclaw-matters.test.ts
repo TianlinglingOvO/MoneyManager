@@ -54,7 +54,7 @@ describe("OpenClaw 财务事项 MCP", () => {
       requestId: "matter-loan-001", borrowerId: borrower.id, amount: 300, localDate: "2026-08-19", purpose: "生活费"
     } })).result;
     const repaymentArgs = { requestId: "matter-repayment-001", loanId: loan.id, amount: 65, localDate: "2026-08-19", note: "部分归还" };
-    const repayment = parsed(await client.callTool({ name: "direct_record_loan_repayment", arguments: repaymentArgs })).result;
+    parsed(await client.callTool({ name: "direct_record_loan_repayment", arguments: repaymentArgs }));
     const duplicate = parsed(await client.callTool({ name: "direct_record_loan_repayment", arguments: repaymentArgs }));
     expect(duplicate.duplicate).toBe(true);
     expect(parsed(await client.callTool({ name: "get_loan_summary", arguments: {} })).outstandingMinor).toBe(23_500);

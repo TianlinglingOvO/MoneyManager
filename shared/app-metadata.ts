@@ -3,8 +3,6 @@ import packageMetadata from "../package.json";
 export const APP_VERSION = packageMetadata.version;
 export const APP_BRAND_NAME = "SMB";
 export const APP_FULL_NAME = "SMB — Sutady Moneybook";
-export const APP_SUBTITLE = "Sutady Moneybook";
-export const APP_POSITIONING = "私人账本";
 export const APP_DESCRIPTION = "Sutady 的私人账本";
 
 export const PWA_ICONS = [

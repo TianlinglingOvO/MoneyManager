@@ -386,10 +386,6 @@ export function subscribeDeviceBackground(listener: DeviceBackgroundListener): (
   return () => listeners.delete(listener);
 }
 
-export function isDeviceBackgroundStorageAvailable(): boolean {
-  return Boolean(getIndexedDbFactory());
-}
-
 export function useDeviceBackground(): DeviceBackgroundState {
   const [background, setBackground] = useState<DeviceBackground | null>(null);
   const [isLoading, setIsLoading] = useState(() => typeof window !== "undefined");

@@ -1,15 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Archive,
   ArchiveRestore,
   ArrowDownLeft,
-  ArrowRight,
   CalendarDays,
   Check,
   ChevronDown,
-  ChevronRight,
   CircleDollarSign,
   Clock3,
   ExternalLink,
@@ -19,8 +17,7 @@ import {
   RotateCcw,
   Search,
   Trash2,
-  WalletCards,
-  X
+  WalletCards
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import type { Account, AccountCurrency, Borrower, Category, LedgerLinkMode, Loan, LoanRepayment, MatterCurrency, Plan, Subscription, SubscriptionPayment, Transaction } from "@shared/types";

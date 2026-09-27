@@ -22,12 +22,9 @@ import type {
   Transaction,
   TransactionList,
   Borrower,
-  LedgerLink,
-  LedgerLinkMode,
   Loan,
   LoanRepayment,
   LoanSummary,
-  MatterCurrency,
   HealthReport,
   MonthlyBudget,
   MonthlyBudgetInput,
@@ -39,7 +36,6 @@ import type {
 } from "@shared/types";
 import {
   clearConnectionIssue,
-  isConnectionIssueCode,
   reportConnectionIssue,
   type ConnectionIssueCode
 } from "./connection-status";
@@ -50,7 +46,6 @@ export class ApiError extends Error {
   }
 }
 
-export type MatterLedgerLink = LedgerLink;
 export type MatterList<T> = { items: T[]; total: number; page: number; pageSize: number };
 
 function connectionError(code: ConnectionIssueCode, message: string, status = 0): ApiError {
@@ -148,10 +143,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   clearConnectionIssue();
   return payload?.data as T;
-}
-
-export function isConnectionError(error: unknown): error is ApiError {
-  return error instanceof ApiError && isConnectionIssueCode(error.code);
 }
 
 function queryString(values: Record<string, string | number | boolean | undefined | null>): string {

@@ -24,6 +24,12 @@ export function createTestContext(overrides: Partial<AppConfig> = {}): TestConte
     authMode: "disabled",
     timezone: "Asia/Shanghai",
     mcpApiToken: "",
+    // .env on a deployed machine holds real integrations; tests must never reach them.
+    backupAgeRecipient: "",
+    rcloneRemote: "",
+    openclawHookUrl: "",
+    openclawHookToken: "",
+    openclawReminderTo: "",
     ...overrides
   });
   const database = createDatabase(config);

@@ -8,6 +8,12 @@ All notable SMB changes are recorded here. The version in `package.json` is cano
 
 - New `配置Google Drive授权.cmd` / `scripts/set-drive-client.ps1`: connects the `money-drive` rclone remote with the owner's own Google OAuth desktop client (`drive.file` scope). It checks the client secret with Google before opening the browser, waits for a newly created secret to take effect, and verifies afterwards that the token was issued to that client. rclone's shared client_id is being retired and often runs out of quota.
 
+### Maintenance
+
+- Removed styles for the retired dashboard hero, metric cards, today card, quick-record button, trash toggle, three-tab switcher, proposal banner and other markup that no longer exists, plus unused exports and imports. `typecheck` now enables `noUnusedLocals` so unused imports fail the gate.
+- Test contexts blank the backup upload and OpenClaw hook settings from `.env`, so running tests on a configured machine never uploads to Google Drive or calls OpenClaw.
+- The insights comparison test allows 15 seconds for the first Recharts load when the full suite runs in parallel.
+
 ## 2.7.0 — 2026-09-27
 
 ### Removed: built-in AI analysis
