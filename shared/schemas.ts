@@ -132,14 +132,6 @@ export const proposalResolutionInputSchema = z.object({
   expectedRevision: z.number().int().positive()
 });
 
-export const aiAnalysisInputSchema = z.object({
-  mode: z.enum(["overview", "growth", "saving", "structure", "custom"]),
-  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  question: z.string().trim().max(500).optional().nullable(),
-  includeNotes: z.boolean().optional().default(false)
-}).refine((value) => value.periodStart <= value.periodEnd, "开始日期不能晚于结束日期")
-  .refine((value) => value.mode !== "custom" || Boolean(value.question), "自定义分析需要填写问题");
 
 export const requestIdSchema = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 export const accountNameSchema = z.string().trim().min(1).max(40);
@@ -298,10 +290,6 @@ export const healthReportQuerySchema = z.object({
 });
 
 export const healthAcknowledgeSchema = z.object({
-  month: budgetMonthSchema
-}).strict();
-
-export const healthExplainSchema = z.object({
   month: budgetMonthSchema
 }).strict();
 

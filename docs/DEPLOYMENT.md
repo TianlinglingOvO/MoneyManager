@@ -23,7 +23,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\initialize-loc
   -McpAudience "MCP 应用 Audience Tag"
 ```
 
-脚本会在隐藏输入框中要求 DeepSeek API Key，并生成一枚随机 MCP 应用令牌。真实值只写入已忽略的本机 `.env`。
+脚本会生成一枚随机 MCP 应用令牌。真实值只写入已忽略的本机 `.env`。
 
 完成后构建：
 
@@ -81,22 +81,9 @@ MCP 路径应用设置：
 
 来源服务仍会验证 Cloudflare 签名 JWT，并额外验证独立的 `MCP_API_TOKEN`。两个 Access 应用的 Audience 不同，因此 `.env` 中分别保存 `CF_ACCESS_AUD` 与 `CF_ACCESS_MCP_AUD`。
 
-## 4. DeepSeek
+## 4. 账本解读（交给 OpenClaw）
 
-默认模型是经济型 `deepseek-v4-flash`，并关闭思考模式以减少日常分析开销。请求使用官方 `/chat/completions` 与 JSON Output；密钥不进入页面、数据库、日志或代码。
-
-给已经部署好的 SMB 添加或更换密钥时，不需要手工编辑 `.env`：
-
-1. 双击项目根目录的 `配置DeepSeek密钥.cmd`。
-2. 在弹出的窗口中粘贴 DeepSeek API Key。输入不会显示，粘贴后直接按 Enter。
-3. 看到“配置完成”后重启 SMB 服务。
-4. 打开设置页确认 DeepSeek 状态变成“已配置”，然后在 AI 页面选择一段有账目的期间进行首次分析。
-
-脚本只会更新本机 `.env` 中的 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_MODEL`，不会把密钥保存到网页、SQLite 数据库或日志。
-
-DeepSeek 当前只支持开启或关闭思考模式，没有低、中、高等级。SMB 默认使用 `DEEPSEEK_THINKING=disabled`；如需开启，可改为 `DEEPSEEK_THINKING=enabled`。修改后必须重启服务。
-
-配置完成后，在“设置”页应看到 DeepSeek 为“已配置”。第一次分析前，页面会明确显示发送期间、笔数和字段。账目变化后旧报告会标记为需要重新分析。
+SMB 自 2.7.0 起不再内置 AI 分析，也不保存任何大模型密钥。需要解读账本时，直接问接入的 OpenClaw：它通过只读 MCP 工具（`get_finance_summary`、`list_transactions`、`get_budget_summary`、`get_ledger_health` 以及事项汇总）读取程序算好的数字。旧 `.env` 中的 `DEEPSEEK_*` 会被忽略，可以删除。
 
 ## 5. OpenClaw
 
@@ -118,7 +105,7 @@ openclaw mcp doctor money-manager --probe
 openclaw mcp reload
 ```
 
-探测成功后应看到原有账本、事项（含 `list_plans` / `direct_create_plan` / `direct_complete_plan`）、AI、备份、时区和撤销工具，以及 `list_accounts`、`get_funds_summary`、账户管理、转账、校准、退款和撤销退款工具。选择外币账户时必须另传实际账户金额。有金额的计划完成必须带支出分类，资金启用后还必须带支付账户。永久删除仍使用独立的显式确认工具。
+探测成功后应看到原有账本、事项（含 `list_plans` / `direct_create_plan` / `direct_complete_plan`）、备份、时区和撤销工具，以及 `list_accounts`、`get_funds_summary`、账户管理、转账、校准、退款和撤销退款工具。选择外币账户时必须另传实际账户金额。有金额的计划完成必须带支出分类，资金启用后还必须带支付账户。永久删除仍使用独立的显式确认工具。
 
 Telegram 等新会话在 SMB 当时没开时，可能拿不到 `money-manager` 原生工具，模型有时会改用 curl 手搓 `/mcp`。这种情况下应 `openclaw mcp reload` 并新开会话，不要手搓 JSON-RPC。原生工具可用后，调错请求会返回 JSON-RPC 错误，而不是通用 500。
 
@@ -165,7 +152,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startu
 
 ## 8. 上线验收
 
-- 未授权邮箱无法通过 Access；浏览器开发者工具中看不到 DeepSeek 或备份密钥。
+- 未授权邮箱无法通过 Access；浏览器开发者工具中看不到 MCP 令牌或备份密钥。
 - 局域网其他设备无法用笔记本 IP 加 `:8788` 访问，但可以通过 HTTPS 域名访问。
 - Windows、Linux 浏览器以及 Android Chrome 均可安装 PWA。
 - 重启 Windows 并登录后，应用任务与 Tunnel 服务会自动恢复。
@@ -174,7 +161,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startu
 - OpenClaw 在 `direct` 模式下可以直接新增、修改、删除并撤销账目；重复 `requestId` 不会产生重复账。明确要求先确认时仍可走原有待确认流程。
 - “事项”可以新增两笔同一借款人的独立借款、记录部分还款并正确汇总余额；订阅到期后不会自动生成付款，记录续费后才推进下一日期。
 - 计划录入不绑账户；无金额完成只改状态；有金额完成必须创建或关联支出，资金启用后必须选择支付账户。
-- 未主动建立普通账目关联时，借款、订阅和未完成的计划不会改变洞察、月账单或 DeepSeek 消费分析。人民币关联金额必须一致，美元订阅创建账目时使用实际人民币扣款金额。
+- 未主动建立普通账目关联时，借款、订阅和未完成的计划不会改变洞察或月账单。人民币关联金额必须一致，美元订阅创建账目时使用实际人民币扣款金额。
 - 完整 JSON、借款、订阅、计划、账户流水与转账 CSV 均可导出；恢复演练会核对资金表并确认临时写入、读回与清理后余额一致。
 - 完成资金追踪向导后，新账必须带账户；转账本金与校准不进入收支，手续费只扣一次，全额退款会排除原账统计并恢复账户余额。
 - 资金启用日若存在旧账，逐笔确认它们没有被重复计入账户流水；初始余额与账户流水相加后的结果必须等于现实余额。
@@ -187,5 +174,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startu
 - Cloudflare OTP：https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/
 - Cloudflare Service Token：https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
 - OpenClaw MCP：https://docs.openclaw.ai/cli/mcp
-- DeepSeek JSON Output：https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/
 - rclone Google Drive：https://rclone.org/drive/

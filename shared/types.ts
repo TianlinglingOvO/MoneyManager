@@ -301,14 +301,6 @@ export interface HealthReport {
   generatedAt: string;
 }
 
-export interface HealthExplanation {
-  month: string;
-  reportHash: string;
-  overview: string;
-  suggestions: string[];
-  model: string;
-}
-
 export interface CategoryDispositionResult {
   action: "archive" | "restore" | "migrate" | "delete" | "purge";
   category?: Category;
@@ -345,22 +337,6 @@ export interface DashboardData {
   pendingProposalCount: number;
 }
 
-export interface AiAnalysis {
-  id: string;
-  title: string;
-  overview: string;
-  highlights: Array<{ title: string; detail: string; tone: "positive" | "warning" | "neutral" }>;
-  suggestions: string[];
-  answer: string | null;
-  periodStart: string;
-  periodEnd: string;
-  transactionCount: number;
-  model: string;
-  includeNotes: boolean;
-  createdAt: string;
-  isStale: boolean;
-}
-
 export interface SystemReload {
   runningVersion: string;
   builtVersion: string;
@@ -372,7 +348,6 @@ export interface SystemReload {
 export interface SystemStatus {
   service: "ok";
   database: "ok" | "error";
-  deepseek: "configured" | "missing";
   backup: {
     lastSuccessAt: string | null;
     remoteConfigured: boolean;

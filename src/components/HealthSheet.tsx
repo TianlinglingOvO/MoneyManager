@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, CircleAlert, Sparkles } from "lucide-react";
+import { Check, ChevronDown, CircleAlert } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { HealthIssue, HealthReport } from "../finance-health";
@@ -46,7 +46,6 @@ export function HealthSheet({ open, month, report, isLoading, isError, onClose, 
       notify("已标记为已核对");
     }
   });
-  const explain = useMutation({ mutationFn: () => api.explainHealth(month) });
   const issues = report?.issues ?? [];
   const activeIssues = issues.filter((issue) => !issue.acknowledged);
   const criticalIssues = activeIssues.filter((issue) => issue.severity === "critical").length;
@@ -88,12 +87,6 @@ export function HealthSheet({ open, month, report, isLoading, isError, onClose, 
           {issues.length === 0 && <div className="health-empty"><Check size={25} /><strong>账本状态良好</strong><p>继续按自己的习惯记录即可。</p></div>}
         </div>
         {acknowledge.isError && <p className="form-error" role="alert">标记失败，请刷新后再试。</p>}
-        <div className="health-explain">
-          <div><strong>想知道该从哪里看起？</strong><p>AI 只解释统计和已发现的项目，不会直接改账。</p></div>
-          <button className="secondary-button" type="button" disabled={activeIssues.length === 0 || explain.isPending} onClick={() => explain.mutate()}><Sparkles size={16} />{explain.isPending ? "正在整理…" : "让 AI 解释"}</button>
-        </div>
-        {explain.data && <div className="health-explanation" role="status"><p>{explain.data.overview}</p>{explain.data.suggestions.length > 0 && <ul>{explain.data.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>}</div>}
-        {explain.isError && <p className="form-error" role="alert">AI 解释暂时不可用，请稍后重试。</p>}
       </>}
     </div>
   </BottomSheet>;

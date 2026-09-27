@@ -7,7 +7,6 @@ import { isInitializeRequest, type ToolAnnotations } from "@modelcontextprotocol
 import type { AppConfig } from "./config";
 import type { LedgerRepository } from "./repository";
 import { APP_VERSION } from "../shared/app-metadata";
-import type { AiService } from "./ai";
 import type { BackupService } from "./backup";
 import { hashOpenClawRequest, type OpenClawControlService } from "./openclaw-control";
 import type { MattersRepository } from "./matters";
@@ -34,7 +33,7 @@ export function toolAnnotations(name: string): ToolAnnotations {
   if (/delete|permanently/.test(name) || name === "direct_manage_category" || name === "undo_openclaw_operation") {
     return { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
   }
-  return { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: name === "direct_generate_ai_analysis" };
+  return { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 }
 
 function annotateTools(server: McpServer): void {
@@ -106,7 +105,6 @@ export function createLedgerMcpServer(
   repository: LedgerRepository,
   config: AppConfig,
   services?: {
-    ai: AiService;
     backup: BackupService;
     openclaw: OpenClawControlService;
     matters?: MattersRepository;
@@ -357,7 +355,6 @@ function registerDirectTools(
   repository: LedgerRepository,
   config: AppConfig,
   services: {
-    ai: AiService;
     backup: BackupService;
     openclaw: OpenClawControlService;
     matters?: MattersRepository;
@@ -366,7 +363,7 @@ function registerDirectTools(
     reminder?: OpenClawReminderService;
   }
 ): void {
-  const { ai, backup, openclaw, matters, budgets, funds } = services;
+  const { backup, openclaw, matters, budgets, funds } = services;
   const requestId = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
   const resolveRequestedAccount = (value?: string | null): string | null | undefined => {
@@ -377,7 +374,7 @@ function registerDirectTools(
   server.registerTool("get_openclaw_control_status", {
     description: "查看 SMB 当前是需要网页确认还是允许 OpenClaw 直接操作。只返回能力和状态，永不返回密钥。",
     inputSchema: {}
-  }, async () => textResult({ ...openclaw.settings(), deepseekConfigured: Boolean(config.deepseekApiKey), backupRemoteConfigured: Boolean(config.backupAgeRecipient && config.rcloneRemote) }));
+  }, async () => textResult({ ...openclaw.settings(), backupRemoteConfigured: Boolean(config.backupAgeRecipient && config.rcloneRemote) }));
 
   if (funds) {
     const accountReference = z.string().trim().min(1).max(80);
@@ -1007,19 +1004,6 @@ function registerDirectTools(
     return textResult(output);
   });
 
-  server.registerTool("direct_generate_ai_analysis", {
-    description: "立即使用 DeepSeek 生成分析。每小时最多 20 次；不会返回 API Key。",
-    inputSchema: { requestId, mode: z.enum(["overview", "growth", "saving", "structure", "custom"]), periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), question: z.string().max(500).optional() }
-  }, async ({ requestId: idempotency, ...input }) => textResult(await openclaw.executeExternal({
-    requestId: idempotency, action: "ai.analyze", entityType: "ai_report", summary: "OpenClaw 生成 AI 分析", request: input,
-    maxPerWindow: { count: 20, windowMs: 60 * 60 * 1000 }, run: () => ai.analyze(input, "openclaw")
-  })));
-
-  server.registerTool("list_ai_analyses", {
-    description: "读取最近的 AI 分析历史。",
-    inputSchema: { limit: z.number().int().min(1).max(20).optional().default(12) }
-  }, async ({ limit }) => textResult(ai.listRecent(limit)));
-
   server.registerTool("direct_create_backup", {
     description: "立即创建一致性备份。MCP 两次备份至少间隔 10 分钟，不返回凭据。",
     inputSchema: { requestId }
@@ -1032,17 +1016,16 @@ function registerDirectTools(
   })));
 
   server.registerTool("get_app_status", {
-    description: "查看服务、数据库、DeepSeek、备份和每日提醒状态，不返回真实密钥、提醒地址或本机路径。",
+    description: "查看服务、数据库、备份和每日提醒状态，不返回真实密钥、提醒地址或本机路径。",
     inputSchema: {}
-  }, async () => textResult({ service: "ok", database: "ok", deepseekConfigured: Boolean(config.deepseekApiKey), backup: { lastSuccessAt: backup.status().lastSuccessAt, remoteConfigured: backup.status().remoteConfigured }, timezone: config.timezone, openclaw: openclaw.settings(), dailyReminder: services.reminder?.status() ?? null }));
+  }, async () => textResult({ service: "ok", database: "ok", backup: { lastSuccessAt: backup.status().lastSuccessAt, remoteConfigured: backup.status().remoteConfigured }, timezone: config.timezone, openclaw: openclaw.settings(), dailyReminder: services.reminder?.status() ?? null }));
 
   server.registerTool("get_app_settings", {
-    description: "读取可公开给 OpenClaw 的应用设置。只返回人民币、时区、AI 模型/思考模式和接管模式，不返回任何密钥或令牌。",
+    description: "读取可公开给 OpenClaw 的应用设置。只返回人民币、时区和接管模式，不返回任何密钥或令牌。",
     inputSchema: {}
   }, async () => textResult({
     currency: "CNY",
     timezone: config.timezone,
-    deepseek: { configured: Boolean(config.deepseekApiKey), model: config.deepseekModel, thinking: config.deepseekThinking },
     openclaw: openclaw.settings(),
     credentialsExposed: false
   }));
@@ -1623,7 +1606,6 @@ function registerMatterTools(
 export function attachMcpRoutes(
   app: Express,
   repository: LedgerRepository,
-  ai: AiService,
   backup: BackupService,
   openclaw: OpenClawControlService,
   config: AppConfig,
@@ -1648,7 +1630,7 @@ export function attachMcpRoutes(
             transports.set(newSessionId, transport!);
           }
         });
-        const server = createLedgerMcpServer(repository, config, { ai, backup, openclaw, matters, budgets, health, funds, reminder });
+        const server = createLedgerMcpServer(repository, config, { backup, openclaw, matters, budgets, health, funds, reminder });
         server.server.onclose = () => {
           if (transport?.sessionId) transports.delete(transport.sessionId);
         };

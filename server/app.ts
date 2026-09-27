@@ -6,7 +6,6 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z, ZodError } from "zod";
 import {
-  aiAnalysisInputSchema,
   appearancePatchSchema,
   categoryDispositionSchema,
   categoryInputSchema,
@@ -15,7 +14,6 @@ import {
   budgetMonthSchema,
   dailyTotalsQuerySchema,
   healthAcknowledgeSchema,
-  healthExplainSchema,
   healthReportQuerySchema,
   monthlyBudgetInputSchema,
   proposalResolutionInputSchema,
@@ -48,7 +46,6 @@ import type { AppConfig } from "./config";
 import { createUserAuth } from "./auth";
 import { AppError } from "./errors";
 import { LedgerRepository } from "./repository";
-import { AiService } from "./ai";
 import { BackupService } from "./backup";
 import { attachMcpRoutes, isBodyJsonParseError, logSafeRequestError } from "./mcp";
 import { OpenClawControlService } from "./openclaw-control";
@@ -96,7 +93,6 @@ function requestIdempotencyKey(request: Request): string | null {
 
 export interface AppServices {
   repository: LedgerRepository;
-  ai: AiService;
   backup: BackupService;
   openclaw: OpenClawControlService;
   appearance: AppearanceService;
@@ -113,9 +109,8 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   const funds = new FundsService(database, repository, () => localDate(config.timezone));
   repository.attachFundsService(funds);
   repository.purgeExpiredTrash();
-  const ai = new AiService(database, repository, config);
   const budgets = new BudgetService(database, repository, () => config.timezone);
-  const health = new HealthService(database, repository, budgets, ai);
+  const health = new HealthService(database, repository, budgets);
   const backup = new BackupService(database, repository, config);
   const openclaw = new OpenClawControlService(database, repository, config, budgets, funds);
   openclaw.reconcileStaleRunningOperations();
@@ -223,20 +218,13 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.sendFile(indexPath, { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } });
   });
 
-  attachMcpRoutes(app, repository, ai, backup, openclaw, config, matters, budgets, health, funds, reminder);
+  attachMcpRoutes(app, repository, backup, openclaw, config, matters, budgets, health, funds, reminder);
 
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: config.nodeEnv === "test" ? 10_000 : 600,
     standardHeaders: "draft-8",
     legacyHeaders: false
-  });
-  const aiLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    limit: config.nodeEnv === "test" ? 10_000 : 20,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-    message: { error: { code: "RATE_LIMITED", message: "AI 分析请求过于频繁，请稍后再试" } }
   });
   app.use("/api/v1", apiLimiter, userAuth);
   attachMatterRoutes(app, matters);
@@ -574,13 +562,6 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     } catch (error) { next(error); }
   });
 
-  app.post("/api/v1/reports/health/explain", aiLimiter, async (request, response, next) => {
-    try {
-      const input = healthExplainSchema.parse(request.body);
-      response.json({ data: await health.explain(input.month) });
-    } catch (error) { next(error); }
-  });
-
   app.get("/api/v1/proposals", (request, response, next) => {
     try {
       const status = z.enum(["pending", "approved", "rejected", "expired"]).parse(request.query.status ?? "pending");
@@ -599,26 +580,6 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     try {
       const input = proposalResolutionInputSchema.parse(request.body);
       response.json({ data: repository.resolveProposal(String(request.params.id), input.decision, input.expectedRevision) });
-    } catch (error) { next(error); }
-  });
-
-  app.get("/api/v1/ai/preview", (request, response, next) => {
-    try {
-      const periodStart = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.periodStart);
-      const periodEnd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.periodEnd);
-      response.json({ data: ai.preview(periodStart, periodEnd) });
-    } catch (error) { next(error); }
-  });
-
-  app.get("/api/v1/ai/analyses", (_request, response, next) => {
-    try {
-      response.json({ data: ai.listRecent() });
-    } catch (error) { next(error); }
-  });
-
-  app.post("/api/v1/ai/analyze", aiLimiter, async (request, response, next) => {
-    try {
-      response.status(201).json({ data: await ai.analyze(aiAnalysisInputSchema.parse(request.body)) });
     } catch (error) { next(error); }
   });
 
@@ -698,7 +659,6 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.json({ data: {
       service: "ok",
       database: databaseStatus,
-      deepseek: config.deepseekApiKey ? "configured" : "missing",
       backup: backup.status(),
       version: APP_VERSION,
       reload,
@@ -800,5 +760,5 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
     response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "服务暂时无法完成请求" } });
   });
 
-  return { app, services: { repository, ai, backup, openclaw, appearance, matters, budgets, health, funds, reminder } };
+  return { app, services: { repository, backup, openclaw, appearance, matters, budgets, health, funds, reminder } };
 }

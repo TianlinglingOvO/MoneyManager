@@ -995,22 +995,6 @@ export class LedgerRepository {
     return items.filter((item) => !item.refundedAt).sort((a, b) => a.localDate.localeCompare(b.localDate) || a.createdAt.localeCompare(b.createdAt));
   }
 
-  dataHash(start: string, end: string): { hash: string; transactions: Transaction[] } {
-    const transactions = this.allTransactionsForPeriod(start, end);
-    const hash = createHash("sha256").update(JSON.stringify(transactions.map((item) => [
-      item.id,
-      item.kind,
-      item.amountMinor,
-      item.categoryId,
-      item.category?.name,
-      item.localDate,
-      item.note,
-      item.updatedAt,
-      item.deletedAt
-    ]))).digest("hex");
-    return { hash, transactions };
-  }
-
   exportData(): Record<string, unknown> {
     const first = this.listTransactions({ deleted: "all", pageSize: 100 });
     const transactions = [...first.items];

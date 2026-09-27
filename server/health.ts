@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { HealthIssue, HealthIssueType, HealthReport, Transaction } from "../shared/types";
 import { budgetMonthSchema } from "../shared/schemas";
-import type { AiService } from "./ai";
 import type { BudgetService } from "./budgets";
 import { ConflictError } from "./errors";
 import type { LedgerRepository } from "./repository";
@@ -59,8 +58,7 @@ export class HealthService {
   constructor(
     private readonly database: DatabaseSync,
     private readonly repository: LedgerRepository,
-    private readonly budgets: BudgetService,
-    private readonly ai: AiService
+    private readonly budgets: BudgetService
   ) {}
 
   report(month: string): HealthReport {
@@ -120,12 +118,6 @@ export class HealthService {
       month
     });
     return this.report(month);
-  }
-
-  async explain(month: string) {
-    const report = this.report(month);
-    if (report.issues.length === 0) throw new ConflictError("本月没有需要解释的体检项目");
-    return this.ai.explainHealth(report);
   }
 
   private addDuplicateIssues(transactions: Transaction[], issues: HealthIssue[]): Set<string> {

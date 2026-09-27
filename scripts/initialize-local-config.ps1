@@ -11,9 +11,7 @@ param(
   [string]$WebAudience,
 
   [Parameter(Mandatory = $true)]
-  [string]$McpAudience,
-
-  [switch]$SkipDeepSeek
+  [string]$McpAudience
 )
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -24,21 +22,9 @@ if (Test-Path -LiteralPath $environmentPath) {
   throw ".env 已存在。为避免覆盖密钥，请先人工备份或编辑现有文件。"
 }
 
-$secureDeepSeekKey = $null
-$keyPointer = [IntPtr]::Zero
-if (-not $SkipDeepSeek) {
-  $secureDeepSeekKey = Read-Host "请输入 DeepSeek API Key（输入内容不会显示）" -AsSecureString
-  $keyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureDeepSeekKey)
-}
 $randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
 
 try {
-  $deepSeekKey = ""
-  if (-not $SkipDeepSeek) {
-    $deepSeekKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer)
-    if ([string]::IsNullOrWhiteSpace($deepSeekKey)) { throw "DeepSeek API Key 不能为空。" }
-  }
-
   $tokenBytes = New-Object byte[] 48
   $randomGenerator.GetBytes($tokenBytes)
   $mcpToken = [Convert]::ToBase64String($tokenBytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
@@ -51,7 +37,6 @@ try {
     CF_ACCESS_MCP_AUD = $McpAudience.Trim()
     ALLOWED_EMAIL = $AllowedEmail.Trim().ToLowerInvariant()
     MCP_API_TOKEN = $mcpToken
-    DEEPSEEK_API_KEY = $deepSeekKey.Trim()
   }
 
   $updatedLines = foreach ($line in Get-Content -LiteralPath $templatePath -Encoding UTF8) {
@@ -69,7 +54,4 @@ try {
   }
 } finally {
   $randomGenerator.Dispose()
-  if ($keyPointer -ne [IntPtr]::Zero) {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer)
-  }
 }

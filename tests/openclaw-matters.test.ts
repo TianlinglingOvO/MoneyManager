@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createLedgerMcpServer } from "../server/mcp";
-import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
 import { MattersRepository } from "../server/matters";
 import { OpenClawControlService } from "../server/openclaw-control";
@@ -26,7 +25,6 @@ describe("OpenClaw 财务事项 MCP", () => {
     control.setMode("direct");
     const matters = new MattersRepository(context.database, context.repository, context.config.timezone);
     server = createLedgerMcpServer(context.repository, context.config, {
-      ai: new AiService(context.database, context.repository, context.config),
       backup: new BackupService(context.database, context.repository, context.config),
       openclaw: control,
       matters

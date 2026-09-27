@@ -5,7 +5,6 @@ import type {
   AccountMovementList,
   FundsSummary,
   Transfer,
-  AiAnalysis,
   AppearancePreferences,
   Category,
   CategoryDeletionImpact,
@@ -29,7 +28,6 @@ import type {
   LoanRepayment,
   LoanSummary,
   MatterCurrency,
-  HealthExplanation,
   HealthReport,
   MonthlyBudget,
   MonthlyBudgetInput,
@@ -223,11 +221,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ month })
     }),
-  explainHealth: (month: string) =>
-    request<HealthExplanation>("/api/v1/reports/health/explain", {
-      method: "POST",
-      body: JSON.stringify({ month })
-    }),
   proposals: (status = "pending") => request<Proposal[]>(`/api/v1/proposals${queryString({ status })}`),
   reviseProposal: (id: string, expectedRevision: number, changes: Record<string, unknown>) =>
     request<Proposal>(`/api/v1/proposals/${id}`, {
@@ -239,11 +232,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision, expectedRevision })
     }),
-  aiPreview: (periodStart: string, periodEnd: string) =>
-    request<{ transactionCount: number; fields: string[] }>(`/api/v1/ai/preview${queryString({ periodStart, periodEnd })}`),
-  aiAnalyses: () => request<AiAnalysis[]>("/api/v1/ai/analyses"),
-  analyze: (input: Record<string, unknown>) =>
-    request<AiAnalysis>("/api/v1/ai/analyze", { method: "POST", body: JSON.stringify(input) }),
   status: () => request<SystemStatus>("/api/v1/status"),
   reloadService: () => request<SystemReload>("/api/v1/system/reload", { method: "POST", body: "{}" }),
   settings: () => request<{

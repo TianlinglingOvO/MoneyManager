@@ -3,7 +3,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { amountToMinor, createLedgerMcpServer, toolAnnotations } from "../server/mcp";
 import { APP_VERSION } from "../shared/app-metadata";
-import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
 import { OpenClawControlService } from "../server/openclaw-control";
 import { BudgetService } from "../server/budgets";
@@ -26,11 +25,9 @@ describe("OpenClaw MCP", () => {
 
   it("同时保留直接工具和提议工具，提议仍不会直接写账", async () => {
     const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
-    const ai = new AiService(context.database, context.repository, context.config);
-    const health = new HealthService(context.database, context.repository, budgets, ai);
+    const health = new HealthService(context.database, context.repository, budgets);
     const openclaw = new OpenClawControlService(context.database, context.repository, context.config, budgets);
     const server = createLedgerMcpServer(context.repository, context.config, {
-      ai,
       backup: new BackupService(context.database, context.repository, context.config),
       openclaw,
       budgets,
@@ -50,7 +47,6 @@ describe("OpenClaw MCP", () => {
         "direct_create_category",
         "direct_delete_budget",
         "direct_delete_transaction",
-        "direct_generate_ai_analysis",
         "direct_manage_category",
         "direct_permanently_delete_category",
         "direct_permanently_delete_transaction",
@@ -66,7 +62,6 @@ describe("OpenClaw MCP", () => {
         "get_finance_summary",
         "get_ledger_health",
         "get_openclaw_control_status",
-        "list_ai_analyses",
         "list_categories",
         "list_openclaw_operations",
         "list_pending_proposals",
@@ -157,11 +152,10 @@ describe("OpenClaw MCP", () => {
   });
   it("资金工具使用精确账户解析、direct 权限和 requestId 幂等", async () => {
     const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
-    const ai = new AiService(context.database, context.repository, context.config);
     const funds = new FundsService(context.database, context.repository, () => "2026-08-23");
     context.repository.attachFundsService(funds);
     const matters = new MattersRepository(context.database, context.repository, context.config.timezone, funds);
-    const health = new HealthService(context.database, context.repository, budgets, ai);
+    const health = new HealthService(context.database, context.repository, budgets);
     const openclaw = new OpenClawControlService(context.database, context.repository, context.config, budgets, funds);
     openclaw.setMode("direct");
     funds.activate({
@@ -174,7 +168,6 @@ describe("OpenClaw MCP", () => {
     }, "funds-mcp-activate");
 
     const server = createLedgerMcpServer(context.repository, context.config, {
-      ai,
       backup: new BackupService(context.database, context.repository, context.config),
       openclaw,
       matters,
@@ -304,12 +297,11 @@ describe("OpenClaw MCP", () => {
     const openclaw = new OpenClawControlService(context.database, context.repository, context.config, budgets, funds);
     openclaw.setMode("direct");
     const server = createLedgerMcpServer(context.repository, context.config, {
-      ai: new AiService(context.database, context.repository, context.config),
       backup: new BackupService(context.database, context.repository, context.config),
       openclaw,
       matters,
       budgets,
-      health: new HealthService(context.database, context.repository, budgets, new AiService(context.database, context.repository, context.config)),
+      health: new HealthService(context.database, context.repository, budgets),
       funds
     });
     const client = new Client({ name: "test-plans", version: "1.0.0" });
@@ -362,14 +354,12 @@ describe("OpenClaw MCP", () => {
     context.repository.attachFundsService(funds);
     const matters = new MattersRepository(context.database, context.repository, context.config.timezone, funds);
     const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
-    const ai = new AiService(context.database, context.repository, context.config);
     const server = createLedgerMcpServer(context.repository, context.config, {
-      ai,
       backup: new BackupService(context.database, context.repository, context.config),
       openclaw: new OpenClawControlService(context.database, context.repository, context.config, budgets, funds),
       matters,
       budgets,
-      health: new HealthService(context.database, context.repository, budgets, ai),
+      health: new HealthService(context.database, context.repository, budgets),
       funds
     });
     const client = new Client({ name: "test-annotations", version: "1.0.0" });
@@ -393,7 +383,7 @@ describe("OpenClaw MCP", () => {
       expect(byName.get("direct_permanently_delete_transaction")).toMatchObject({ destructiveHint: true });
       expect(byName.get("direct_delete_plan")).toMatchObject({ destructiveHint: true });
       expect(byName.get("direct_add_transaction")).toMatchObject({ destructiveHint: false, idempotentHint: true });
-      expect(byName.get("direct_generate_ai_analysis")).toMatchObject({ openWorldHint: true });
+      expect(tools.every((tool) => tool.annotations?.openWorldHint === false)).toBe(true);
     } finally {
       await client.close();
       await server.close();

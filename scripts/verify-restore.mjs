@@ -199,7 +199,6 @@ const child = spawn(process.execPath, [serverEntry], {
     PORT: String(port),
     DATABASE_PATH: restoredDatabase,
     BACKUP_LOCAL_DIR: temporaryBackups,
-    DEEPSEEK_API_KEY: "",
     CF_ACCESS_TEAM_DOMAIN: "",
     CF_ACCESS_AUD: "",
     CF_ACCESS_MCP_AUD: "",

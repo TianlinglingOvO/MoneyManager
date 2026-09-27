@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createLedgerMcpServer } from "../server/mcp";
-import { AiService } from "../server/ai";
 import { BackupService } from "../server/backup";
 import { OpenClawControlService } from "../server/openclaw-control";
 import { BudgetService } from "../server/budgets";
@@ -22,12 +21,11 @@ describe("OpenClaw 直接接管", () => {
 
   beforeEach(async () => {
     context = createTestContext();
-    const ai = new AiService(context.database, context.repository, context.config);
     const backup = new BackupService(context.database, context.repository, context.config);
     const budgets = new BudgetService(context.database, context.repository, () => context.config.timezone);
     control = new OpenClawControlService(context.database, context.repository, context.config, budgets);
     control.setMode("direct");
-    server = createLedgerMcpServer(context.repository, context.config, { ai, backup, openclaw: control, budgets });
+    server = createLedgerMcpServer(context.repository, context.config, { backup, openclaw: control, budgets });
     client = new Client({ name: "direct-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -112,7 +110,6 @@ describe("OpenClaw 直接接管", () => {
 
     const status = parsed(await client.callTool({ name: "get_app_status", arguments: {} }));
     const serialized = JSON.stringify(status);
-    expect(serialized).not.toContain(context.config.deepseekApiKey || "never-present");
     expect(serialized).not.toMatch(/clientSecret|apiKey|mcpApiToken|token/i);
   });
 
@@ -278,23 +275,23 @@ describe("OpenClaw 直接接管", () => {
     expect(Number(operation.count)).toBe(0);
   });
 
-  it("AI 每小时最多 20 次，备份操作至少间隔 10 分钟", async () => {
+  it("外部操作按窗口限流，备份操作至少间隔 10 分钟", async () => {
     for (let index = 0; index < 20; index += 1) {
       await control.executeExternal({
-        requestId: `ai-limit-${String(index).padStart(3, "0")}`,
-        action: "ai.analyze",
-        entityType: "ai_report",
-        summary: "测试 AI 限流",
+        requestId: `rate-limit-${String(index).padStart(3, "0")}`,
+        action: "test.rate_limited",
+        entityType: "test",
+        summary: "测试限流",
         request: { index },
         maxPerWindow: { count: 20, windowMs: 60 * 60 * 1000 },
         run: async () => ({ index })
       });
     }
     await expect(control.executeExternal({
-      requestId: "ai-limit-overflow",
-      action: "ai.analyze",
-      entityType: "ai_report",
-      summary: "测试 AI 限流",
+      requestId: "rate-limit-overflow",
+      action: "test.rate_limited",
+      entityType: "test",
+      summary: "测试限流",
       request: { index: 20 },
       maxPerWindow: { count: 20, windowMs: 60 * 60 * 1000 },
       run: async () => ({ index: 20 })
@@ -339,7 +336,7 @@ describe("OpenClaw 直接接管", () => {
       id, request_id, request_hash, action, entity_type, entity_id, status, undoable,
       summary, result_json, created_at, expires_at, undone_at, failed_at
     ) VALUES (?, ?, ?, ?, ?, NULL, 'running', 0, ?, NULL, ?, ?, NULL, NULL)`)
-      .run(oldId, "stale-running-001", "hash", "ai.analyze", "ai_report", "测试中断操作", "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z");
+      .run(oldId, "stale-running-001", "hash", "backup.create", "backup", "测试中断操作", "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z");
     expect(control.reconcileStaleRunningOperations(15 * 60 * 1000, new Date("2026-01-01T01:00:00.000Z"))).toBe(1);
     expect(control.getOperationDetail(oldId)).toMatchObject({ status: "failed", items: [] });
   });

@@ -23,8 +23,6 @@ export function createTestContext(overrides: Partial<AppConfig> = {}): TestConte
     backupLocalDir: path.join(directory, "backups"),
     authMode: "disabled",
     timezone: "Asia/Shanghai",
-    deepseekApiKey: "",
-    deepseekThinking: "disabled",
     mcpApiToken: "",
     ...overrides
   });

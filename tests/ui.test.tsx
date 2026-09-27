@@ -6,14 +6,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import type { AiAnalysis, Category, Proposal, Transaction } from "../shared/types";
+import type { Category, Proposal, Transaction } from "../shared/types";
 import { api, ApiError } from "../src/api";
 import { QuickEntry } from "../src/components/QuickEntry";
 import { RecentRecordedList } from "../src/components/RecentRecordedList";
 import { TransactionList } from "../src/components/TransactionList";
-import { AiPage } from "../src/pages/AiPage";
 import { ProposalsPage } from "../src/pages/ProposalsPage";
-import { analysisPeriodRange, todayKey } from "../src/utils";
+import { todayKey } from "../src/utils";
 
 afterEach(() => cleanup());
 
@@ -123,22 +122,6 @@ describe("日期快捷操作", () => {
     expect(screen.getByLabelText("自定义发生日期")).not.toHaveValue(todayKey());
   });
 
-  it("AI 默认完整上月并保留五种周期与自定义日期", async () => {
-    vi.spyOn(api, "aiPreview").mockResolvedValue({ transactionCount: 0, fields: [] });
-    vi.spyOn(api, "aiAnalyses").mockResolvedValue([]);
-    renderWithProviders(<AiPage />);
-    expect(screen.getByRole("button", { name: "上月" })).toHaveClass("is-active");
-    ["上周", "上月", "上季度", "去年", "自定义"].forEach((label) => expect(screen.getByRole("button", { name: label })).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole("button", { name: "上周" }));
-    const previousWeek = analysisPeriodRange("last-week", todayKey());
-    await waitFor(() => expect(api.aiPreview).toHaveBeenLastCalledWith(previousWeek.start, previousWeek.end));
-
-    fireEvent.click(screen.getByRole("button", { name: "自定义" }));
-    expect(screen.getByText("开始日期")).toBeInTheDocument();
-    expect(screen.getByText("结束日期")).toBeInTheDocument();
-  });
-
   it("新账保存后先给出明确反馈，再关闭弹窗", async () => {
     vi.spyOn(api, "categories").mockResolvedValue([category()]);
     const created = transaction("55555555-5555-4555-8555-555555555555", todayKey(), "");
@@ -169,32 +152,6 @@ describe("日期快捷操作", () => {
     await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
   });
 
-  it("AI 条件变化后把现有内容标为上一份结果", async () => {
-    const lastMonth = analysisPeriodRange("last-month", todayKey());
-    const analysis: AiAnalysis = {
-      id: "77777777-7777-4777-8777-777777777777",
-      title: "上月收支分析",
-      overview: "概览",
-      highlights: [],
-      suggestions: [],
-      answer: null,
-      periodStart: lastMonth.start,
-      periodEnd: lastMonth.end,
-      transactionCount: 3,
-      model: "deepseek-chat",
-      includeNotes: false,
-      createdAt: new Date().toISOString(),
-      isStale: false
-    };
-    vi.spyOn(api, "aiPreview").mockResolvedValue({ transactionCount: 3, fields: [] });
-    vi.spyOn(api, "aiAnalyses").mockResolvedValue([analysis]);
-    renderWithProviders(<AiPage />);
-
-    expect(await screen.findByRole("heading", { name: "上月收支分析" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "上周" }));
-    expect(await screen.findByText("上一份结果")).toBeInTheDocument();
-    expect(screen.getByText("条件已改变")).toBeInTheDocument();
-  });
 });
 
 describe("待确认操作修订", () => {

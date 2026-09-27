@@ -142,30 +142,6 @@ describe("月度预算与账本体检", () => {
     expect(context.repository.listTransactions().total).toBe(beforeCount);
   });
 
-  it("AI 只接收程序体检事实，不发送账目备注", async () => {
-    context.cleanup();
-    context = createTestContext({ deepseekApiKey: "test-key" });
-    const category = expenseCategory(context);
-    context.repository.createTransaction(transactionInput(category.id, {
-      localDate: "2026-08-03",
-      note: "绝不能发送的备注"
-    }));
-    context.repository.createTransaction(transactionInput(category.id, {
-      localDate: "2026-08-03",
-      note: "绝不能发送的备注"
-    }));
-    let body = "";
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
-      body = String(init?.body ?? "");
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ overview: "请先核对重复记录。", suggestions: ["查看相关账目"] }) } }]
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
-    const app = createApp(context.config, context.database).app;
-    await request(app).post("/api/v1/reports/health/explain").send({ month: "2026-08" }).expect(200);
-    expect(body).not.toContain("绝不能发送的备注");
-  });
-
   it("当前月体检包含更早已到期但仍未确认的订阅", async () => {
     const createdApp = createApp(context.config, context.database);
     const today = createdApp.services.budgets.today();

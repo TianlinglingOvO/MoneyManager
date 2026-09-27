@@ -14,7 +14,6 @@ import { ToastContext, type ToastOptions } from "./toast-context";
 
 const BillsPage = lazy(() => import("./pages/BillsPage").then((module) => ({ default: module.BillsPage })));
 const FundsPage = lazy(() => import("./pages/FundsPage").then((module) => ({ default: module.FundsPage })));
-const AiPage = lazy(() => import("./pages/AiPage").then((module) => ({ default: module.AiPage })));
 const ProposalsPage = lazy(() => import("./pages/ProposalsPage").then((module) => ({ default: module.ProposalsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const MattersPage = lazy(() => import("./pages/MattersPage").then((module) => ({ default: module.MattersPage })));
@@ -74,7 +73,7 @@ export default function App() {
             <Route path="funds" element={<FundsPage />} />
             <Route path="bills" element={<BillsPage />} />
             <Route path="analytics" element={<Navigate to="/" replace />} />
-            <Route path="ai" element={<AiPage />} />
+            <Route path="ai" element={<Navigate to="/" replace />} />
             <Route path="matters" element={<MattersPage />} />
             <Route path="proposals" element={<ProposalsPage />} />
             <Route path="settings" element={<SettingsPage />} />

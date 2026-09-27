@@ -2,7 +2,14 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
-## 2.6.0 — 2026-09-24
+## 2.7.0 — 2026-09-27
+
+### Removed: built-in AI analysis
+
+- The AI page, the header AI button, and the health sheet's “让 AI 解释” button are gone. Old `/ai` links redirect to the insights page. Analysis is now OpenClaw's job: it reads the same deterministic numbers through the read-only MCP tools (`get_finance_summary`, `list_transactions`, `get_budget_summary`, `get_ledger_health`, matters summaries).
+- Removed the DeepSeek service, `/api/v1/ai/*` and `/api/v1/reports/health/explain`, the MCP tools `direct_generate_ai_analysis` and `list_ai_analyses`, the DeepSeek entries in status/settings, `配置DeepSeek密钥.cmd`, and `scripts/set-deepseek-key.ps1`. `DEEPSEEK_*` variables are now ignored.
+- The `ai_reports` table and its existing rows are kept untouched; there is no migration.
+
 
 ### OpenClaw daily reminder
 

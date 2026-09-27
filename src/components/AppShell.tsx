@@ -10,7 +10,6 @@ import {
   Plus,
   Landmark,
   Settings,
-  Sparkles,
   WalletCards
 } from "lucide-react";
 import { api } from "../api";
@@ -24,8 +23,7 @@ const desktopPrimaryItems = [
   { to: "/", label: "洞察", icon: ChartNoAxesCombined, end: true },
   { to: "/bills", label: "账单", icon: BookOpenText },
   { to: "/matters?tab=loans", label: "事项", icon: WalletCards },
-  { to: "/funds", label: "资金", icon: Landmark },
-  { to: "/ai", label: "AI", icon: Sparkles }
+  { to: "/funds", label: "资金", icon: Landmark }
 ];
 
 function mattersNavLabel(subscriptionAttention: number, planAttention: number): string {
@@ -130,7 +128,6 @@ export function AppShell() {
               <BellRing size={20} />{pending > 0 && <span className="icon-badge">{pending}</span>}
             </NavLink>
             <NavLink to="/settings" className="icon-button" aria-label="设置"><Settings size={20} /></NavLink>
-            <NavLink to="/ai" className="icon-button" aria-label="AI 分析"><Sparkles size={20} /></NavLink>
           </div>
         </header>
         <main className="main-content"><ConnectionBanner /><Outlet /></main>

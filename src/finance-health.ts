@@ -1,7 +1,6 @@
 import type { MonthlyBudget } from "@shared/types";
 
 export type {
-  HealthExplanation,
   HealthIssue,
   HealthReport,
   MonthlyBudget,

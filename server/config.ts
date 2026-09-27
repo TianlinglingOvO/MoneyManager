@@ -23,10 +23,6 @@ export interface AppConfig {
   cloudflareMcpAudience: string;
   allowedEmail: string;
   mcpApiToken: string;
-  deepseekApiKey: string;
-  deepseekModel: string;
-  deepseekThinking: "enabled" | "disabled";
-  deepseekBaseUrl: string;
   backupLocalDir: string;
   backupRetentionCount: number;
   backupAgeRecipient: string;
@@ -53,10 +49,6 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     cloudflareMcpAudience: process.env.CF_ACCESS_MCP_AUD ?? process.env.CF_ACCESS_AUD ?? "",
     allowedEmail: (process.env.ALLOWED_EMAIL ?? "").trim().toLowerCase(),
     mcpApiToken: process.env.MCP_API_TOKEN ?? "",
-    deepseekApiKey: process.env.DEEPSEEK_API_KEY ?? "",
-    deepseekModel: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash",
-    deepseekThinking: process.env.DEEPSEEK_THINKING === "enabled" ? "enabled" : "disabled",
-    deepseekBaseUrl: (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").replace(/\/$/, ""),
     backupLocalDir: resolveProjectPath(process.env.BACKUP_LOCAL_DIR ?? "./backups/local"),
     backupRetentionCount: numberFromEnv(process.env.BACKUP_RETENTION_COUNT, 14),
     backupAgeRecipient: process.env.BACKUP_AGE_RECIPIENT ?? "",
