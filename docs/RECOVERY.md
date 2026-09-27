@@ -9,7 +9,12 @@
    winget install --id Rclone.Rclone
    ```
 
-2. 运行 `rclone config`，新建 Google Drive remote，建议命名为 `money-drive`。浏览器授权是 Google Drive 唯一需要的账号操作。
+2. 在 Google Cloud 创建自己的 OAuth 客户端。rclone 内置的公用 client_id 正在停用且经常额度耗尽，不能用于每日备份：
+   1. 在 https://console.cloud.google.com 新建项目，启用 Google Drive API。
+   2. 在 Google Auth Platform 配置同意屏幕：用户类型“外部”；“品牌塑造”填写应用首页、隐私权政策链接（可用 SMB 自己的网址）和对应的已授权网域，不要上传徽标。
+   3. 在“目标对象”把自己加为测试用户，然后点“发布应用”。不发布的话授权每 7 天过期。
+   4. 在“客户端”创建“桌面应用”，复制 Client ID 和 Client secret（secret 只在创建时显示）。
+   5. 双击根目录 `配置Google Drive授权.cmd`，粘贴两项。工具会先向 Google 确认 secret 有效（新密钥可能要几分钟生效，工具会自动等待），再打开浏览器授权，最后核对授权确实来自这个客户端。remote 名称为 `money-drive`，只申请 `drive.file` 权限。
 3. 插入 U 盘或选择另一台设备可保存的位置，再生成离线恢复密钥：
 
    ```powershell

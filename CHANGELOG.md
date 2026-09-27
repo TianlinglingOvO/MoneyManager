@@ -2,6 +2,12 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## Unreleased
+
+### Backup
+
+- New `配置Google Drive授权.cmd` / `scripts/set-drive-client.ps1`: connects the `money-drive` rclone remote with the owner's own Google OAuth desktop client (`drive.file` scope). It checks the client secret with Google before opening the browser, waits for a newly created secret to take effect, and verifies afterwards that the token was issued to that client. rclone's shared client_id is being retired and often runs out of quota.
+
 ## 2.7.0 — 2026-09-27
 
 ### Removed: built-in AI analysis
@@ -10,6 +16,7 @@ All notable SMB changes are recorded here. The version in `package.json` is cano
 - Removed the DeepSeek service, `/api/v1/ai/*` and `/api/v1/reports/health/explain`, the MCP tools `direct_generate_ai_analysis` and `list_ai_analyses`, the DeepSeek entries in status/settings, `配置DeepSeek密钥.cmd`, and `scripts/set-deepseek-key.ps1`. `DEEPSEEK_*` variables are now ignored.
 - The `ai_reports` table and its existing rows are kept untouched; there is no migration.
 
+## 2.6.0 — 2026-09-24
 
 ### OpenClaw daily reminder
 
