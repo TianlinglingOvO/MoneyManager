@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { api } from "../src/api";
-import { LedgerClockProvider, localDateForTimestamp, useLedgerClock } from "../src/ledger-clock";
+import { LedgerClockProvider, localDateForTimestamp, timezoneOffsetLabel, useLedgerClock } from "../src/ledger-clock";
 
 afterEach(() => {
   cleanup();
@@ -35,6 +35,13 @@ describe("统一账本时钟", () => {
     renderClock();
 
     await waitFor(() => expect(screen.getByTestId("clock")).toHaveTextContent(/\|\d{4}-\d{2}-\d{2}\|ready\|error/));
+  });
+
+  it("设置页用 UTC 偏移展示账本时区，无效时区原样显示", () => {
+    expect(timezoneOffsetLabel("Asia/Singapore")).toBe("UTC+8");
+    expect(timezoneOffsetLabel("Asia/Kolkata")).toBe("UTC+5:30");
+    expect(timezoneOffsetLabel("UTC")).toBe("UTC");
+    expect(timezoneOffsetLabel("Not/AZone")).toBe("Not/AZone");
   });
 
   it("按账本时区转换录入时间日期", () => {

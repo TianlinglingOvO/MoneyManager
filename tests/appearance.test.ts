@@ -17,17 +17,34 @@ describe("外观偏好", () => {
     expect(initial.body.data).toMatchObject({
       preset: defaultAppearance.preset,
       accent: defaultAppearance.accent,
-      density: defaultAppearance.density,
       backgroundPreset: defaultAppearance.backgroundPreset
     });
+    expect(initial.body.data).not.toHaveProperty("density");
 
     await request(app).patch("/api/v1/appearance").send({ preset: "ink-night" }).expect(200);
-    const updated = await request(app).patch("/api/v1/appearance").send({ density: "compact" }).expect(200);
-    expect(updated.body.data).toMatchObject({ preset: "ink-night", density: "compact", accent: defaultAppearance.accent, backgroundPreset: defaultAppearance.backgroundPreset });
+    const updated = await request(app).patch("/api/v1/appearance").send({ preset: "auto" }).expect(200);
+    expect(updated.body.data).toMatchObject({ preset: "auto", accent: defaultAppearance.accent, backgroundPreset: defaultAppearance.backgroundPreset });
 
     const secondApp = createApp(context.config, context.database).app;
     const persisted = await request(secondApp).get("/api/v1/appearance").expect(200);
-    expect(persisted.body.data).toMatchObject({ preset: "ink-night", density: "compact" });
+    expect(persisted.body.data).toMatchObject({ preset: "auto" });
+  });
+
+  it("旧客户端发送的桌面密度和停用主题不会报错，旧主题并入温暖纸张且保留主色", async () => {
+    const app = createApp(context.config, context.database).app;
+    await request(app).patch("/api/v1/appearance").send({ accent: "#82552F", backgroundPreset: "mist" }).expect(200);
+    const legacyDensity = await request(app).patch("/api/v1/appearance").send({ density: "compact" }).expect(200);
+    expect(legacyDensity.body.data).not.toHaveProperty("density");
+    expect(context.database.prepare("SELECT value FROM settings WHERE key = 'appearance.density'").get()).toBeUndefined();
+
+    const legacyPreset = await request(app).patch("/api/v1/appearance").send({ preset: "porcelain" }).expect(200);
+    expect(legacyPreset.body.data).toMatchObject({ preset: "warm-paper", accent: "#82552F", backgroundPreset: "mist" });
+
+    // A row written by 2.7.0 or earlier still reads back without losing the other preferences.
+    context.database.prepare("UPDATE settings SET value = 'sage-ledger' WHERE key = 'appearance.preset'").run();
+    context.database.prepare("INSERT INTO settings(key, value, updated_at) VALUES ('appearance.density', 'compact', ?)").run(new Date().toISOString());
+    const stored = await request(app).get("/api/v1/appearance").expect(200);
+    expect(stored.body.data).toMatchObject({ preset: "warm-paper", accent: "#82552F", backgroundPreset: "mist" });
   });
 
   it("拒绝无效颜色，并保留用户主色、提供满足对比度的派生文字色", async () => {
@@ -52,12 +69,12 @@ describe("外观偏好", () => {
 
   it("审计只保存变化字段，不保存设置值", () => {
     const service = new AppearanceService(context.database, context.repository);
-    service.update({ accent: "#7844AA", density: "compact" });
+    service.update({ accent: "#7844AA", backgroundPreset: "linen" });
     const row = context.database.prepare("SELECT metadata FROM audit_logs WHERE action = 'settings.appearance' ORDER BY created_at DESC LIMIT 1").get() as { metadata: string };
     expect(row.metadata).toContain("accent");
-    expect(row.metadata).toContain("density");
+    expect(row.metadata).toContain("backgroundPreset");
     expect(row.metadata).not.toContain("#7844AA");
-    expect(row.metadata).not.toContain("compact");
+    expect(row.metadata).not.toContain("linen");
   });
 });
 

@@ -9,7 +9,6 @@ type AppearancePatch = z.infer<typeof appearancePatchSchema>;
 export const defaultAppearance: AppearancePreferences = {
   preset: "warm-paper",
   accent: "#B85C3B",
-  density: "comfortable",
   backgroundPreset: "paper",
   updatedAt: new Date(0).toISOString()
 };
@@ -132,7 +131,6 @@ export class AppearanceService {
     const candidate = {
       preset: values.get("appearance.preset")?.value ?? defaultAppearance.preset,
       accent: values.get("appearance.accent")?.value ?? defaultAppearance.accent,
-      density: values.get("appearance.density")?.value ?? defaultAppearance.density,
       backgroundPreset: values.get("appearance.backgroundPreset")?.value ?? defaultAppearance.backgroundPreset
     };
     const parsed = appearancePatchSchema.safeParse(candidate);
@@ -141,7 +139,6 @@ export class AppearanceService {
     return {
       preset: parsed.data.preset ?? defaultAppearance.preset,
       accent: normalizeAccent(parsed.data.accent ?? defaultAppearance.accent),
-      density: parsed.data.density ?? defaultAppearance.density,
       backgroundPreset: parsed.data.backgroundPreset ?? defaultAppearance.backgroundPreset,
       updatedAt
     };
@@ -149,9 +146,11 @@ export class AppearanceService {
 
   update(rawPatch: unknown): AppearancePreferences {
     const patch = appearancePatchSchema.parse(rawPatch);
-    const normalized: AppearancePatch = {
-      ...patch,
-      ...(patch.accent ? { accent: normalizeAccent(patch.accent) } : {})
+    // Only persisted fields; a legacy `density` from an old cached client is accepted but not stored.
+    const normalized: Omit<AppearancePatch, "density"> = {
+      ...(patch.preset ? { preset: patch.preset } : {}),
+      ...(patch.accent ? { accent: normalizeAccent(patch.accent) } : {}),
+      ...(patch.backgroundPreset ? { backgroundPreset: patch.backgroundPreset } : {})
     };
     const now = new Date().toISOString();
     const statement = this.database.prepare(`INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)

@@ -3,15 +3,20 @@ import { z } from "zod";
 export const transactionKindSchema = z.enum(["expense", "income"]);
 export const accountCurrencySchema = z.enum(["CNY", "USD", "USDT"]);
 export const reportGrainSchema = z.enum(["day", "week", "month", "year"]);
-export const appearancePresetSchema = z.enum(["warm-paper", "porcelain", "sage-ledger", "ink-night"]);
-export const appearanceDensitySchema = z.enum(["comfortable", "compact"]);
+// 2.8.0 retired the porcelain and sage-ledger light themes; stored or cached values fold into warm-paper.
+const retiredLightPresets = new Set(["porcelain", "sage-ledger"]);
+export const appearancePresetSchema = z.preprocess(
+  (value) => typeof value === "string" && retiredLightPresets.has(value) ? "warm-paper" : value,
+  z.enum(["warm-paper", "ink-night", "auto"])
+);
 export const appearanceBackgroundPresetSchema = z.enum(["plain", "paper", "linen", "mist"]);
 export const accentColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 
 export const appearancePatchSchema = z.object({
   preset: appearancePresetSchema.optional(),
   accent: accentColorSchema.optional(),
-  density: appearanceDensitySchema.optional(),
+  // Desktop density was removed in 2.8.0; older cached clients may still send it, and it is ignored.
+  density: z.enum(["comfortable", "compact"]).optional(),
   backgroundPreset: appearanceBackgroundPresetSchema.optional()
 }).strict().refine((value) => Object.keys(value).length > 0, "至少需要修改一项外观设置");
 

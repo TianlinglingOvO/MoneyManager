@@ -67,7 +67,7 @@ describe("功能动效", () => {
     expect(screen.getByTestId("area-motion")).toHaveAttribute("data-easing", chartMotionEasing.trend);
     expect(screen.getByTestId("pie-motion")).toHaveAttribute("data-begin", "0");
     expect(screen.getByTestId("pie-motion")).toHaveAttribute("data-duration", String(motionDurations.pieChart));
-    expect(screen.getByTestId("pie-motion")).toHaveAttribute("data-easing", "linear");
+    expect(screen.getByTestId("pie-motion")).toHaveAttribute("data-easing", "ease-out");
     expect(screen.getByTestId("pie-motion")).toHaveAttribute("data-padding", "0");
     expect(screen.getByLabelText("本期支出总额 ¥123.40")).toBeInTheDocument();
     expect(screen.queryByText("前三类占比")).not.toBeInTheDocument();

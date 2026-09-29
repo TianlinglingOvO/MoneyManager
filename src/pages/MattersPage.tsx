@@ -32,7 +32,6 @@ import { money, parseAmountMinor } from "../utils";
 
 type MatterTab = "loans" | "subscriptions" | "plans";
 type PlanView = "open" | "closed";
-type PlanScope = "dated" | "undated";
 
 function parseMatterTab(value: string | null): MatterTab {
   return value === "subscriptions" || value === "plans" ? value : "loans";
@@ -40,10 +39,6 @@ function parseMatterTab(value: string | null): MatterTab {
 
 function parsePlanView(value: string | null): PlanView {
   return value === "closed" ? "closed" : "open";
-}
-
-function parsePlanScope(value: string | null): PlanScope | null {
-  return value === "dated" || value === "undated" ? value : null;
 }
 
 function listOf<T>(value: T[] | { items?: T[] } | undefined): T[] {
@@ -751,7 +746,6 @@ function PlansTab({ today }: { today: string }) {
   const [completing, setCompleting] = useState<Plan>();
   const [showTrash, setShowTrash] = useState(false);
   const planView = parsePlanView(searchParams.get("planView"));
-  const planScopeFromUrl = parsePlanScope(searchParams.get("planScope"));
   const plansQuery = useQuery({ queryKey: ["matters", "plans", showTrash], queryFn: () => api.plans({ status: showTrash ? "trash" : "active", pageSize: 100 }) });
   const plans = listOf(plansQuery.data);
   const openPlans = plans.filter((item) => item.status === "open");
@@ -761,18 +755,16 @@ function PlansTab({ today }: { today: string }) {
   const closed = plans.filter((item) => item.status !== "open");
   const completed = closed.filter((item) => item.status === "completed");
   const cancelled = closed.filter((item) => item.status === "cancelled");
-  const defaultScope: PlanScope = attention.length > 0 || scheduled.length > 0 ? "dated" : "undated";
-  const planScope = planScopeFromUrl ?? defaultScope;
   const openAmount = openPlans.reduce((sum, item) => sum + (item.amountMinor ?? 0), 0);
   const editPlan = (value: Plan) => setForm({ open: true, editing: value });
   const renderCards = (items: Plan[]) => items.map((item) => <PlanCard key={item.id} plan={item} today={today} onEdit={editPlan} onComplete={setCompleting} />);
-  const updatePlanParams = (patch: { planView?: PlanView; planScope?: PlanScope }) => {
+  const updatePlanParams = (patch: { planView?: PlanView }) => {
     const next = new URLSearchParams(searchParams);
     next.set("tab", "plans");
     const nextView = patch.planView ?? planView;
     if (nextView === "open") next.delete("planView");
     else next.set("planView", "closed");
-    if (patch.planScope) next.set("planScope", patch.planScope);
+    next.delete("planScope");
     setSearchParams(next, { replace: true });
   };
   return <>
@@ -780,8 +772,7 @@ function PlansTab({ today }: { today: string }) {
     <div className="matter-section-heading"><div><h2>{showTrash ? "计划回收站" : "计划列表"}</h2><p>{showTrash ? "删除满 30 天后会自动清理。" : "有金额的计划在完成时才会选账户并记入账单。"}</p></div><div className="matter-heading-actions"><button className="secondary-button" onClick={() => setShowTrash((value) => !value)}>{showTrash ? <RotateCcw size={17} /> : <Archive size={17} />}{showTrash ? "返回计划" : "回收站"}</button>{!showTrash && <button className="primary-button" onClick={() => setForm({ open: true })}><Plus size={17} />添加计划</button>}</div></div>
     {!showTrash && !plansQuery.isLoading && plans.length > 0 && <div className="view-tabs plan-view-tabs" role="tablist" aria-label="计划进度"><button role="tab" aria-selected={planView === "open"} className={planView === "open" ? "is-active" : ""} onClick={() => updatePlanParams({ planView: "open" })}>未完成</button><button role="tab" aria-selected={planView === "closed"} className={planView === "closed" ? "is-active" : ""} onClick={() => updatePlanParams({ planView: "closed" })}>已结束</button></div>}
     {plansQuery.isLoading ? <div className="skeleton matter-skeleton" /> : showTrash ? (plans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>回收站为空</strong><p>删除的计划会在这里保留 30 天。</p></div> : <div className="subscription-list">{plans.map((item) => <PlanCard key={item.id} plan={item} today={today} trash onEdit={() => undefined} onComplete={() => undefined} />)}</div>) : plans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>还没有计划</strong><p>预购尾款、某天要付的一笔，或还没定日期的打算，都可以放在这里。</p><button className="secondary-button" onClick={() => setForm({ open: true })}><Plus size={16} />添加第一项</button></div> : planView === "open" ? (openPlans.length === 0 ? <div className="content-card matter-empty"><CalendarDays size={34} /><strong>没有未完成的计划</strong><p>已完成或已取消的计划在「已结束」里。</p></div> : <>
-      <SegmentedControl className="plan-scope-switch" label="未完成计划范围" value={planScope} options={[{ value: "dated", label: "有日期" }, { value: "undated", label: "无日期" }]} onChange={(value) => updatePlanParams({ planScope: value })} />
-      <div className="plan-open-columns" data-scope={planScope}>
+      <div className="plan-open-columns">
         <div className="plan-column plan-column--dated">
           {attention.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>需要留意</h3><p>已经到期或进入提醒窗口的计划。</p></div><span className="matter-count-badge">{attention.length}</span></div><div className="subscription-list">{renderCards(attention)}</div></section>}
           {scheduled.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>尚未到期</h3><p>{scheduled.length} 项还没进入提醒窗口。</p></div></div><div className="subscription-list">{renderCards(scheduled)}</div></section>}

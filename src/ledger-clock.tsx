@@ -42,6 +42,17 @@ function partsToDateKey(parts: Intl.DateTimeFormatPart[]): string | null {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+/** "UTC+8"-style offset for display; falls back to the zone name when the runtime cannot format it. */
+export function timezoneOffsetLabel(timezone: string, at = new Date()): string {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "shortOffset" })
+      .formatToParts(at).find((item) => item.type === "timeZoneName")?.value;
+    return part ? part.replace(/^GMT/, "UTC") : timezone;
+  } catch {
+    return timezone;
+  }
+}
+
 export function todayForTimezone(timezone: string): string {
   try {
     const key = partsToDateKey(new Intl.DateTimeFormat("en-CA", {

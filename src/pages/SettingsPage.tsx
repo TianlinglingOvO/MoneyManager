@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -13,6 +13,7 @@ import {
   Cloud,
   Database,
   Download,
+  Globe,
   HardDrive,
   ImageOff,
   ImagePlus,
@@ -37,7 +38,7 @@ import { useAppearance } from "../appearance";
 import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { BudgetSheet } from "../components/BudgetSheet";
-import { useLedgerClock } from "../ledger-clock";
+import { timezoneOffsetLabel, useLedgerClock } from "../ledger-clock";
 import { refreshApplication } from "../pwa-update";
 import { reminderHeadline } from "../reminder-status";
 
@@ -45,9 +46,8 @@ const colors = ["#D66A4C", "#B66A8C", "#D49B45", "#2E7D61", "#4E87A6", "#5963A6"
 
 const appearancePresets: Array<{ value: AppearancePreset; name: string; description: string; colors: string[] }> = [
   { value: "warm-paper", name: "温暖纸张", description: "米白、炭黑与温暖留白", colors: ["#F3EFE7", "#FEFCF7", "#282622"] },
-  { value: "porcelain", name: "瓷白", description: "清爽明亮，减少纸张色", colors: ["#F7F7F5", "#FFFFFF", "#202321"] },
-  { value: "sage-ledger", name: "鼠尾草账本", description: "保留熟悉的绿色气质", colors: ["#EEF2EC", "#FBFCF9", "#284A3D"] },
-  { value: "ink-night", name: "墨夜", description: "低刺激的深色阅读体验", colors: ["#1B1C1A", "#242521", "#E9E4D9"] }
+  { value: "ink-night", name: "墨夜", description: "低刺激的深色阅读体验", colors: ["#1B1C1A", "#242521", "#E9E4D9"] },
+  { value: "auto", name: "跟随系统", description: "手机或电脑开深色模式时自动切换为墨夜", colors: ["#F3EFE7", "#FEFCF7", "#242521", "#1B1C1A"] }
 ];
 
 const backgroundPresets: Array<{ value: AppearanceBackgroundPreset; name: string; description: string }> = [
@@ -77,7 +77,7 @@ function AppearanceSection() {
   const backgroundInput = useRef<HTMLInputElement>(null);
   useEffect(() => setAccent(appearance.accent), [appearance.accent]);
 
-  const saveAppearance = async (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "density" | "backgroundPreset">>) => {
+  const saveAppearance = async (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "backgroundPreset">>) => {
     setAppearanceError("");
     try {
       await updateAppearance(input);
@@ -186,11 +186,6 @@ function AppearanceSection() {
           <span className="appearance-control-label"><Palette size={17} />主色</span>
           <div className="accent-control"><input type="color" value={accent} onChange={(event) => setAccent(event.target.value.toUpperCase())} aria-label="自定义主色" /><input value={accent} onChange={(event) => setAccent(event.target.value.toUpperCase())} maxLength={7} aria-label="主色十六进制值" /><button className="secondary-button" disabled={isSaving || accent === appearance.accent || !/^#[0-9A-F]{6}$/.test(accent)} onClick={() => void saveAppearance({ accent: accent as `#${string}` })}>应用</button></div>
           <small>系统会自动选择深色或浅色文字，并生成适合当前主题的强调色。</small>
-        </div>
-        <div>
-          <span className="appearance-control-label">桌面密度</span>
-          <div className="density-switch"><button className={appearance.density === "comfortable" ? "is-active" : ""} onClick={() => void saveAppearance({ density: "comfortable" })}>舒适</button><button className={appearance.density === "compact" ? "is-active" : ""} onClick={() => void saveAppearance({ density: "compact" })}>紧凑</button></div>
-          <small>紧凑模式只压缩桌面列表，手机触控区域不会变小。</small>
         </div>
       </div>
     </section>
@@ -315,7 +310,7 @@ function CategoryDispositionDialog({ category, targets, onClose }: { category: C
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
-  const { today } = useLedgerClock();
+  const { today, timezone: ledgerTimezone } = useLedgerClock();
   const currentMonth = today.slice(0, 7);
   const [kind, setKind] = useState<TransactionKind>("expense");
   const [editing, setEditing] = useState<Category | undefined>();
@@ -323,19 +318,11 @@ export function SettingsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 60_000 });
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const openClawSettings = useQuery({ queryKey: ["openclaw", "settings"], queryFn: api.openClawSettings });
   const categories = useQuery({ queryKey: ["categories", "settings", true], queryFn: () => api.categories(undefined, true) });
   const budget = useQuery({
     queryKey: ["budget", currentMonth],
     queryFn: () => api.budget(currentMonth)
-  });
-  const currentTimezone = useMemo(() => settings.data?.rows.find((row) => row.key === "timezone")?.value ?? Intl.DateTimeFormat().resolvedOptions().timeZone, [settings.data]);
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai");
-  useEffect(() => setTimezone(currentTimezone), [currentTimezone]);
-  const timezoneMutation = useMutation({
-    mutationFn: () => api.updateTimezone(timezone),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] })
   });
   const backup = useMutation({
     mutationFn: api.backup,
@@ -394,6 +381,7 @@ export function SettingsPage() {
           <div><span className="status-icon"><Database size={20} /></span><p>数据库</p><strong>{status.data?.database === "ok" ? "运行正常" : "等待连接"}</strong><small>SQLite · 本机 SSD</small></div>
           <div><span className="status-icon"><HardDrive size={20} /></span><p>最近备份</p><strong>{status.data?.backup.lastSuccessAt ? new Date(status.data.backup.lastSuccessAt).toLocaleDateString("zh-CN") : "尚未备份"}</strong><small>{status.data?.backup.remoteConfigured ? "本地 + Google Drive" : "本地快照可用"}</small></div>
           <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>{status.data?.reload?.stale ? `运行 ${status.data.version} · 磁盘 ${status.data.reload.builtVersion}` : "私人账本"}</small></div>
+          <div><span className="status-icon"><Globe size={20} /></span><p>账本时区</p><strong>{timezoneOffsetLabel(ledgerTimezone)}</strong><small>{ledgerTimezone} · 决定账本的“今天”</small></div>
           <div><span className="status-icon"><BellRing size={20} /></span><p>OpenClaw 每日提醒</p><strong>{reminderHeadline(status.data?.openclawReminder, today)}</strong><small>{status.data?.openclawReminder?.configured ? `每天 ${status.data.openclawReminder.time} · 只在有待办时提醒` : "未配置"}</small></div>
         </div>
       </section>
@@ -422,28 +410,18 @@ export function SettingsPage() {
         </div>
       </section>
 
-      <div className="settings-two-column">
-        <section className="content-card backup-section">
-          <div className="section-title"><h2>备份与导出</h2></div>
-          <p>正式数据库保存在 SSD。快照会同时检查 SQLite 完整性与外键关系，状态中不会暴露本机路径或凭据。</p>
-          {status.data?.backup && <div className="backup-status-grid">{[
-            { label: "本地快照", value: status.data.backup.local },
-            { label: "Google Drive 加密上传", value: status.data.backup.remote },
-            { label: "恢复验证", value: status.data.backup.restoreVerification }
-          ].map((item) => <article className={`is-${item.value.state}`} key={item.label}><span>{item.label}</span><strong>{backupStateLabel(item.value)}</strong><small>最近尝试：{backupTime(item.value.lastAttemptAt)}</small><small>最近成功：{backupTime(item.value.lastSuccessAt)}</small></article>)}</div>}
-          {backup.data && <div className="backup-success"><CheckCircle2 size={17} />{backup.data.remoteMessage}</div>}
-          {backup.isError && <p className="form-error">{backup.error instanceof Error ? backup.error.message : "备份失败"}</p>}
-          <div className="button-stack"><button className="primary-button" disabled={backup.isPending} onClick={() => backup.mutate()}>{backup.isPending ? <LoaderCircle className="spin" size={17} /> : <HardDrive size={17} />}立即备份</button><a className="secondary-button" href="/api/v1/export.json"><Download size={17} />导出完整 JSON</a><a className="secondary-button" href="/api/v1/export.csv"><Download size={17} />导出 CSV</a></div>
-        </section>
-
-        <section className="content-card preferences-section">
-          <div className="section-title"><h2>账本时区</h2></div>
-          <p>旧账保存自己的本地日期，修改时区不会把它们移动到其他日期。</p>
-          <label className="dialog-field"><span>IANA 时区</span><input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Shanghai" /></label>
-          {timezoneMutation.isError && <p className="form-error">时区无效，请使用例如 Asia/Shanghai</p>}
-          <button className="secondary-button" disabled={timezone === currentTimezone || timezoneMutation.isPending} onClick={() => timezoneMutation.mutate()}><Save size={17} />保存时区</button>
-        </section>
-      </div>
+      <section className="content-card backup-section">
+        <div className="section-title"><h2>备份与导出</h2></div>
+        <p>正式数据库保存在 SSD。快照会同时检查 SQLite 完整性与外键关系，状态中不会暴露本机路径或凭据。</p>
+        {status.data?.backup && <div className="backup-status-grid">{[
+          { label: "本地快照", value: status.data.backup.local },
+          { label: "Google Drive 加密上传", value: status.data.backup.remote },
+          { label: "恢复验证", value: status.data.backup.restoreVerification }
+        ].map((item) => <article className={`is-${item.value.state}`} key={item.label}><span>{item.label}</span><strong>{backupStateLabel(item.value)}</strong><small>最近尝试：{backupTime(item.value.lastAttemptAt)}</small><small>最近成功：{backupTime(item.value.lastSuccessAt)}</small></article>)}</div>}
+        {backup.data && <div className="backup-success"><CheckCircle2 size={17} />{backup.data.remoteMessage}</div>}
+        {backup.isError && <p className="form-error">{backup.error instanceof Error ? backup.error.message : "备份失败"}</p>}
+        <div className="button-stack"><button className="primary-button" disabled={backup.isPending} onClick={() => backup.mutate()}>{backup.isPending ? <LoaderCircle className="spin" size={17} /> : <HardDrive size={17} />}立即备份</button><a className="secondary-button" href="/api/v1/export.json"><Download size={17} />导出完整 JSON</a><a className="secondary-button" href="/api/v1/export.csv"><Download size={17} />导出 CSV</a></div>
+      </section>
 
       <section className="content-card connection-section">
         <div className="section-title"><h2>设备与接入</h2></div>

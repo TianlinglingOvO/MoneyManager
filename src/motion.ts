@@ -10,7 +10,7 @@ export const motionDurations = {
 
 export const chartMotionEasing = {
   trend: "cubic-bezier(0,0,0.58,1)",
-  pie: "linear"
+  pie: "ease-out"
 } as const;
 
 export function resolveChartMotionToken(

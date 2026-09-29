@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -30,7 +31,7 @@ export interface FinanceChartsProps {
   variant?: "trend" | "pie" | "both";
 }
 
-export default function FinanceCharts({
+function FinanceCharts({
   trend,
   categories,
   kind,
@@ -43,8 +44,9 @@ export default function FinanceCharts({
   onCategorySelect,
   variant = "both"
 }: FinanceChartsProps) {
-  const chartData = trend.map((point) => ({ ...point, amount: point.amountMinor / 100 }));
-  const pieData = buildCategoryComposition(categories);
+  // Stable data identity keeps Recharts from re-deriving sectors when the page re-renders mid-animation.
+  const chartData = useMemo(() => trend.map((point) => ({ ...point, amount: point.amountMinor / 100 })), [trend]);
+  const pieData = useMemo(() => buildCategoryComposition(categories), [categories]);
   const selectedTotalMinor = pieData.reduce((total, item) => total + item.amountMinor, 0);
   const color = kind === "expense" ? "var(--expense)" : "var(--income)";
   const trendMotion = useChartMotion(animationToken, motionEnabled && (variant === "trend" || variant === "both"));
@@ -152,3 +154,5 @@ export default function FinanceCharts({
     </>
   );
 }
+
+export default memo(FinanceCharts);

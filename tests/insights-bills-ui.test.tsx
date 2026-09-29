@@ -14,6 +14,9 @@ import { BillsPage } from "../src/pages/BillsPage";
 import { InsightsPage } from "../src/pages/InsightsPage";
 import { todayKey } from "../src/utils";
 
+// InsightsPage renders load Recharts; under the full parallel suite that can exceed the default 5s.
+vi.setConfig({ testTimeout: 15_000 });
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -133,6 +136,28 @@ describe("洞察与账单下钻", () => {
     expect(compositionLink).not.toHaveClass("is-active");
   });
 
+  it("期间、粒度和收支集中在同一吸顶栏，预算与事项合并为一张概况列表", async () => {
+    vi.spyOn(api, "report").mockResolvedValue(report);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 6 });
+    renderWithProviders(<EntryProvider><InsightsPage /><LocationProbe /></EntryProvider>, ["/?grain=month&anchor=2026-08-01&kind=expense"]);
+
+    const bar = await screen.findByRole("region", { name: "期间与收支" });
+    expect(await within(bar).findByRole("heading", { level: 1, name: "2026年8月" })).toBeInTheDocument();
+    expect(within(bar).getByLabelText("选择期间日期")).toHaveValue("2026-08-01");
+    expect(within(bar).getByRole("button", { name: "上一个期间" })).toBeInTheDocument();
+
+    const overview = screen.getByRole("region", { name: "预算与财务事项" });
+    expect(within(overview).getByText("本月预算")).toBeInTheDocument();
+    expect(within(overview).getByText("账本体检")).toBeInTheDocument();
+
+    fireEvent.click(within(bar).getByRole("button", { name: "收入" }));
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("kind=income"));
+    fireEvent.click(within(bar).getByRole("button", { name: "年" }));
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("grain=year"));
+    // Budget and health only apply to a month of expenses.
+    expect(screen.queryByText("本月预算")).not.toBeInTheDocument();
+  });
+
   it("分类构成完整显示超过八个分类且不生成其他", async () => {
     const categories = Array.from({ length: 10 }, (_, index) => ({
       ...report.categories[0]!,
@@ -153,7 +178,6 @@ describe("洞察与账单下钻", () => {
     expect(screen.queryByText("其他")).not.toBeInTheDocument();
   });
 
-  // 首次渲染会加载 Recharts；整套测试并行时可能超过默认 5 秒。
   it("分类明细和环比卡片写出上期同进度窗口与金额", async () => {
     vi.spyOn(api, "report").mockResolvedValue({
       ...report,
@@ -180,7 +204,7 @@ describe("洞察与账单下钻", () => {
     expect(screen.getByText("上期 ¥10.00")).toBeInTheDocument();
     expect(screen.getAllByText("+200.0%").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /较上期 ¥10.00 增加 200.0%/ })).toBeInTheDocument();
-  }, 15_000);
+  });
 
   it("从账单 URL 初始化筛选，并在切换筛选时同步 URL", async () => {
     const calls: Array<Record<string, string | number | boolean | undefined>> = [];

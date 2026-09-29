@@ -2,7 +2,24 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
-## Unreleased
+## 2.8.0 — 2026-09-29
+
+### Settings
+
+- Themes are now 温暖纸张, 墨夜, and a new 跟随系统 (`auto`) that follows the device's light/dark mode, live and when the app returns to the foreground. The near-identical 瓷白 and 鼠尾草账本 themes were retired; saved or cached values fold into 温暖纸张 without losing the accent or background.
+- The desktop density switch is gone; it only shortened a few desktop rows and showed no change on the Settings page. Older clients that still send `density` are accepted and ignored.
+- The ledger timezone is shown read-only in 运行状态 (for example `UTC+8` · `Asia/Singapore`). Change it through OpenClaw if you ever need to; first-run initialization still sets it automatically.
+
+### Insights
+
+- Period, 周/月/年, and 支出/收入 live in one bar that stays pinned at the top while scrolling, so you can switch them from the category breakdown. The period label is the page heading.
+- Wide screens (≥1280px) use two columns: trend and category breakdown on the left; one compact overview list (budget, health, funds, receivables, renewals, plans) plus recent entries on the right. The six separate cards are gone. Narrow screens keep the overview right below the summary.
+- The category donut eases out instead of moving linearly, the breakdown panel only fades in while the donut grows, chart data is memoized so background refreshes don't re-render it mid-animation, and sector highlights no longer use SVG filters.
+- Page backgrounds, including personal images, render on a fixed composited layer instead of `background-attachment: fixed`, avoiding full-page repaints while scrolling or animating.
+
+### Plans
+
+- Removed the 有日期/无日期 switch. It was meant for phones, but a CSS ordering bug showed it on desktop, where both columns are already visible. Desktop keeps two columns; phones stack dated then undated plans.
 
 ### Backup
 
@@ -12,7 +29,7 @@ All notable SMB changes are recorded here. The version in `package.json` is cano
 
 - Removed styles for the retired dashboard hero, metric cards, today card, quick-record button, trash toggle, three-tab switcher, proposal banner and other markup that no longer exists, plus unused exports and imports. `typecheck` now enables `noUnusedLocals` so unused imports fail the gate.
 - Test contexts blank the backup upload and OpenClaw hook settings from `.env`, so running tests on a configured machine never uploads to Google Drive or calls OpenClaw.
-- The insights comparison test allows 15 seconds for the first Recharts load when the full suite runs in parallel.
+- Insights UI tests allow 15 seconds for the first Recharts load when the full suite runs in parallel.
 
 ## 2.7.0 — 2026-09-27
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +17,7 @@ function client() {
 
 function ThemeHarness() {
   const { appearance, updateAppearance } = useAppearance();
-  return <div><span>{appearance.preset}</span><span>{appearance.density}</span><span data-testid="background-preset">{appearance.backgroundPreset}</span><button onClick={() => updateAppearance({ preset: "ink-night", density: "compact" })}>切换</button><button onClick={() => updateAppearance({ backgroundPreset: "linen" })}>切换背景</button></div>;
+  return <div><span data-testid="preset">{appearance.preset}</span><span data-testid="background-preset">{appearance.backgroundPreset}</span><button onClick={() => updateAppearance({ preset: "ink-night" })}>切换</button><button onClick={() => updateAppearance({ preset: "auto" })}>跟随系统</button><button onClick={() => updateAppearance({ backgroundPreset: "linen" })}>切换背景</button></div>;
 }
 
 describe("主题与导航状态", () => {
@@ -26,22 +26,62 @@ describe("主题与导航状态", () => {
     vi.spyOn(api, "subscriptionSummary").mockResolvedValue({ activeCount: 0, attentionCount: 0, dueCount: 0, upcomingCount: 0, upcoming: [], currencies: [] });
     vi.spyOn(api, "planSummary").mockResolvedValue({ openCount: 0, attentionCount: 0, dueCount: 0, overdueCount: 0, openAmountMinor: 0, upcoming: [] });
   });
-  afterEach(() => { cleanup(); vi.restoreAllMocks(); delete document.documentElement.dataset.theme; delete document.documentElement.dataset.density; delete document.documentElement.dataset.background; delete document.documentElement.dataset.deviceBackground; });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete document.documentElement.dataset.theme; delete document.documentElement.dataset.background; delete document.documentElement.dataset.deviceBackground; });
 
   it("先应用本机缓存防闪，再用服务器设置同步并保存修改", async () => {
-    const cached: AppearancePreferences = { preset: "warm-paper", accent: "#B85C3B", density: "comfortable", backgroundPreset: "paper", updatedAt: "2026-08-01T00:00:00.000Z" };
-    const remote: AppearancePreferences = { preset: "porcelain", accent: "#82552F", density: "comfortable", backgroundPreset: "plain", updatedAt: "2026-08-18T00:00:00.000Z" };
+    const cached: AppearancePreferences = { preset: "ink-night", accent: "#B85C3B", backgroundPreset: "paper", updatedAt: "2026-08-01T00:00:00.000Z" };
+    const remote: AppearancePreferences = { preset: "warm-paper", accent: "#82552F", backgroundPreset: "plain", updatedAt: "2026-08-18T00:00:00.000Z" };
     localStorage.setItem("money-manager.appearance.v1", JSON.stringify(cached));
     vi.spyOn(api, "appearance").mockResolvedValue(remote);
-    const update = vi.spyOn(api, "updateAppearance").mockResolvedValue({ ...remote, preset: "ink-night", density: "compact" });
+    const update = vi.spyOn(api, "updateAppearance").mockResolvedValue({ ...remote, preset: "ink-night" });
     render(<QueryClientProvider client={client()}><AppearanceProvider><ThemeHarness /></AppearanceProvider></QueryClientProvider>);
 
-    await waitFor(() => expect(screen.getByText("porcelain")).toBeInTheDocument());
-    expect(document.documentElement.dataset.theme).toBe("porcelain");
+    await waitFor(() => expect(screen.getByTestId("preset")).toHaveTextContent("warm-paper"));
+    expect(document.documentElement.dataset.theme).toBe("warm-paper");
+    expect(document.documentElement.dataset.density).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "切换" }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("ink-night"));
-    expect(document.documentElement.dataset.density).toBe("compact");
-    expect(update.mock.calls[0]?.[0]).toEqual({ preset: "ink-night", density: "compact" });
+    expect(update.mock.calls[0]?.[0]).toEqual({ preset: "ink-night" });
+  });
+
+  it("停用的亮色主题并入温暖纸张，并保留主色与背景", async () => {
+    const legacy = { preset: "sage-ledger", accent: "#82552F", density: "compact", backgroundPreset: "mist", updatedAt: "2026-08-18T00:00:00.000Z" } as unknown as AppearancePreferences;
+    localStorage.setItem("money-manager.appearance.v1", JSON.stringify({ ...legacy, preset: "porcelain" }));
+    vi.spyOn(api, "appearance").mockResolvedValue(legacy);
+    render(<QueryClientProvider client={client()}><AppearanceProvider><ThemeHarness /></AppearanceProvider></QueryClientProvider>);
+
+    await waitFor(() => expect(screen.getByTestId("background-preset")).toHaveTextContent("mist"));
+    expect(screen.getByTestId("preset")).toHaveTextContent("warm-paper");
+    expect(document.documentElement.dataset.theme).toBe("warm-paper");
+    expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#82552F");
+  });
+
+  it("跟随系统时按设备深浅色显示，并随系统切换", async () => {
+    let dark = true;
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      get matches() { return query.includes("prefers-color-scheme: dark") ? dark : false; },
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false
+    }) as unknown as MediaQueryList);
+    const remote: AppearancePreferences = { preset: "warm-paper", accent: "#B85C3B", backgroundPreset: "paper", updatedAt: "2026-08-18T00:00:00.000Z" };
+    vi.spyOn(api, "appearance").mockResolvedValue(remote);
+    vi.spyOn(api, "updateAppearance").mockResolvedValue({ ...remote, preset: "auto" });
+    render(<QueryClientProvider client={client()}><AppearanceProvider><ThemeHarness /></AppearanceProvider></QueryClientProvider>);
+
+    await waitFor(() => expect(screen.getByTestId("preset")).toHaveTextContent("warm-paper"));
+    fireEvent.click(screen.getByRole("button", { name: "跟随系统" }));
+    await waitFor(() => expect(screen.getByTestId("preset")).toHaveTextContent("auto"));
+    expect(document.documentElement.dataset.theme).toBe("ink-night");
+
+    dark = false;
+    act(() => listeners.forEach((listener) => listener()));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("warm-paper"));
   });
 
   it("桌面侧栏可折叠，并只把折叠状态保存在当前设备", async () => {
@@ -62,7 +102,7 @@ describe("主题与导航状态", () => {
   });
 
   it("兼容旧外观响应，并立即反馈背景选择", async () => {
-    const cached: AppearancePreferences = { preset: "ink-night", accent: "#B85C3B", density: "comfortable", backgroundPreset: "paper", updatedAt: "2026-08-18T00:00:00.000Z" };
+    const cached: AppearancePreferences = { preset: "ink-night", accent: "#B85C3B", backgroundPreset: "paper", updatedAt: "2026-08-18T00:00:00.000Z" };
     localStorage.setItem("money-manager.appearance.v1", JSON.stringify(cached));
     const legacy = { preset: "ink-night", accent: "#B85C3B", density: "comfortable", updatedAt: "2026-08-18T01:00:00.000Z" } as unknown as AppearancePreferences;
     vi.spyOn(api, "appearance").mockResolvedValue(legacy);

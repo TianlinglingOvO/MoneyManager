@@ -257,6 +257,8 @@ describe("财务事项页面", () => {
     renderPage("/matters?tab=plans");
     expect(await screen.findByText("预购尾款")).toBeInTheDocument();
     expect(screen.getByText("想买显示器")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "有日期" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "无日期" })).not.toBeInTheDocument();
     expect(screen.queryByText("已付尾款")).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "未完成" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "已结束" }));

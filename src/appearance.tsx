@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useMemo } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AppearancePreferences } from "@shared/types";
+import type { AppearancePreferences, AppearancePreset } from "@shared/types";
 import { api } from "./api";
 import { useDeviceBackground, type DeviceBackgroundState } from "./device-background";
 
@@ -9,24 +9,23 @@ const storageKey = "money-manager.appearance.v1";
 const fallbackAppearance: AppearancePreferences = {
   preset: "warm-paper",
   accent: "#B85C3B",
-  density: "comfortable",
   backgroundPreset: "paper",
   updatedAt: new Date(0).toISOString()
 };
 
 function normalizeAppearance(value: Partial<AppearancePreferences> | null | undefined, base = fallbackAppearance): AppearancePreferences {
-  const preset = value?.preset && ["warm-paper", "porcelain", "sage-ledger", "ink-night"].includes(value.preset)
-    ? value.preset
-    : base.preset;
+  const rawPreset = value?.preset as string | undefined;
+  // porcelain and sage-ledger were retired in 2.8.0 and fold into warm-paper.
+  const preset: AppearancePreset = rawPreset === "porcelain" || rawPreset === "sage-ledger" ? "warm-paper"
+    : rawPreset === "warm-paper" || rawPreset === "ink-night" || rawPreset === "auto" ? rawPreset
+      : base.preset;
   const accent = value?.accent && /^#[0-9a-fA-F]{6}$/.test(value.accent) ? value.accent.toUpperCase() as `#${string}` : base.accent;
-  const density = value?.density && ["comfortable", "compact"].includes(value.density) ? value.density : base.density;
   const backgroundPreset = value?.backgroundPreset && ["plain", "paper", "linen", "mist"].includes(value.backgroundPreset)
     ? value.backgroundPreset
     : base.backgroundPreset;
   return {
     preset,
     accent,
-    density,
     backgroundPreset,
     updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : base.updatedAt
   };
@@ -75,26 +74,58 @@ function readableAccent(hex: string, surface: string): string {
   return target;
 }
 
-function applyAppearance(appearance: AppearancePreferences): void {
+/** The CSS theme actually shown: `auto` follows the device's light/dark preference. */
+export function resolveTheme(preset: AppearancePreset, prefersDark: boolean): "warm-paper" | "ink-night" {
+  if (preset === "auto") return prefersDark ? "ink-night" : "warm-paper";
+  return preset;
+}
+
+function darkSchemeQuery(): MediaQueryList | null {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return null;
+  return window.matchMedia("(prefers-color-scheme: dark)");
+}
+
+function usePrefersDark(): boolean {
+  const [dark, setDark] = useState(() => darkSchemeQuery()?.matches ?? false);
+  useEffect(() => {
+    const query = darkSchemeQuery();
+    if (!query) return;
+    const update = () => setDark(query.matches);
+    // Phones often flip to dark mode while the PWA is in the background; re-check when it returns too.
+    const updateWhenVisible = () => { if (document.visibilityState === "visible") update(); };
+    update();
+    query.addEventListener?.("change", update);
+    document.addEventListener("visibilitychange", updateWhenVisible);
+    window.addEventListener("focus", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+      document.removeEventListener("visibilitychange", updateWhenVisible);
+      window.removeEventListener("focus", update);
+    };
+  }, []);
+  return dark;
+}
+
+function applyAppearance(appearance: AppearancePreferences, prefersDark: boolean): void {
   const root = document.documentElement;
-  root.dataset.theme = appearance.preset;
-  root.dataset.density = appearance.density;
+  const theme = resolveTheme(appearance.preset, prefersDark);
+  root.dataset.theme = theme;
   root.dataset.background = appearance.backgroundPreset;
   root.style.setProperty("--accent", appearance.accent);
-  const paper = appearance.preset === "ink-night" ? "#242521" : appearance.preset === "porcelain" ? "#FFFFFF" : appearance.preset === "sage-ledger" ? "#FBFCF9" : "#FEFCF7";
+  const paper = theme === "ink-night" ? "#242521" : "#FEFCF7";
   const onAccent = contrast(appearance.accent, "#FFFFFF") >= contrast(appearance.accent, "#000000") ? "#FFFFFF" : "#000000";
   root.style.setProperty("--on-accent", onAccent);
   root.style.setProperty("--accent-strong", readableAccent(appearance.accent, paper));
   root.style.setProperty("--accent-text", readableAccent(appearance.accent, paper));
   root.style.setProperty("--focus-ring", readableAccent(appearance.accent, paper));
-  const themeColor = appearance.preset === "ink-night" ? "#1B1C1A" : appearance.preset === "porcelain" ? "#F7F7F5" : "#F3EFE7";
+  const themeColor = theme === "ink-night" ? "#1B1C1A" : "#F3EFE7";
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
   localStorage.setItem(storageKey, JSON.stringify(appearance));
 }
 
 interface AppearanceContextValue {
   appearance: AppearancePreferences;
-  updateAppearance: (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "density" | "backgroundPreset">>) => Promise<AppearancePreferences>;
+  updateAppearance: (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "backgroundPreset">>) => Promise<AppearancePreferences>;
   isSaving: boolean;
   deviceBackground: DeviceBackgroundState;
 }
@@ -116,7 +147,7 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
     staleTime: 0
   });
   const mutation = useMutation({
-    mutationFn: async (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "density" | "backgroundPreset">>) => {
+    mutationFn: async (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "backgroundPreset">>) => {
       const current = queryClient.getQueryData<AppearancePreferences>(["appearance"]) ?? cached;
       const response = await api.updateAppearance(input);
       // Merge the requested field as a compatibility guard while a previous
@@ -135,8 +166,9 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
     onSuccess: (value) => queryClient.setQueryData(["appearance"], value)
   });
   const appearance = query.data ?? cached;
+  const prefersDark = usePrefersDark();
 
-  useEffect(() => applyAppearance(appearance), [appearance]);
+  useEffect(() => applyAppearance(appearance, prefersDark), [appearance, prefersDark]);
 
   useEffect(() => {
     const root = document.documentElement;

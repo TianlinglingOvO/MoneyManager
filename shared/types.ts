@@ -11,8 +11,8 @@ export type PlanStatus = "open" | "completed" | "cancelled";
 export type PlanAttentionState = "none" | "overdue" | "due" | "scheduled";
 export type SubscriptionCycle = "month" | "year" | "custom";
 export type LedgerLinkMode = "none" | "existing" | "create";
-export type AppearancePreset = "warm-paper" | "porcelain" | "sage-ledger" | "ink-night";
-export type AppearanceDensity = "comfortable" | "compact";
+/** `auto` follows the device's light/dark preference and resolves to warm-paper or ink-night on the client. */
+export type AppearancePreset = "warm-paper" | "ink-night" | "auto";
 export type AppearanceBackgroundPreset = "plain" | "paper" | "linen" | "mist";
 
 export interface AppearanceColorDerivatives {
@@ -25,7 +25,6 @@ export interface AppearanceColorDerivatives {
 export interface AppearancePreferences {
   preset: AppearancePreset;
   accent: `#${string}`;
-  density: AppearanceDensity;
   backgroundPreset: AppearanceBackgroundPreset;
   updatedAt: string;
 }

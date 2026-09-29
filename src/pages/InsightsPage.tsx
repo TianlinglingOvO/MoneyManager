@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useReducer, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { addMonths, addWeeks, addYears, format } from "date-fns";
 import { ArrowDownRight, ArrowUpRight, CalendarDays, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
@@ -173,6 +173,8 @@ export function InsightsPage() {
     if (categoryId) params.set("categoryId", categoryId);
     return `/bills?${params.toString()}`;
   };
+  // Stable across unrelated re-renders so the memoized donut does not re-render mid-animation; ledgerPath only reads grain, anchor, and kind.
+  const selectCategory = useCallback((categoryId: string) => navigate(ledgerPath(categoryId)), [navigate, grain, anchor, kind]);
   const planningBudget = budgetQuery.data;
   const planningProgress = budgetProgress(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
   const planningTone = budgetTone(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
@@ -185,24 +187,25 @@ export function InsightsPage() {
   const fundsCardDetail = otherFunds.length > 0 ? `另有 ${otherFunds.join(" · ")}`
     : `${fundsSummaryQuery.data?.accountCount ?? 0} 个可用账户 · 查看资金`;
 
+  const showOverview = showPlanning || Boolean(fundsSummaryQuery.data || loanSummaryQuery.data || subscriptionSummaryQuery.data || planSummaryQuery.data);
+
   return (
     <div className={`page insights-page ${reportQuery.isFetching && report ? "is-refreshing" : ""}`}>
-      <header className="page-heading page-heading--row insights-heading">
-        <div><h1>{report?.range.label ?? "当前期间"}</h1></div>
-        <div className="kind-pills kind-pills--large insight-kind-switch">
-          <button className={kind === "expense" ? "is-active" : ""} onClick={() => updateState({ kind: "expense" })}>支出</button>
-          <button className={kind === "income" ? "is-active" : ""} onClick={() => updateState({ kind: "income" })}>收入</button>
+      <section className="insights-bar" aria-label="期间与收支">
+        <div className="period-switcher insights-bar__period">
+          <button className="icon-button" onClick={() => move(-1)} aria-label="上一个期间"><ChevronLeft size={20} /></button>
+          <div className="anchor-date">
+            <h1>{report?.range.label ?? "当前期间"}</h1>
+            <input type="date" value={anchor} aria-label="选择期间日期" onChange={(event) => updateState({ anchor: event.target.value })} />
+          </div>
+          <button className="icon-button" onClick={() => move(1)} aria-label="下一个期间"><ChevronRight size={20} /></button>
         </div>
-      </header>
-
-      <section className="analytics-toolbar content-card insights-toolbar">
         <div className="segment-control grain-control">
           {grains.map((item) => <button key={item.value} className={grain === item.value ? "is-active" : ""} onClick={() => updateState({ grain: item.value })}>{item.label}</button>)}
         </div>
-        <div className="period-switcher">
-          <button className="icon-button" onClick={() => move(-1)} aria-label="上一个期间"><ChevronLeft size={20} /></button>
-          <label className="anchor-date"><input type="date" value={anchor} onChange={(event) => updateState({ anchor: event.target.value })} /><strong>{report?.range.label ?? "选择期间"}</strong></label>
-          <button className="icon-button" onClick={() => move(1)} aria-label="下一个期间"><ChevronRight size={20} /></button>
+        <div className="kind-pills kind-pills--large insight-kind-switch">
+          <button className={kind === "expense" ? "is-active" : ""} onClick={() => updateState({ kind: "expense" })}>支出</button>
+          <button className={kind === "income" ? "is-active" : ""} onClick={() => updateState({ kind: "income" })}>收入</button>
         </div>
         {reportQuery.isFetching && report && <span className="insights-refresh-status" role="status">正在更新…</span>}
       </section>
@@ -218,104 +221,105 @@ export function InsightsPage() {
             </div>
           </section>
 
-          {showPlanning && <section className="insight-planning-strip" aria-label="预算与账本体检">
-            <button className={`insight-planning-card is-${planningTone}`} type="button" onClick={() => setBudgetOpen(true)}>
-              <span className="insight-planning-card__icon"><Target size={19} /></span>
-              <span className="insight-planning-card__body">
-                <small>本月预算</small>
-                {hasConfiguredBudget(planningBudget) ? <>
-                  <strong>{planningBudget?.totalMinor == null
-                    ? `${planningBudget?.categories.length ?? 0} 个分类预算`
-                    : <>{money(planningBudget.spentMinor)} <em>/ {money(planningBudget.totalMinor)}</em></>}</strong>
-                  {planningBudget?.totalMinor != null && <i aria-hidden="true"><b style={{ width: `${planningProgress ?? 0}%` }} /></i>}
-                  <span>{planningBudget?.totalMinor == null
-                    ? "按分类分别提醒"
-                    : planningBudget.remainingMinor != null && planningBudget.remainingMinor < 0
-                      ? `已超支 ${money(Math.abs(planningBudget.remainingMinor))}`
-                      : `还可使用 ${money(planningBudget.remainingMinor ?? 0)}`}</span>
-                </> : <><strong>设置本月预算</strong><span>只提醒，不限制记账</span></>}
-              </span>
-              <ChevronRight size={17} />
-            </button>
-            <button className={`insight-planning-card health-card ${(healthQuery.data?.issueCount ?? 0) > 0 ? "has-issues" : ""}`} type="button" onClick={() => setHealthOpen(true)}>
-              <span className="insight-planning-card__icon"><ShieldCheck size={19} /></span>
-              <span className="insight-planning-card__body">
-                <small>账本体检</small>
-                <strong>{healthQuery.isPending ? "正在检查…" : `${activeHealthIssues.length} 项待核对`}</strong>
-                <span>{activeHealthIssues.length > 0 ? `${criticalHealthIssues > 0 ? `${criticalHealthIssues} 项需要处理` : "无严重问题"}${warningHealthIssues > 0 ? ` · ${warningHealthIssues} 项建议核对` : ""}` : `目前没有需要处理的项目 · 数据健康度 ${healthQuery.data?.score ?? 100} 分`}</span>
-              </span>
-              <ChevronRight size={17} />
-            </button>
-          </section>}
+          <div className="insights-layout">
+            {showOverview && <section className="content-card insights-overview" aria-label="预算与财务事项">
+              {showPlanning && <button className={`insights-overview__row is-${planningTone}`} type="button" onClick={() => setBudgetOpen(true)}>
+                <span className="insights-overview__icon"><Target size={18} /></span>
+                <span className="insights-overview__body">
+                  <small>本月预算</small>
+                  {hasConfiguredBudget(planningBudget) ? <>
+                    <strong>{planningBudget?.totalMinor == null
+                      ? `${planningBudget?.categories.length ?? 0} 个分类预算`
+                      : <>{money(planningBudget.spentMinor)} <em>/ {money(planningBudget.totalMinor)}</em></>}</strong>
+                    {planningBudget?.totalMinor != null && <i aria-hidden="true"><b style={{ width: `${planningProgress ?? 0}%` }} /></i>}
+                    <span>{planningBudget?.totalMinor == null
+                      ? "按分类分别提醒"
+                      : planningBudget.remainingMinor != null && planningBudget.remainingMinor < 0
+                        ? `已超支 ${money(Math.abs(planningBudget.remainingMinor))}`
+                        : `还可使用 ${money(planningBudget.remainingMinor ?? 0)}`}</span>
+                  </> : <><strong>设置本月预算</strong><span>只提醒，不限制记账</span></>}
+                </span>
+                <ChevronRight size={16} />
+              </button>}
+              {showPlanning && <button className={`insights-overview__row health-card ${(healthQuery.data?.issueCount ?? 0) > 0 ? "has-issues" : ""}`} type="button" onClick={() => setHealthOpen(true)}>
+                <span className="insights-overview__icon"><ShieldCheck size={18} /></span>
+                <span className="insights-overview__body">
+                  <small>账本体检</small>
+                  <strong>{healthQuery.isPending ? "正在检查…" : `${activeHealthIssues.length} 项待核对`}</strong>
+                  <span>{activeHealthIssues.length > 0 ? `${criticalHealthIssues > 0 ? `${criticalHealthIssues} 项需要处理` : "无严重问题"}${warningHealthIssues > 0 ? ` · ${warningHealthIssues} 项建议核对` : ""}` : `目前没有需要处理的项目 · 数据健康度 ${healthQuery.data?.score ?? 100} 分`}</span>
+                </span>
+                <ChevronRight size={16} />
+              </button>}
+              {fundsSummaryQuery.data && <Link to="/funds" className="insights-overview__row insights-overview__row--funds">
+                <span className="insights-overview__icon"><WalletCards size={18} /></span>
+                <span className="insights-overview__body"><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><span>{fundsSummaryQuery.data.enabled ? fundsCardDetail : "填写现实余额后开始追踪"}</span></span>
+                <ChevronRight size={16} />
+              </Link>}
+              {loanSummaryQuery.data && <Link to="/matters?tab=loans" className="insights-overview__row insights-overview__row--loan">
+                <span className="insights-overview__icon"><WalletCards size={18} /></span>
+                <span className="insights-overview__body"><small>待收款</small><strong>{money(loanSummaryQuery.data.outstandingMinor)}</strong><span>{loanSummaryQuery.data.borrowerCount} 位借款人 · 查看借款</span></span>
+                <ChevronRight size={16} />
+              </Link>}
+              {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insights-overview__row insights-overview__row--subscription">
+                <span className="insights-overview__icon"><Clock3 size={18} /></span>
+                <span className="insights-overview__body"><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><span>{subscriptionRenewalHint(subscriptionSummaryQuery.data)} · 查看订阅</span></span>
+                <ChevronRight size={16} />
+              </Link>}
+              {planSummaryQuery.data && <Link to="/matters?tab=plans" className="insights-overview__row insights-overview__row--plan">
+                <span className="insights-overview__icon"><CalendarDays size={18} /></span>
+                <span className="insights-overview__body"><small>待办计划</small><strong>{planSummaryQuery.data.attentionCount > 0 ? `${planSummaryQuery.data.attentionCount} 项` : `${planSummaryQuery.data.openCount} 项`}</strong><span>{planSummaryQuery.data.openCount} 项未完成 · 查看计划</span></span>
+                <ChevronRight size={16} />
+              </Link>}
+            </section>}
 
-          {(fundsSummaryQuery.data || loanSummaryQuery.data || subscriptionSummaryQuery.data || planSummaryQuery.data) && <section className="insight-finance-grid" aria-label="财务事项摘要">
-            {fundsSummaryQuery.data && <Link to="/funds" className="insight-matter-card insight-matter-card--funds">
-              <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
-              <span><small>{fundsSummaryQuery.data.enabled ? "总资金" : "资金追踪"}</small><strong>{fundsSummaryQuery.data.enabled ? money(fundsSummaryQuery.data.totalMinor) : "尚未启用"}</strong><em>{fundsSummaryQuery.data.enabled ? fundsCardDetail : "填写现实余额后开始追踪"}</em></span>
-              <ChevronRight size={17} />
-            </Link>}
-            {loanSummaryQuery.data && <Link to="/matters?tab=loans" className="insight-matter-card insight-matter-card--loan">
-              <span className="insight-matter-card__icon"><WalletCards size={18} /></span>
-              <span><small>待收款</small><strong>{money(loanSummaryQuery.data.outstandingMinor)}</strong><em>{loanSummaryQuery.data.borrowerCount} 位借款人 · 查看借款</em></span>
-              <ChevronRight size={17} />
-            </Link>}
-            {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insight-matter-card insight-matter-card--subscription">
-              <span className="insight-matter-card__icon"><Clock3 size={18} /></span>
-              <span><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><em>{subscriptionRenewalHint(subscriptionSummaryQuery.data)} · 查看订阅</em></span>
-              <ChevronRight size={17} />
-            </Link>}
-            {planSummaryQuery.data && <Link to="/matters?tab=plans" className="insight-matter-card insight-matter-card--plan">
-              <span className="insight-matter-card__icon"><CalendarDays size={18} /></span>
-              <span><small>待办计划</small><strong>{planSummaryQuery.data.attentionCount > 0 ? `${planSummaryQuery.data.attentionCount} 项` : `${planSummaryQuery.data.openCount} 项`}</strong><em>{planSummaryQuery.data.openCount} 项未完成 · 查看计划</em></span>
-              <ChevronRight size={17} />
-            </Link>}
-          </section>}
-
-          <section className="content-card chart-card insights-trend-card">
-            <div className="section-title section-title--row"><div><h2>{kind === "expense" ? "支出" : "收入"}趋势</h2></div><span className="chart-legend"><i className={`is-${kind}`} />{averageLabel} {money(report.selectedAverageMinor)}</span></div>
-            {report.selectedTotalMinor === 0 ? <div className="empty-chart"><ChartLine size={36} /><strong>这个期间还没有{kind === "expense" ? "支出" : "收入"}</strong></div> : (
-              <Suspense fallback={<div className="trend-chart chart-loading" role="status">图表加载中…</div>}>
-                <FinanceCharts trend={report.trend} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={chartMotionToken} motionEnabled={!reducedMotion} variant="trend" />
-              </Suspense>
-            )}
-          </section>
-
-          <section className="ledger-section category-breakdown-card">
-            <div className="section-title section-title--row"><h2>{breakdownView === "detail" ? "分类明细" : "分类构成"}</h2><SegmentedControl value={breakdownView} label="分类展示方式" className="breakdown-switch" options={[{ value: "detail", label: "明细" }, { value: "composition", label: "构成" }]} onChange={changeBreakdownView} /></div>
-            <div className="breakdown-panel" key={breakdownView} aria-label={breakdownView === "detail" ? "分类明细" : "分类构成"}>
-              {breakdownView === "detail" ? (
-                <>
-                  <div className="ranking-list">
-                    {report.categories.length === 0 && <p className="muted-copy">暂无分类数据</p>}
-                    {visibleCategories.map((category, index) => (
-                      <Link className="ranking-row" key={category.categoryId} to={ledgerPath(category.categoryId)} aria-label={categoryDetailAriaLabel(category.name, category.amountMinor, category.previousAmountMinor, category.changePercent, category.changeState)}>
-                        <span className="ranking-row__number">{String(index + 1).padStart(2, "0")}</span>
-                        <span className="ranking-row__icon" style={{ background: `${category.color}18` }}>{category.icon}</span>
-                        <div className="ranking-row__body"><strong>{category.name}</strong><small>{previousAmountLabel(category.previousAmountMinor, category.changeState)}</small></div>
-                        <div className="ranking-row__value"><strong>{money(category.amountMinor)}</strong><small className={`is-${category.changeState}`}>{percentLabel(category.changePercent, category.changeState)}</small></div>
-                      </Link>
-                    ))}
-                  </div>
-                  {report.categories.length > 5 && <button className="text-button ranking-expand" onClick={() => setShowAllCategories((value) => !value)}>{showAllCategories ? "收起分类" : `展开全部（${report.categories.length}）`}</button>}
-                </>
-              ) : compositionCategories.length === 0 ? <div className="empty-chart"><strong>暂无构成数据</strong></div> : (
-                <div className="category-composition">
-                  <Suspense fallback={<div className="pie-chart chart-loading" role="status">图表加载中…</div>}>
-                    <FinanceCharts trend={report.trend} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={pieMotionToken} motionEnabled={!reducedMotion} activeCategoryId={activeCategoryId} onCategoryHighlight={setActiveCategoryId} variant="pie" onCategorySelect={(categoryId) => navigate(ledgerPath(categoryId))} />
+            <div className="insights-main">
+              <section className="content-card chart-card insights-trend-card">
+                <div className="section-title section-title--row"><div><h2>{kind === "expense" ? "支出" : "收入"}趋势</h2></div><span className="chart-legend"><i className={`is-${kind}`} />{averageLabel} {money(report.selectedAverageMinor)}</span></div>
+                {report.selectedTotalMinor === 0 ? <div className="empty-chart"><ChartLine size={36} /><strong>这个期间还没有{kind === "expense" ? "支出" : "收入"}</strong></div> : (
+                  <Suspense fallback={<div className="trend-chart chart-loading" role="status">图表加载中…</div>}>
+                    <FinanceCharts trend={report.trend} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={chartMotionToken} motionEnabled={!reducedMotion} variant="trend" />
                   </Suspense>
-                  <div className="pie-legend">{compositionCategories.map((item) => {
-                    const content = <><span><i style={{ background: item.color }} />{item.name}</span><strong>{money(item.amountMinor)}</strong><b>{categoryCompositionPercent(item.percent)}</b></>;
-                    return <Link className={`pie-legend__item ${activeCategoryId === item.categoryId ? "is-active" : ""} ${activeCategoryId && activeCategoryId !== item.categoryId ? "is-dimmed" : ""}`.trim()} key={item.categoryId} to={ledgerPath(item.categoryId)} aria-label={`查看${item.name}分类账单`} onMouseEnter={() => setActiveCategoryId(item.categoryId)} onMouseLeave={() => setActiveCategoryId(null)} onFocus={() => setActiveCategoryId(item.categoryId)} onBlur={() => setActiveCategoryId(null)} onPointerDown={() => setActiveCategoryId(item.categoryId)} onPointerCancel={() => setActiveCategoryId(null)}>{content}</Link>;
-                  })}</div>
-                </div>
-              )}
-            </div>
-          </section>
+                )}
+              </section>
 
-          <section className="ledger-section insights-recent-card">
-            <div className="section-title section-title--row"><div><h2>最近录入</h2></div><ReceiptText size={22} /></div>
-            <RecentRecordedList items={recentQuery.data?.items ?? []} onEdit={openEntry} />
-          </section>
+              <section className="ledger-section category-breakdown-card">
+                <div className="section-title section-title--row"><h2>{breakdownView === "detail" ? "分类明细" : "分类构成"}</h2><SegmentedControl value={breakdownView} label="分类展示方式" className="breakdown-switch" options={[{ value: "detail", label: "明细" }, { value: "composition", label: "构成" }]} onChange={changeBreakdownView} /></div>
+                <div className="breakdown-panel" key={breakdownView} aria-label={breakdownView === "detail" ? "分类明细" : "分类构成"}>
+                  {breakdownView === "detail" ? (
+                    <>
+                      <div className="ranking-list">
+                        {report.categories.length === 0 && <p className="muted-copy">暂无分类数据</p>}
+                        {visibleCategories.map((category, index) => (
+                          <Link className="ranking-row" key={category.categoryId} to={ledgerPath(category.categoryId)} aria-label={categoryDetailAriaLabel(category.name, category.amountMinor, category.previousAmountMinor, category.changePercent, category.changeState)}>
+                            <span className="ranking-row__number">{String(index + 1).padStart(2, "0")}</span>
+                            <span className="ranking-row__icon" style={{ background: `${category.color}18` }}>{category.icon}</span>
+                            <div className="ranking-row__body"><strong>{category.name}</strong><small>{previousAmountLabel(category.previousAmountMinor, category.changeState)}</small></div>
+                            <div className="ranking-row__value"><strong>{money(category.amountMinor)}</strong><small className={`is-${category.changeState}`}>{percentLabel(category.changePercent, category.changeState)}</small></div>
+                          </Link>
+                        ))}
+                      </div>
+                      {report.categories.length > 5 && <button className="text-button ranking-expand" onClick={() => setShowAllCategories((value) => !value)}>{showAllCategories ? "收起分类" : `展开全部（${report.categories.length}）`}</button>}
+                    </>
+                  ) : compositionCategories.length === 0 ? <div className="empty-chart"><strong>暂无构成数据</strong></div> : (
+                    <div className="category-composition">
+                      <Suspense fallback={<div className="pie-chart chart-loading" role="status">图表加载中…</div>}>
+                        <FinanceCharts trend={report.trend} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={pieMotionToken} motionEnabled={!reducedMotion} activeCategoryId={activeCategoryId} onCategoryHighlight={setActiveCategoryId} variant="pie" onCategorySelect={selectCategory} />
+                      </Suspense>
+                      <div className="pie-legend">{compositionCategories.map((item) => {
+                        const content = <><span><i style={{ background: item.color }} />{item.name}</span><strong>{money(item.amountMinor)}</strong><b>{categoryCompositionPercent(item.percent)}</b></>;
+                        return <Link className={`pie-legend__item ${activeCategoryId === item.categoryId ? "is-active" : ""} ${activeCategoryId && activeCategoryId !== item.categoryId ? "is-dimmed" : ""}`.trim()} key={item.categoryId} to={ledgerPath(item.categoryId)} aria-label={`查看${item.name}分类账单`} onMouseEnter={() => setActiveCategoryId(item.categoryId)} onMouseLeave={() => setActiveCategoryId(null)} onFocus={() => setActiveCategoryId(item.categoryId)} onBlur={() => setActiveCategoryId(null)} onPointerDown={() => setActiveCategoryId(item.categoryId)} onPointerCancel={() => setActiveCategoryId(null)}>{content}</Link>;
+                      })}</div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <section className="ledger-section insights-recent-card">
+              <div className="section-title section-title--row"><div><h2>最近录入</h2></div><ReceiptText size={22} /></div>
+              <RecentRecordedList items={recentQuery.data?.items ?? []} onEdit={openEntry} />
+            </section>
+          </div>
           <BudgetSheet
             open={budgetOpen}
             month={budgetMonth}

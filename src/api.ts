@@ -232,7 +232,7 @@ export const api = {
     rows: Array<{ key: string; value: string; updated_at: string }>;
   }>("/api/v1/settings"),
   appearance: () => request<AppearancePreferences>("/api/v1/appearance"),
-  updateAppearance: (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "density" | "backgroundPreset">>) =>
+  updateAppearance: (input: Partial<Pick<AppearancePreferences, "preset" | "accent" | "backgroundPreset">>) =>
     request<AppearancePreferences>("/api/v1/appearance", { method: "PATCH", body: JSON.stringify(input) }),
   updateTimezone: (timezone: string) => request<{ timezone: string }>("/api/v1/settings/timezone", {
     method: "PATCH",
