@@ -13,7 +13,7 @@ All notable SMB changes are recorded here. The version in `package.json` is cano
 
 - Themes are now 温暖纸张, 墨夜, and a new 跟随系统 (`auto`) that follows the device's light/dark mode, live and when the app returns to the foreground. The near-identical 瓷白 and 鼠尾草账本 themes were retired; saved or cached values fold into 温暖纸张 without losing the accent or background.
 - The desktop density switch is gone; it only shortened a few desktop rows and showed no change on the Settings page. Older clients that still send `density` are accepted and ignored.
-- The ledger timezone is shown read-only in 运行状态 (for example `UTC+8` · `Asia/Singapore`). Change it through OpenClaw if you ever need to; first-run initialization still sets it automatically.
+- The ledger timezone is shown read-only in 运行状态 (for example `UTC+8` · `Asia/Shanghai`). Change it through OpenClaw if you ever need to; first-run initialization still sets it automatically.
 
 ### Insights
 
