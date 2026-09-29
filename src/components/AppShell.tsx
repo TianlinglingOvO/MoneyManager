@@ -10,6 +10,7 @@ import {
   Plus,
   Landmark,
   Settings,
+  Tags,
   WalletCards
 } from "lucide-react";
 import { api } from "../api";
@@ -23,7 +24,8 @@ const desktopPrimaryItems = [
   { to: "/", label: "洞察", icon: ChartNoAxesCombined, end: true },
   { to: "/bills", label: "账单", icon: BookOpenText },
   { to: "/matters?tab=loans", label: "事项", icon: WalletCards },
-  { to: "/funds", label: "资金", icon: Landmark }
+  { to: "/funds", label: "资金", icon: Landmark },
+  { to: "/categories", label: "分类", icon: Tags }
 ];
 
 function mattersNavLabel(subscriptionAttention: number, planAttention: number): string {
@@ -127,6 +129,7 @@ export function AppShell() {
             <NavLink to="/proposals" className="icon-button" aria-label={`OpenClaw 操作中心${pending ? `，${pending}项待处理` : ""}`}>
               <BellRing size={20} />{pending > 0 && <span className="icon-badge">{pending}</span>}
             </NavLink>
+            <NavLink to="/categories" className="icon-button" aria-label="分类"><Tags size={20} /></NavLink>
             <NavLink to="/settings" className="icon-button" aria-label="设置"><Settings size={20} /></NavLink>
           </div>
         </header>

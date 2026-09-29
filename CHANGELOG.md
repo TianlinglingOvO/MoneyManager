@@ -2,6 +2,11 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.8.1 — 2026-09-29
+
+- Fixed: page backgrounds and personal wallpapers disappeared in 2.8.0. The new fixed background layer sat underneath `body`'s own background colour; `body` now isolates its stacking context so the layer paints above it and below all content. A stylesheet test guards the layer.
+- Category management moved out of Settings into its own **分类** page (`/categories`), listed under 资金 in the sidebar and as an icon in the phone header. The entry sheet's “去添加分类” link opens it. Settings now covers appearance, budget, status, backup, and connections.
+
 ## 2.8.0 — 2026-09-29
 
 ### Settings

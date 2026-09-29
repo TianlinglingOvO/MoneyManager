@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-- `src/` contains the React/Vite PWA. `InsightsPage.tsx` owns `/`; `/analytics` redirects there. `BillsPage.tsx` owns the flat recent, monthly, and yearly bill views.
+- `src/` contains the React/Vite PWA. `InsightsPage.tsx` owns `/`; `/analytics` redirects there. `BillsPage.tsx` owns the flat recent, monthly, and yearly bill views. `CategoriesPage.tsx` owns category management at `/categories` (sidebar under 资金, phone header icon); `SettingsPage.tsx` keeps appearance, budget, status, backup, and connection info.
 - Reuse shared components in `src/components/`; keep Recharts imports inside lazy-loaded `FinanceCharts.tsx`. `AccountPicker.tsx` owns in-app account search; `FundsMissingAccountDetails.tsx` owns aggregated missing-account review.
 - Keep category composition filtering, percentage calculation, and adaptive sector spacing in `src/category-composition.ts`; do not duplicate those rules in page components. Keep same-progress comparison labels in `src/insights-comparison.ts`.
 - `src/appearance.tsx`, `src/device-background.ts`, and `src/ledger-clock.tsx` own appearance, local backgrounds, and ledger date. Tokens and responsive layouts live in `src/styles.css`.
@@ -67,7 +67,7 @@ Use strict TypeScript, two-space indentation, semicolons, and double quotes. Use
 - Settings shows the ledger timezone read-only. Keep `PATCH /api/v1/settings/timezone` for first-run initialization and `direct_update_timezone` for OpenClaw.
 - Insights keeps period, grain, and kind in one sticky `.insights-bar` whose period label is the page `<h1>`. DOM order is overview → charts → recent: at ≥1280px grid areas put charts left and overview plus recent right; narrower screens keep the overview right below the summary. Budget and health rows appear only for a month of expenses.
 - Open plans show dated and undated columns together (side by side on desktop, stacked on phones); there is no scope switch.
-- Page backgrounds, including personal images, render on the fixed `body::before` layer; do not reintroduce `background-attachment: fixed`.
+- Page backgrounds, including personal images, render on the fixed `body::before` layer; do not reintroduce `background-attachment: fixed`, and keep `isolation: isolate` on `body`, or body's own background colour paints over the layer.
 - Keep the budget category adder as a themed in-app picker with keyboard focus return; do not regress it to an OS-native select whose popup ignores Ink Night tokens.
 - Keep motion centralized in `src/motion.ts`: micro feedback is 120–160ms, panels/routes are 220–280ms, trend charts are 800ms, and donut charts are 900ms. Start chart motion only after matching non-placeholder data arrives, play it once on session entry or deliberate user changes, and disable both CSS and Recharts animation for `prefers-reduced-motion`. Recharts completion must use its lifecycle callbacks; never stop chart animation with a wall-clock timer.
 - Personal image bytes stay in IndexedDB. OpenClaw cannot modify appearance. Never log credentials, notes, amounts, or sensitive request bodies. Unhandled request errors may log only method, path, and error name.

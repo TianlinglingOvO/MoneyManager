@@ -16,6 +16,7 @@ const BillsPage = lazy(() => import("./pages/BillsPage").then((module) => ({ def
 const FundsPage = lazy(() => import("./pages/FundsPage").then((module) => ({ default: module.FundsPage })));
 const ProposalsPage = lazy(() => import("./pages/ProposalsPage").then((module) => ({ default: module.ProposalsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const CategoriesPage = lazy(() => import("./pages/CategoriesPage").then((module) => ({ default: module.CategoriesPage })));
 const MattersPage = lazy(() => import("./pages/MattersPage").then((module) => ({ default: module.MattersPage })));
 
 export default function App() {
@@ -76,6 +77,7 @@ export default function App() {
             <Route path="ai" element={<Navigate to="/" replace />} />
             <Route path="matters" element={<MattersPage />} />
             <Route path="proposals" element={<ProposalsPage />} />
+            <Route path="categories" element={<CategoriesPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

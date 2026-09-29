@@ -78,7 +78,8 @@
 
 * { box-sizing: border-box; }
 html { background: var(--canvas); }
-body { margin: 0; min-width: 320px; min-height: 100vh; color: var(--text-primary); background-color: var(--surface-page); font-family: var(--font-ui); transition: color .2s ease, background-color .2s ease; }
+body { isolation: isolate; margin: 0; min-width: 320px; min-height: 100vh; color: var(--text-primary); background-color: var(--surface-page); font-family: var(--font-ui); transition: color .2s ease, background-color .2s ease; }
+/* body isolates its stacking context so this layer paints above body's background colour and below all content. */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background-image: var(--app-background-image, none); background-position: center; background-size: cover; }
 :root[data-background="plain"] { --app-background-image: none; }
 :root[data-background="paper"] { --app-background-image: radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--accent) 4%, transparent) 0 1px, transparent 1.6px), radial-gradient(circle at 82% 4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 30rem); }

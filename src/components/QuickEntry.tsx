@@ -405,7 +405,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
                   <div className="category-picker__empty">
                     <strong>还没有{kind === "expense" ? "支出" : "收入"}分类</strong>
                     <span>先创建一个符合你习惯的分类。</span>
-                    <Link to="/settings" onClick={requestClose}>去添加分类</Link>
+                    <Link to="/categories" onClick={requestClose}>去添加分类</Link>
                   </div>
                 )}
               </div>
