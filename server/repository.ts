@@ -6,7 +6,6 @@ import type {
   CategoryDeletionImpact,
   CategoryDispositionResult,
   DailyTransactionTotal,
-  DashboardData,
   FinanceReport,
   Proposal,
   ProposalStatus,
@@ -20,6 +19,7 @@ import type { z } from "zod";
 import {
   categoryDispositionSchema,
   categoryInputSchema,
+  categoryOrderSchema,
   categoryPatchSchema,
   dailyTotalsQuerySchema,
   proposalInputSchema,
@@ -38,6 +38,7 @@ type TransactionPatch = z.infer<typeof transactionPatchSchema>;
 type CategoryInput = z.infer<typeof categoryInputSchema>;
 type CategoryPatch = z.infer<typeof categoryPatchSchema>;
 type CategoryDisposition = z.infer<typeof categoryDispositionSchema>;
+type CategoryOrder = z.infer<typeof categoryOrderSchema>;
 type TransactionQuery = z.infer<typeof transactionQuerySchema>;
 type DailyTotalsQuery = z.infer<typeof dailyTotalsQuerySchema>;
 type ProposalInput = z.infer<typeof proposalInputSchema>;
@@ -57,6 +58,7 @@ interface CategoryRow {
   color: string;
   sort_order: number;
   is_archived: number;
+  is_fixed?: number;
   transaction_count?: number;
   created_at: string;
   updated_at: string;
@@ -134,6 +136,7 @@ function mapCategory(row: CategoryRow): Category {
     color: row.color,
     sortOrder: Number(row.sort_order),
     isArchived: Boolean(row.is_archived),
+    isFixed: Boolean(row.is_fixed),
     transactionCount: Number(row.transaction_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -187,6 +190,19 @@ function mapProposal(row: ProposalRow): Proposal {
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at
   };
+}
+
+/**
+ * Transaction search matches the note, the category name, or an exact amount
+ * ("35", "35.5", "¥35.50"). Callers must join categories as `c`.
+ */
+function transactionSearchClause(search: string): { sql: string; values: SqlValue[] } {
+  const term = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+  const textMatch = "COALESCE(t.note, '') LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\'";
+  const amount = /^[¥￥]?\s*(\d{1,9})(?:\.(\d{1,2}))?$/.exec(search.trim());
+  if (!amount) return { sql: `(${textMatch})`, values: [term, term] };
+  const amountMinor = Number(amount[1]) * 100 + Number((amount[2] ?? "").padEnd(2, "0"));
+  return { sql: `(${textMatch} OR t.amount_minor = ?)`, values: [term, term, amountMinor] };
 }
 
 export class LedgerRepository {
@@ -369,6 +385,7 @@ export class LedgerRepository {
 
   createCategory(rawInput: CategoryInput, actor: "user" | "openclaw" = "user"): Category {
     const input = categoryInputSchema.parse(rawInput);
+    if (input.isFixed && input.kind !== "expense") throw new ConflictError("只有支出分类可以标记为固定支出");
     const duplicate = this.database.prepare("SELECT id FROM categories WHERE kind = ? AND name = ? COLLATE NOCASE")
       .get(input.kind, input.name);
     if (duplicate) throw new ConflictError("同类型下已经有这个分类名称");
@@ -376,26 +393,45 @@ export class LedgerRepository {
       .get(input.kind) as { value: number };
     const now = new Date().toISOString();
     const id = randomUUID();
-    this.database.prepare(`INSERT INTO categories(id, kind, name, icon, color, sort_order, is_archived, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`)
-      .run(id, input.kind, input.name, input.icon, input.color, input.sortOrder ?? Number(maxRow.value) + 1, now, now);
-    this.audit(actor, "category.create", "category", id, { kind: input.kind });
+    this.database.prepare(`INSERT INTO categories(id, kind, name, icon, color, sort_order, is_archived, is_fixed, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`)
+      .run(id, input.kind, input.name, input.icon, input.color, input.sortOrder ?? Number(maxRow.value) + 1, input.isFixed ? 1 : 0, now, now);
+    this.audit(actor, "category.create", "category", id, { kind: input.kind, fixed: Boolean(input.isFixed) });
     return this.getCategory(id);
   }
 
   updateCategory(id: string, rawPatch: CategoryPatch, actor: "user" | "openclaw" = "user"): Category {
     const current = this.getCategory(id);
     const patch = categoryPatchSchema.parse(rawPatch);
+    if (patch.isFixed && current.kind !== "expense") throw new ConflictError("只有支出分类可以标记为固定支出");
     const next = { ...current, ...patch };
     if (patch.name) {
       const duplicate = this.database.prepare("SELECT id FROM categories WHERE kind = ? AND name = ? COLLATE NOCASE AND id != ?")
         .get(current.kind, patch.name, id);
       if (duplicate) throw new ConflictError("同类型下已经有这个分类名称");
     }
-    this.database.prepare(`UPDATE categories SET name = ?, icon = ?, color = ?, sort_order = ?, is_archived = ?, updated_at = ? WHERE id = ?`)
-      .run(next.name, next.icon, next.color, next.sortOrder, next.isArchived ? 1 : 0, new Date().toISOString(), id);
-    this.audit(actor, "category.update", "category", id, { archived: next.isArchived });
+    this.database.prepare(`UPDATE categories SET name = ?, icon = ?, color = ?, sort_order = ?, is_archived = ?, is_fixed = ?, updated_at = ? WHERE id = ?`)
+      .run(next.name, next.icon, next.color, next.sortOrder, next.isArchived ? 1 : 0, next.isFixed ? 1 : 0, new Date().toISOString(), id);
+    this.audit(actor, "category.update", "category", id, { archived: next.isArchived, fixed: Boolean(next.isFixed) });
     return this.getCategory(id);
+  }
+
+  /** Rewrites the order of every category of one kind in a single transaction. */
+  reorderCategories(rawInput: CategoryOrder, actor: "user" | "openclaw" = "user"): Category[] {
+    const input = categoryOrderSchema.parse(rawInput);
+    const existing = this.listCategories(input.kind, true);
+    const existingIds = new Set(existing.map((category) => category.id));
+    if (existing.length !== input.categoryIds.length || input.categoryIds.some((id) => !existingIds.has(id))) {
+      throw new ConflictError("分类列表已经变化，请刷新后再调整顺序");
+    }
+    return this.savepoint(() => {
+      const now = new Date().toISOString();
+      // Only rows whose position changes get a new updatedAt, so unrelated version checks stay valid.
+      const update = this.database.prepare("UPDATE categories SET sort_order = ?, updated_at = ? WHERE id = ? AND kind = ? AND sort_order != ?");
+      input.categoryIds.forEach((id, index) => update.run(index, now, id, input.kind, index));
+      this.audit(actor, "category.reorder", "category", null, { kind: input.kind, count: input.categoryIds.length });
+      return this.listCategories(input.kind, true);
+    });
   }
 
   manageCategory(
@@ -749,11 +785,16 @@ export class LedgerRepository {
     if (query.categoryId) { clauses.push("t.category_id = ?"); values.push(query.categoryId); }
     if (query.start) { clauses.push("t.local_date >= ?"); values.push(query.start); }
     if (query.end) { clauses.push("t.local_date <= ?"); values.push(query.end); }
-    if (query.search) { clauses.push("COALESCE(t.note, '') LIKE ? ESCAPE '\\'"); values.push(`%${query.search.replace(/[\\%_]/g, "\\$&")}%`); }
+    if (query.search) {
+      const search = transactionSearchClause(query.search);
+      clauses.push(search.sql);
+      values.push(...search.values);
+    }
     if (query.deleted === "active") clauses.push("t.deleted_at IS NULL");
     if (query.deleted === "trash") clauses.push("t.deleted_at IS NOT NULL");
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const countRow = this.database.prepare(`SELECT COUNT(*) AS count FROM transactions t ${where}`).get(...values) as { count: number };
+    const countRow = this.database.prepare(`SELECT COUNT(*) AS count FROM transactions t
+      JOIN categories c ON c.id = t.category_id ${where}`).get(...values) as { count: number };
     const offset = (query.page - 1) * query.pageSize;
     const orderBy = query.sort === "recorded"
       ? "t.created_at DESC, t.rowid DESC"
@@ -773,8 +814,9 @@ export class LedgerRepository {
     if (query.kind) { clauses.push("t.kind = ?"); values.push(query.kind); }
     if (query.categoryId) { clauses.push("t.category_id = ?"); values.push(query.categoryId); }
     if (query.search) {
-      clauses.push("COALESCE(t.note, '') LIKE ? ESCAPE '\\'");
-      values.push(`%${query.search.replace(/[\\%_]/g, "\\$&")}%`);
+      const search = transactionSearchClause(query.search);
+      clauses.push(search.sql);
+      values.push(...search.values);
     }
     const rows = this.database.prepare(`SELECT
       t.local_date,
@@ -782,6 +824,7 @@ export class LedgerRepository {
       SUM(CASE WHEN t.kind = 'expense' THEN t.amount_minor ELSE 0 END) AS expense_minor,
       COUNT(*) AS transaction_count
       FROM transactions t
+      JOIN categories c ON c.id = t.category_id
       WHERE ${clauses.join(" AND ")}
       GROUP BY t.local_date
       ORDER BY t.local_date DESC`).all(...values) as unknown as Array<{
@@ -798,21 +841,18 @@ export class LedgerRepository {
     }));
   }
 
-  getDashboard(today: string): DashboardData {
-    const monthStart = `${today.slice(0, 7)}-01`;
-    const monthRows = this.database.prepare(`SELECT kind, SUM(amount_minor) AS total FROM transactions
-      WHERE deleted_at IS NULL AND refunded_at IS NULL AND local_date BETWEEN ? AND ? GROUP BY kind`).all(monthStart, today) as unknown as Array<{ kind: TransactionKind; total: number }>;
-    const todayRows = this.database.prepare(`SELECT kind, SUM(amount_minor) AS total FROM transactions
-      WHERE deleted_at IS NULL AND refunded_at IS NULL AND local_date = ? GROUP BY kind`).all(today) as unknown as Array<{ kind: TransactionKind; total: number }>;
-    const totals = (rows: Array<{ kind: TransactionKind; total: number }>) => {
-      const incomeMinor = Number(rows.find((row) => row.kind === "income")?.total ?? 0);
-      const expenseMinor = Number(rows.find((row) => row.kind === "expense")?.total ?? 0);
-      return { incomeMinor, expenseMinor, balanceMinor: incomeMinor - expenseMinor };
-    };
-    const recent = this.listTransactions({ pageSize: 6 }).items;
-    this.expireProposals();
-    const pending = this.database.prepare("SELECT COUNT(*) AS count FROM proposals WHERE status = 'pending'").get() as { count: number };
-    return { today: totals(todayRows), month: totals(monthRows), recent, pendingProposalCount: Number(pending.count) };
+  /** Every transaction matching the filters, page by page, so exports never stop at the API page limit. */
+  listAllTransactions(rawQuery: Omit<Partial<TransactionQuery>, "page" | "pageSize"> = {}): Transaction[] {
+    const first = this.listTransactions({ ...rawQuery, page: 1, pageSize: 100 });
+    const items = [...first.items];
+    let page = 2;
+    while (items.length < first.total) {
+      const next = this.listTransactions({ ...rawQuery, page, pageSize: 100 });
+      if (next.items.length === 0) break;
+      items.push(...next.items);
+      page += 1;
+    }
+    return items;
   }
 
   getFinanceReport(grain: ReportGrain, anchor: string, kind: TransactionKind, todayKey?: string): FinanceReport {
@@ -996,13 +1036,7 @@ export class LedgerRepository {
   }
 
   exportData(): Record<string, unknown> {
-    const first = this.listTransactions({ deleted: "all", pageSize: 100 });
-    const transactions = [...first.items];
-    let page = 2;
-    while (transactions.length < first.total) {
-      transactions.push(...this.listTransactions({ deleted: "all", page, pageSize: 100 }).items);
-      page += 1;
-    }
+    const transactions = this.listAllTransactions({ deleted: "all" });
     const settings = this.database.prepare("SELECT key, value, updated_at FROM settings ORDER BY key").all();
     return {
       format: "sutady-money-manager",

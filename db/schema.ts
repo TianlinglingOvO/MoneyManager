@@ -9,6 +9,7 @@ export const categories = sqliteTable("categories", {
   color: text("color").notNull(),
   sortOrder: integer("sort_order").notNull().default(0),
   isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
+  isFixed: integer("is_fixed", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => [

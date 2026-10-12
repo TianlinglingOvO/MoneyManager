@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
-import { CalendarDays, Check, CheckCircle2, LoaderCircle, Trash2, X } from "lucide-react";
+import { CalendarDays, Check, CheckCircle2, LoaderCircle, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Proposal, Transaction, TransactionKind } from "@shared/types";
 import { api, ApiError } from "../api";
@@ -28,6 +28,21 @@ interface TransactionDraft {
   accountId: string | null;
   accountAmountMinor: number | null;
   note: string | null;
+}
+
+interface DraftValues {
+  kind: TransactionKind;
+  amount: string;
+  categoryId: string;
+  accountId: string;
+  accountAmount: string;
+  date: string;
+  note: string;
+}
+
+/** One fixed field order for both sides of the dirty comparison. */
+function draftKey(values: DraftValues): string {
+  return JSON.stringify([values.kind, values.amount, values.categoryId, values.accountId, values.accountAmount, values.date, values.note]);
 }
 
 function asDraft(value: Record<string, unknown>): TransactionDraft {
@@ -58,13 +73,17 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
   const [discardOpen, setDiscardOpen] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
   const [closing, setClosing] = useState(false);
+  const [refundPanel, setRefundPanel] = useState<"refund" | "undo" | null>(null);
+  const [refundAccountId, setRefundAccountId] = useState("");
   const reducedMotion = useReducedMotion();
+  const accountTouched = useRef(false);
+  const amountInputRef = useRef<HTMLInputElement | null>(null);
   const historyEntryActive = useRef(false);
   const closingRef = useRef(false);
   const onCloseRef = useRef(onClose);
   const saveCloseTimer = useRef<number | null>(null);
   const exitCloseTimer = useRef<number | null>(null);
-  const initialDraft = useRef("");
+  const initialDraft = useRef<DraftValues | null>(null);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const sheetRef = useRef<HTMLElement | null>(null);
@@ -84,9 +103,14 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
   const selectedAccount = availableAccounts.find((account) => account.id === accountId);
   const selectedCurrency = selectedAccount?.currency ?? "CNY";
   const usesForeignAccount = Boolean(selectedAccount && selectedCurrency !== "CNY");
+  // Refunds live in the edit sheet (they are rare) and need funds tracking for the compensating movement.
+  const canRefund = Boolean(transaction && !proposal && !transaction.deletedAt && funds.data?.enabled);
+  const refunded = Boolean(transaction?.refundedAt && !proposal);
+  // Untracked (pre-activation or baseline) entries have no account, so the refund must name the CNY account it reached.
+  const refundNeedsAccount = Boolean(transaction && !transaction.accountId);
+  const refundAccounts = availableAccounts.filter((account) => account.currency === "CNY");
 
-  const draftSignature = JSON.stringify({ kind, amount, categoryId, accountId, accountAmount, date, note });
-  const isDirty = !saved && Boolean(initialDraft.current) && draftSignature !== initialDraft.current;
+  const isDirty = !saved && initialDraft.current !== null && draftKey({ kind, amount, categoryId, accountId, accountAmount, date, note }) !== draftKey(initialDraft.current);
   dirtyRef.current = isDirty;
 
   useEffect(() => {
@@ -127,7 +151,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     closingRef.current = false;
     setClosing(false);
     document.body.classList.add("modal-open");
-    initialDraft.current = "";
+    initialDraft.current = null;
     setSaved(false);
     setDiscardOpen(false);
     setDragOffset(0);
@@ -196,9 +220,13 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     setNote(draft?.note ?? "");
     setAccountId(draft?.accountId ?? "");
     setAccountAmount(draft?.accountAmountMinor ? (draft.accountAmountMinor / 100).toFixed(2) : "");
+    // An existing account choice is deliberate; a new entry follows the default account of its kind until the user picks one.
+    accountTouched.current = Boolean(draft?.accountId);
+    setRefundPanel(null);
+    setRefundAccountId("");
     setError("");
     setSaved(false);
-    initialDraft.current = JSON.stringify({
+    initialDraft.current = {
       kind: draft?.kind ?? "expense",
       amount: draft ? (draft.amountMinor / 100).toFixed(2) : "",
       categoryId: draft?.categoryId ?? "",
@@ -206,7 +234,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       accountId: draft?.accountId ?? "",
       accountAmount: draft?.accountAmountMinor ? (draft.accountAmountMinor / 100).toFixed(2) : "",
       note: draft?.note ?? ""
-    });
+    };
   }, [open, proposal, proposalTarget.data, today, transaction]);
 
   useEffect(() => {
@@ -215,10 +243,8 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     if (!available.some((item) => item.id === categoryId)) {
       const nextCategoryId = available[0]?.id ?? "";
       setCategoryId(nextCategoryId);
-      if (initialDraft.current) {
-        const initial = JSON.parse(initialDraft.current) as Record<string, unknown>;
-        if (!initial.categoryId) initialDraft.current = JSON.stringify({ ...initial, categoryId: nextCategoryId });
-      }
+      // A default chosen for the user is part of the starting point, not an edit.
+      if (initialDraft.current && !initialDraft.current.categoryId) initialDraft.current = { ...initialDraft.current, categoryId: nextCategoryId };
     }
   }, [categories.data, categories.isSuccess, categoryId, open]);
 
@@ -229,10 +255,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     const nextAccountId = defaultId ?? availableAccounts[0]?.id ?? "";
     setAccountId(nextAccountId);
     setAccountAmount("");
-    if (initialDraft.current) {
-      const initial = JSON.parse(initialDraft.current) as Record<string, unknown>;
-      if (!initial.accountId) initialDraft.current = JSON.stringify({ ...initial, accountId: nextAccountId, accountAmount: "" });
-    }
+    if (initialDraft.current && !initialDraft.current.accountId) initialDraft.current = { ...initialDraft.current, accountId: nextAccountId, accountAmount: "" };
   }, [accountId, availableAccounts, funds.data, fundsRequired, kind, open]);
 
   const parsedMinor = useMemo(() => parseAmountMinor(amount), [amount]);
@@ -246,8 +269,20 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
     ];
   }, [open, today]);
 
+  const changeKind = (nextKind: TransactionKind) => {
+    if (nextKind === kind) return;
+    setKind(nextKind);
+    if (transaction || proposal || accountTouched.current || !funds.data?.enabled) return;
+    const defaultId = nextKind === "expense" ? funds.data.defaultExpenseAccountId : funds.data.defaultIncomeAccountId;
+    if (defaultId && availableAccounts.some((account) => account.id === defaultId)) {
+      setAccountId(defaultId);
+      setAccountAmount("");
+    }
+  };
+
   const save = useMutation({
-    mutationFn: async () => {
+    // keepOpen saves a new entry and leaves the sheet ready for the next one.
+    mutationFn: async (_options: { keepOpen?: boolean } = {}) => {
       savingRef.current = true;
       if (parsedMinor === null) throw new ApiError("请输入大于 0 且最多两位小数的金额", "VALIDATION_ERROR", 400);
       if (!categoryId) throw new ApiError("请选择分类", "VALIDATION_ERROR", 400);
@@ -259,11 +294,22 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
       if (transaction) return api.updateTransaction(transaction.id, input, transaction.updatedAt);
       return api.createTransaction(input, crypto.randomUUID());
     },
-    onSuccess: () => {
+    onSuccess: (_result, options) => {
       savingRef.current = false;
       void queryClient.invalidateQueries();
+      if (options?.keepOpen && !proposal && !transaction) {
+        // Keep kind, category, date and account for a run of receipts; clear what differs per entry.
+        setAmount("");
+        setNote("");
+        setAccountAmount("");
+        setError("");
+        initialDraft.current = { kind, amount: "", categoryId, accountId, accountAmount: "", date, note: "" };
+        onSaved?.("已记入账本，可以继续记下一笔");
+        window.requestAnimationFrame(() => amountInputRef.current?.focus());
+        return;
+      }
       setSaved(true);
-      initialDraft.current = "";
+      initialDraft.current = null;
       onSaved?.(proposal ? "修订已保存，仍等待确认" : transaction ? "账目已更新" : "已记入账本");
       saveCloseTimer.current = window.setTimeout(beginClose, 520);
     },
@@ -324,15 +370,32 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && refundPanel) {
+        setRefundPanel(null);
+        return;
+      }
       if (event.key === "Escape" && !save.isPending) requestClose();
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !save.isPending && !saved) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !save.isPending && !saved && !refunded) {
         event.preventDefault();
-        save.mutate();
+        save.mutate({});
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, requestClose, save, saved]);
+  }, [open, refundPanel, refunded, requestClose, save, saved]);
+
+  const refund = useMutation({
+    mutationFn: (action: "refund" | "undo") => action === "undo"
+      ? api.undoTransactionRefund(transaction!.id, transaction!.updatedAt)
+      : api.refundTransaction(transaction!.id, transaction!.updatedAt, refundNeedsAccount ? refundAccountId : undefined),
+    onSuccess: (_result, action) => {
+      void queryClient.invalidateQueries();
+      setRefundPanel(null);
+      initialDraft.current = null;
+      beginClose();
+      notify(action === "undo" ? "已撤销退款，重新计入收支" : "已全额退款，原账保留但不再计入统计");
+    }
+  });
 
   const remove = useMutation({
     mutationFn: () => api.deleteTransaction(transaction!.id, transaction!.updatedAt),
@@ -367,14 +430,17 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
         ) : (
           <>
             {isProposal && <p className="entry-sheet__hint">这里只修改待确认内容，不会立即写入正式账本。</p>}
-            <div className="kind-switch" role="tablist" aria-label="收支类型">
-              <button className={kind === "expense" ? "is-active" : ""} onClick={() => setKind("expense")}>支出</button>
-              <button className={kind === "income" ? "is-active" : ""} onClick={() => setKind("income")}>收入</button>
+            {refunded && <p className="entry-sheet__hint entry-sheet__hint--refunded" role="note">这笔账已全额退款，原账保留但不计入收支和预算。要修改它，请先撤销退款。</p>}
+            <fieldset className="entry-sheet__fieldset" disabled={refunded}>
+            <div className="kind-switch" role="group" aria-label="收支类型">
+              <button type="button" className={kind === "expense" ? "is-active" : ""} aria-pressed={kind === "expense"} onClick={() => changeKind("expense")}>支出</button>
+              <button type="button" className={kind === "income" ? "is-active" : ""} aria-pressed={kind === "income"} onClick={() => changeKind("income")}>收入</button>
             </div>
 
             <label className="amount-field">
               <span>¥</span>
               <input
+                ref={amountInputRef}
                 autoFocus
                 inputMode="decimal"
                 value={amount}
@@ -418,6 +484,7 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
                 value={accountId}
                 onChange={(nextAccountId) => {
                   if (nextAccountId !== accountId) setAccountAmount("");
+                  accountTouched.current = true;
                   setAccountId(nextAccountId);
                 }}
                 label="资金账户"
@@ -436,22 +503,27 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
             <div className="entry-fields">
               <div className="entry-date-control">
                 <span className="entry-field-label"><CalendarDays size={17} />发生日期</span>
-                <div className="date-shortcuts" aria-label="常用日期">
-                  {dateShortcuts.map((item) => <button type="button" className={date === item.value ? "is-active" : ""} key={item.value} onClick={() => setDate(item.value)}>{item.label}</button>)}
+                <div className="entry-date-row">
+                  <div className="date-shortcuts" aria-label="常用日期">
+                    {dateShortcuts.map((item) => <button type="button" className={date === item.value ? "is-active" : ""} key={item.value} onClick={() => setDate(item.value)}>{item.label}</button>)}
+                  </div>
+                  <input required aria-label="自定义发生日期" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
                 </div>
-                <input required aria-label="自定义发生日期" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
               </div>
               <label><span>备注 <small>选填</small></span><input maxLength={240} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：和朋友吃晚饭" /></label>
             </div>
+            </fieldset>
 
             {error && <p className="form-error" role="alert">{error}</p>}
             {saved && <p className="entry-success" role="status"><CheckCircle2 size={18} />已保存</p>}
             <div className="entry-sheet__actions">
-              {transaction && !proposal && <button className="danger-ghost" disabled={remove.isPending} onClick={() => remove.mutate()} title="30 天内可以在回收站恢复"><Trash2 size={17} />移入回收站</button>}
-              <button type="button" className="primary-button save-button" disabled={save.isPending || saved} onClick={() => save.mutate()} title="Ctrl + Enter 保存">
+              {transaction && !proposal && <button type="button" className="danger-ghost" disabled={remove.isPending} onClick={() => remove.mutate()} title="30 天内可以在回收站恢复"><Trash2 size={17} />移入回收站</button>}
+              {canRefund && <button type="button" className="secondary-button entry-refund-button" disabled={refund.isPending || (isDirty && !refunded)} title={isDirty && !refunded ? "请先保存或放弃当前修改" : refunded ? "重新计入收支并扣回资金" : "原账保留，不再计入收支和预算"} onClick={() => { refund.reset(); setRefundAccountId(refundAccounts.some((account) => account.id === funds.data?.defaultIncomeAccountId) ? funds.data?.defaultIncomeAccountId ?? "" : refundAccounts[0]?.id ?? ""); setRefundPanel(refunded ? "undo" : "refund"); }}><RotateCcw size={16} />{refunded ? "撤销退款" : "全额退款"}</button>}
+              {!transaction && !proposal && <button type="button" className="secondary-button entry-again-button" disabled={save.isPending || saved} onClick={() => save.mutate({ keepOpen: true })} title="保存后继续记下一笔，保留分类、日期和账户"><Plus size={17} />保存并再记一笔</button>}
+              {!refunded && <button type="button" className="primary-button save-button" disabled={save.isPending || saved} onClick={() => save.mutate({})} title="Ctrl + Enter 保存">
                 {save.isPending && <LoaderCircle className="spin" size={18} />}
                 {saved ? <><Check size={18} />已保存</> : proposal ? "保存修订（仍待确认）" : transaction ? "保存修改" : `保存${kind === "expense" ? "支出" : "收入"}`}
-              </button>
+              </button>}
             </div>
           </>
         )}
@@ -463,6 +535,32 @@ export function QuickEntry({ open, transaction, proposal, onClose, onConflict, o
           <div className="confirm-action-group">
             <button className="secondary-button" type="button" onClick={() => setDiscardOpen(false)}>继续编辑</button>
             <button className="primary-button" type="button" onClick={() => beginClose()}>放弃并关闭</button>
+          </div>
+        </div>
+      )}
+      {refundPanel && transaction && (
+        <div className="discard-confirm refund-confirm" role="alertdialog" aria-modal="true" aria-labelledby="refund-title" aria-describedby="refund-description">
+          <h3 id="refund-title">{refundPanel === "undo" ? "撤销退款？" : "确认全额退款？"}</h3>
+          <p id="refund-description">{refundPanel === "undo"
+            ? `这笔 ${money(transaction.amountMinor)} 会重新计入收支和预算，并从退款账户扣回。`
+            : refundNeedsAccount
+              ? "这笔账发生在资金追踪启用前，没有资金账户。请选择退款实际到账的人民币账户；原账会保留并标记为已退款，不再计入收支和预算。"
+              : `原账会保留并标记为已退款，不再计入收支和预算；${money(transaction.amountMinor)} 会退回${transaction.account ? `「${transaction.account.name}」` : "原账户"}。`}</p>
+          {refundPanel === "refund" && refundNeedsAccount && <AccountPicker
+            className="refund-confirm__account"
+            accounts={refundAccounts}
+            value={refundAccountId}
+            onChange={setRefundAccountId}
+            label="退款到账账户"
+            emptyLabel="选择人民币账户"
+            required
+          />}
+          {refund.isError && <p className="form-error" role="alert">{refund.error instanceof Error ? refund.error.message : "操作失败，请稍后重试"}</p>}
+          <div className="confirm-action-group">
+            <button className="secondary-button" type="button" disabled={refund.isPending} onClick={() => setRefundPanel(null)}>取消</button>
+            <button className="primary-button" type="button" disabled={refund.isPending || (refundPanel === "refund" && refundNeedsAccount && !refundAccountId)} onClick={() => refund.mutate(refundPanel)}>
+              {refund.isPending && <LoaderCircle className="spin" size={17} />}{refundPanel === "undo" ? "撤销退款" : "确认全额退款"}
+            </button>
           </div>
         </div>
       )}

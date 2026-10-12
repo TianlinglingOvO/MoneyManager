@@ -37,6 +37,8 @@ export interface Category {
   color: string;
   sortOrder: number;
   isArchived: boolean;
+  /** Expense categories only: counted as already spent in the budget forecast instead of being extrapolated per day. */
+  isFixed?: boolean;
   transactionCount: number;
   createdAt: string;
   updatedAt: string;
@@ -91,6 +93,12 @@ export interface AccountMovement {
   operationId: string | null;
   reversalOfId: string | null;
   createdAt: string;
+  /** Human-readable source, e.g. "🍜 餐饮 · 午饭", "微信 → 招商银行" or "借给 小王". */
+  description?: string | null;
+  /** original = first movement of this source on this account; later appends are edit differences, reversals or restores. */
+  revision?: "original" | "change" | "reversal" | "restore";
+  /** True when the source record is now in the trash. */
+  sourceDeleted?: boolean;
 }
 
 export interface AccountMovementList {
@@ -228,6 +236,8 @@ export interface FinanceReport {
   selectedComparison: ComparisonValue;
   transactionCount: number;
   trend: TrendPoint[];
+  /** The previous period's points over the same-progress window, aligned by position with `trend`. */
+  previousTrend?: TrendPoint[];
   categories: CategoryMetric[];
   generatedAt: string;
 }
@@ -249,7 +259,10 @@ export interface MonthlyBudget {
   totalMinor: number | null;
   spentMinor: number;
   remainingMinor: number | null;
+  /** Month-end estimate: fixed-category spending as recorded plus the other spending extrapolated by elapsed days. */
   forecastMinor: number;
+  /** Spending in fixed expense categories this month; it is not extrapolated. */
+  fixedSpentMinor?: number;
   elapsedDays: number;
   daysInMonth: number;
   remainingDays: number;
@@ -327,13 +340,6 @@ export interface PermanentDeletionResult {
   detachedLedgerLinkCount: number;
   rejectedProposalCount: number;
   invalidatedOperationCount: number;
-}
-
-export interface DashboardData {
-  today: { incomeMinor: number; expenseMinor: number; balanceMinor: number };
-  month: { incomeMinor: number; expenseMinor: number; balanceMinor: number };
-  recent: Transaction[];
-  pendingProposalCount: number;
 }
 
 export interface SystemReload {
@@ -537,6 +543,10 @@ export interface SubscriptionSummary {
   upcomingCount: number;
   upcoming: Subscription[];
   currencies: Array<{ currency: MatterCurrency; amountMinor: number }>;
+  /** Renewals whose billing date is today or earlier and still need a recorded payment. */
+  confirmCount?: number;
+  /** Active subscriptions normalized to a monthly cost (yearly / 12, custom cycles by days). */
+  monthlyEquivalent?: Array<{ currency: MatterCurrency; amountMinor: number }>;
 }
 
 export interface Plan {

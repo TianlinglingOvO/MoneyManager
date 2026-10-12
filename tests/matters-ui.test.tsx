@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Account, Borrower, Category, Loan, Plan, Subscription } from "../shared/types";
 import { api } from "../src/api";
 import { MattersPage } from "../src/pages/MattersPage";
+import { ToastContext, type Notify } from "../src/toast-context";
 
 afterEach(() => {
   cleanup();
@@ -20,9 +21,9 @@ beforeEach(() => {
   vi.spyOn(api, "plans").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 });
 });
 
-function renderPage(path = "/matters?tab=loans") {
+function renderPage(path = "/matters?tab=loans", notify: Notify = () => undefined) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><MattersPage /></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ToastContext.Provider value={notify}><MemoryRouter initialEntries={[path]}><MattersPage /></MemoryRouter></ToastContext.Provider></QueryClientProvider>);
 }
 
 const borrower: Borrower = {
@@ -151,7 +152,8 @@ describe("财务事项页面", () => {
     vi.mocked(api.subscriptionSummary).mockResolvedValue({ activeCount: 1, attentionCount: 1, dueCount: 1, upcomingCount: 1, upcoming: [subscription], currencies: [{ currency: "USD", amountMinor: 1_000 }] });
     renderPage("/matters?tab=subscriptions");
     expect(await screen.findByText("OpenAI")).toBeInTheDocument();
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(screen.getAllByText("$10.00").length).toBeGreaterThan(0);
+    expect(screen.getByText("折合每月").nextElementSibling).toHaveTextContent("$10.00");
     expect(screen.getByRole("button", { name: /记录续费/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "订阅，1项需要留意" })).toHaveTextContent("1");
   });
@@ -327,5 +329,52 @@ describe("财务事项页面", () => {
     fireEvent.click(screen.getByRole("button", { name: "更换" }));
     fireEvent.keyDown(screen.getByRole("combobox", { name: "搜索或新建借款人" }), { key: "Escape" });
     expect(screen.getByRole("combobox", { name: "搜索或新建借款人" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("取消订阅立即生效并可撤销，已取消的订阅收在单独分组里可以重新启用", async () => {
+    const cancelled: Subscription = { ...subscription, id: "88888888-8888-4888-8888-888888888888", name: "旧网盘", status: "cancelled", renewalState: "cancelled" };
+    vi.spyOn(api, "subscriptions").mockResolvedValue({ items: [subscription, cancelled], total: 2, page: 1, pageSize: 100 });
+    const update = vi.spyOn(api, "updateSubscription").mockImplementation(async (id, input) => ({ ...subscription, id, status: (input as { status: Subscription["status"] }).status, updatedAt: "2026-08-02T00:00:00.000Z" }));
+    const notify = vi.fn<Notify>();
+    renderPage("/matters?tab=subscriptions", notify);
+
+    expect(await screen.findByText("OpenAI")).toBeInTheDocument();
+    expect(screen.queryByText("旧网盘")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /已取消/ }));
+    const cancelledCard = (await screen.findByText("旧网盘")).closest("article")!;
+    fireEvent.click(within(cancelledCard).getByRole("button", { name: /重新启用/ }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(cancelled.id, expect.objectContaining({ status: "active" })));
+
+    const activeCard = screen.getByText("OpenAI").closest("article")!;
+    fireEvent.click(within(activeCard).getByRole("button", { name: "取消订阅" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(subscription.id, expect.objectContaining({ status: "cancelled" })));
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("已取消“OpenAI”", expect.objectContaining({ action: expect.objectContaining({ label: "撤销" }) })));
+    const undo = notify.mock.calls.find(([text]) => text === "已取消“OpenAI”")?.[1]?.action;
+    undo?.run();
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith(subscription.id, expect.objectContaining({ status: "active", expectedUpdatedAt: "2026-08-02T00:00:00.000Z" })));
+  });
+
+  it("续费日还没到时显示即将续费，不显示待确认", async () => {
+    const soon = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+    const upcoming: Subscription = { ...subscription, nextBillingDate: soon, nextRenewalDate: soon, renewalState: "due" };
+    vi.spyOn(api, "subscriptions").mockResolvedValue({ items: [upcoming], total: 1, page: 1, pageSize: 100 });
+    renderPage("/matters?tab=subscriptions");
+    const card = (await screen.findByText("OpenAI")).closest("article")!;
+    expect(within(card).queryByText("待确认")).not.toBeInTheDocument();
+    expect(within(card).getAllByText("2 天后续费").length).toBeGreaterThan(0);
+  });
+
+  it("借款表单填了一半时关闭会先确认", async () => {
+    vi.spyOn(api, "borrowers").mockResolvedValue({ items: [borrower], total: 1, page: 1, pageSize: 100 });
+    vi.spyOn(api, "loans").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 });
+    vi.spyOn(api, "categories").mockResolvedValue([]);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 50 });
+    vi.spyOn(api, "fundsSummary").mockResolvedValue({ ...enabledFunds(), enabled: false, startedOn: null });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /记录借款/ }));
+    const dialog = await screen.findByRole("dialog", { name: "记录一笔借款" });
+    fireEvent.change(within(dialog).getByPlaceholderText("300.00"), { target: { value: "88" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(await screen.findByRole("alertdialog", { name: "放弃这次修改？" })).toHaveTextContent("这笔借款还没有保存");
   });
 });

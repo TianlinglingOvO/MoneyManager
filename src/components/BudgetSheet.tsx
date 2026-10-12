@@ -4,7 +4,7 @@ import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import type { Category, MonthlyBudget, MonthlyBudgetInput } from "@shared/types";
 import { api } from "../api";
 import { useToast } from "../toast-context";
-import { parseAmountMinor } from "../utils";
+import { money, parseAmountMinor } from "../utils";
 import { BottomSheet, type BottomSheetHandle } from "./BottomSheet";
 
 interface BudgetSheetProps {
@@ -187,6 +187,12 @@ export function BudgetSheet({ open, month, budget, categories, onClose }: Budget
   >
     <div className="budget-sheet__content">
       <p className="sheet-intro">预算只用于提醒和阅读，不会限制记账，也不会改变已有统计。</p>
+      {budget && budget.elapsedDays > 0 && budget.elapsedDays < budget.daysInMonth && budget.spentMinor > 0 && <p className="budget-sheet__forecast">
+        本月已用 <strong>{money(budget.spentMinor)}</strong>，预计月底 <strong>{money(budget.forecastMinor)}</strong>。
+        {(budget.fixedSpentMinor ?? 0) > 0
+          ? `其中固定支出 ${money(budget.fixedSpentMinor ?? 0)} 按实际计入，其余按已过 ${budget.elapsedDays} 天的日均外推。`
+          : `按已过 ${budget.elapsedDays} 天的日均外推；房租等固定支出可在“分类”里标记，预测会更准。`}
+      </p>}
       <label className="dialog-field">
         <span>本月总支出预算 <em>可选</em></span>
         <input ref={totalInputRef} inputMode="decimal" value={totalValue} onChange={(event) => setTotalValue(event.target.value)} placeholder="例如：3000.00" aria-describedby="budget-total-help" />

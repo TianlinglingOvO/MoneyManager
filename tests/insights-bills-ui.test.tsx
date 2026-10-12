@@ -200,7 +200,9 @@ describe("洞察与账单下钻", () => {
     vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 6 });
     renderWithProviders(<EntryProvider><InsightsPage /></EntryProvider>, ["/?grain=month&anchor=2026-09-01&kind=expense"]);
     expect(await screen.findByText("较上月同期")).toBeInTheDocument();
-    expect(screen.getByText("8月1日–8月1日 · +¥20.00")).toBeInTheDocument();
+    // The signed amount sits in its own no-wrap span so a narrow card never splits “+” from the number.
+    const windowText = screen.getByText((_content, element) => element?.tagName === "SMALL" && element.textContent === "8月1日–8月1日 · +¥20.00");
+    expect(windowText.querySelector(".nowrap")).toHaveTextContent("+¥20.00");
     expect(screen.getByText("上期 ¥10.00")).toBeInTheDocument();
     expect(screen.getAllByText("+200.0%").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /较上期 ¥10.00 增加 200.0%/ })).toBeInTheDocument();

@@ -129,6 +129,11 @@ describe("近期续费卡片文案", () => {
     expect(subscriptionRenewalHint({ attentionCount: 0, activeCount: 5 })).toBe("暂无待确认，共 5 项订阅");
     expect(subscriptionRenewalHint({ attentionCount: 0, activeCount: 0 })).toBe("暂无订阅");
   });
+
+  it("新版汇总把提醒窗口内的订阅叫作即将续费", () => {
+    expect(subscriptionRenewalHint({ attentionCount: 2, confirmCount: 1, activeCount: 5 })).toBe("1 项待确认续费");
+    expect(subscriptionRenewalHint({ attentionCount: 2, confirmCount: 0, activeCount: 5 })).toBe("2 项即将续费");
+  });
 });
 
 describe("OpenClaw 每日提醒状态文案", () => {

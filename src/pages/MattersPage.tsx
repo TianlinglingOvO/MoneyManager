@@ -26,6 +26,7 @@ import { AccountPicker } from "../components/AccountPicker";
 import { BottomSheet } from "../components/BottomSheet";
 import { ConfirmSheet } from "../components/ConfirmSheet";
 import { SegmentedControl } from "../components/SegmentedControl";
+import { useDirtyCheck } from "../form-state";
 import { useLedgerClock } from "../ledger-clock";
 import { offerUndo, useToast } from "../toast-context";
 import { money, parseAmountMinor } from "../utils";
@@ -186,7 +187,8 @@ function LoanForm({ open, onClose, borrowers, editing, today }: { open: boolean;
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["loan"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} closeLabel={editing ? "关闭编辑借款" : "关闭记录借款"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="loan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>}>
+  const dirty = useDirtyCheck({ borrowerId, borrowerSearch, amount, lentDate, purpose, note, linkMode, linkKind, linkAmount, linkCategory, linkDate, accountId });
+  return <BottomSheet open={open} title={editing ? "编辑借款" : "记录一笔借款"} closeLabel={editing ? "关闭编辑借款" : "关闭记录借款"} onClose={onClose} dirty={dirty} discardDescription="这笔借款还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="loan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存借款"}</button>}>
     <form id="loan-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记录别人从你这里借走的钱，之后可以在对应借款下分次登记还款。</p>
       {editing ? (
@@ -313,7 +315,8 @@ function RepaymentForm({ open, onClose, loan, today }: { open: boolean; onClose:
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-income"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "income" }) });
-  return <BottomSheet open={open} title="记录还款" closeLabel="关闭记录还款" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="repayment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存还款</button>}>
+  const dirty = useDirtyCheck({ amount, repaidDate, note, linkMode, linkAmount, linkCategory, accountId });
+  return <BottomSheet open={open} title="记录还款" closeLabel="关闭记录还款" onClose={onClose} dirty={dirty} discardDescription="这次还款还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="repayment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}保存还款</button>}>
     <form id="repayment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{loan?.borrowerName ?? "这笔借款"} · 未还 {money(loan?.outstandingMinor ?? 0)}</p>
       <div className="matter-form-grid"><label className="matter-field"><span>还款金额（人民币）</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0.00" /></label><label className="matter-field"><span>还款日期</span><input required type="date" value={repaidDate} onChange={(event) => setRepaidDate(event.target.value)} /></label></div>
@@ -387,8 +390,8 @@ function LoansTab({ today }: { today: string }) {
   const [loanForm, setLoanForm] = useState<{ open: boolean; editing?: Loan }>({ open: false });
   const [repayLoan, setRepayLoan] = useState<Loan>();
   const [showTrash, setShowTrash] = useState(false);
-  const borrowersQuery = useQuery({ queryKey: ["matters", "borrowers"], queryFn: () => api.borrowers(false) });
-  const loansQuery = useQuery({ queryKey: ["matters", "loans", showTrash], queryFn: () => api.loans({ status: showTrash ? "trash" : "active", pageSize: 100 }) });
+  const borrowersQuery = useQuery({ queryKey: ["matters", "borrowers"], queryFn: api.allBorrowers });
+  const loansQuery = useQuery({ queryKey: ["matters", "loans", showTrash], queryFn: () => api.allLoans(showTrash ? "trash" : "active") });
   const borrowers = listOf(borrowersQuery.data);
   const loans = listOf(loansQuery.data);
   const borrowerCards = borrowers.map((borrower) => ({ borrower, loans: loans.filter((loan) => loan.borrowerId === borrower.id) })).filter((item) => !showTrash || item.loans.length > 0);
@@ -471,7 +474,8 @@ function SubscriptionForm({ open, onClose, editing, today }: { open: boolean; on
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title={editing ? "编辑订阅" : "添加订阅"} closeLabel={editing ? "关闭编辑订阅" : "关闭添加订阅"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存订阅"}</button>}>
+  const dirty = useDirtyCheck({ name, plan, price, initialPrice, initialActualCny, initialAccountAmount, initialCategory, initialAccountId, currency, cycle, cycleDays, startDate, nextRenewalDate, reminderDays, url, note });
+  return <BottomSheet open={open} title={editing ? "编辑订阅" : "添加订阅"} closeLabel={editing ? "关闭编辑订阅" : "关闭添加订阅"} onClose={onClose} dirty={dirty} discardDescription="订阅修改还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存订阅"}</button>}>
     <form id="subscription-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">记下价格、续费日期和首月优惠，之后只需确认每次是否真的续费。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>订阅名称</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="OpenAI、opencode…" /></label><label className="matter-field"><span>套餐 <small>选填</small></span><input value={plan} onChange={(event) => setPlan(event.target.value)} placeholder="Pro" /></label></div>
@@ -537,7 +541,8 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
   const transactions = useQuery({ queryKey: ["transactions", "matter-link-subscription"], queryFn: () => api.transactions({ page: 1, pageSize: 50, deleted: "active", sort: "date", kind: "expense" }) });
-  return <BottomSheet open={open} title="记录一次续费" closeLabel="关闭记录续费" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-payment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>}>
+  const dirty = useDirtyCheck({ amount, currency, paidDate, actualCny, accountAmount, note, linkMode, linkAmount, linkCategory, accountId });
+  return <BottomSheet open={open} title="记录一次续费" closeLabel="关闭记录续费" onClose={onClose} dirty={dirty} discardDescription="这次续费还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="subscription-payment-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款</button>}>
     <form id="subscription-payment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{subscription?.name} · 确认付款后才会更新下一次续费日期。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>本次付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>币种</span><select value={currency} onChange={(event) => { setCurrency(event.target.value as MatterCurrency); setActualCny(""); setAccountAmount(""); }}><option value="USD">USD 美元</option><option value="CNY">CNY 人民币</option></select></label></div>
@@ -555,37 +560,79 @@ function PaymentForm({ open, onClose, subscription, today }: { open: boolean; on
   </BottomSheet>;
 }
 
+/** Only a renewal whose date has arrived needs confirming; inside the reminder window it is merely coming up. */
+function subscriptionNeedsConfirmation(subscription: Subscription, today: string): boolean {
+  return subscription.status === "active" && Boolean(subscription.nextBillingDate && subscription.nextBillingDate <= today);
+}
+
+function subscriptionIsDueSoon(subscription: Subscription, today: string): boolean {
+  if (subscription.status !== "active") return false;
+  return subscription.renewalState === "due" || subscription.renewalState === "overdue" || (subscription.nextBillingDate ? daysUntil(subscription.nextBillingDate, today) <= subscription.reminderDays : false);
+}
+
+/** Yearly plans count 1/12 per month and custom cycles scale to a 30-day month. */
+function monthlyCostMinor(subscription: Subscription): number {
+  if (subscription.cycle === "year") return subscription.recurringAmountMinor / 12;
+  if (subscription.cycle === "custom") return subscription.recurringAmountMinor * 30 / Math.max(1, subscription.customDays ?? 30);
+  return subscription.recurringAmountMinor;
+}
+
 function SubscriptionCard({ subscription, today, trash, onEdit, onPay }: { subscription: Subscription; today: string; trash?: boolean; onEdit: (subscription: Subscription) => void; onPay: (subscription: Subscription) => void }) {
   const queryClient = useQueryClient();
   const [showPayments, setShowPayments] = useState(false);
   const [showPaymentTrash, setShowPaymentTrash] = useState(false);
   const paymentsQuery = useQuery({ queryKey: ["matters", "subscription-payments", subscription.id, showPaymentTrash], queryFn: () => api.subscriptionPayments(subscription.id, showPaymentTrash ? "trash" : "active"), enabled: showPayments });
-  const update = useMutation({ mutationFn: (status: "active" | "paused" | "cancelled") => api.updateSubscription(subscription.id, { status, expectedUpdatedAt: subscription.updatedAt }), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
   const notify = useToast();
+  const refreshMatters = () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); };
+  const update = useMutation({
+    mutationFn: (status: "active" | "paused" | "cancelled") => api.updateSubscription(subscription.id, { status, expectedUpdatedAt: subscription.updatedAt }),
+    onSuccess: (updated, status) => {
+      refreshMatters();
+      if (status !== "cancelled") return;
+      // Cancelling is reversible, so it acts at once and offers undo instead of asking first.
+      const previous = subscription.status;
+      offerUndo(notify, `已取消“${subscription.name}”`, () => api.updateSubscription(updated.id, { status: previous, expectedUpdatedAt: updated.updatedAt }), refreshMatters);
+    },
+    onError: (reason) => notify(reason instanceof Error ? reason.message : "订阅状态更新失败", { tone: "error" })
+  });
   const remove = useMutation({
     mutationFn: () => api.deleteSubscription(subscription.id, subscription.updatedAt),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["matters"] });
-      offerUndo(notify, "订阅已移入回收站", () => api.restoreSubscription(subscription.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+      refreshMatters();
+      offerUndo(notify, "订阅已移入回收站", () => api.restoreSubscription(subscription.id), refreshMatters);
     }
   });
-  const restore = useMutation({ mutationFn: () => api.restoreSubscription(subscription.id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); } });
+  const restore = useMutation({ mutationFn: () => api.restoreSubscription(subscription.id), onSuccess: refreshMatters });
   const removePayment = useMutation({
     mutationFn: (payment: SubscriptionPayment) => api.deleteSubscriptionPayment(subscription.id, payment.id, payment.updatedAt),
     onSuccess: (_deleted, payment) => {
-      void queryClient.invalidateQueries({ queryKey: ["matters"] });
+      refreshMatters();
       void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] });
-      offerUndo(notify, "付款已移入回收站", () => api.restoreSubscriptionPayment(subscription.id, payment.id), () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); });
+      offerUndo(notify, "付款已移入回收站", () => api.restoreSubscriptionPayment(subscription.id, payment.id), refreshMatters);
     }
   });
-  const restorePayment = useMutation({ mutationFn: (payment: SubscriptionPayment) => api.restoreSubscriptionPayment(subscription.id, payment.id), onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] }); } });
+  const restorePayment = useMutation({ mutationFn: (payment: SubscriptionPayment) => api.restoreSubscriptionPayment(subscription.id, payment.id), onSuccess: () => { refreshMatters(); void queryClient.invalidateQueries({ queryKey: ["matters", "subscription-payments", subscription.id] }); } });
   const hint = subscriptionDateHint(subscription, today);
-  const due = subscription.renewalState === "due" || subscription.renewalState === "overdue" || (subscription.nextBillingDate ? daysUntil(subscription.nextBillingDate, today) <= subscription.reminderDays : false);
-  return <article className={`subscription-card ${due ? "is-due" : ""}`}>
-    <div className="subscription-card__top"><span className="subscription-card__logo">{subscription.name.slice(0, 1)}</span><div className="subscription-card__identity"><strong>{subscription.name}</strong><small>{subscription.plan || "订阅服务"} · {subscription.cycle === "month" ? "每月" : subscription.cycle === "year" ? "每年" : `每 ${subscription.customDays} 天`}</small></div><span className={`matter-status matter-status--${due ? "due" : subscription.status}`}>{subscription.renewalState === "active" || subscription.renewalState === "upcoming" ? hint : subscription.renewalState === "due" || subscription.renewalState === "overdue" ? "待确认" : subscription.renewalState === "paused" ? "已暂停" : "已取消"}</span></div>
-    <div className="subscription-card__summary"><div><span>常规价格</span><strong>{amountText(subscription.recurringAmountMinor, subscription.currency)}</strong></div><div><span>下次续费</span><strong>{subscription.nextBillingDate ? dateLabel(subscription.nextBillingDate) : "未设置"}</strong><small>{hint}</small></div><div><span>上次付款</span><strong>{subscription.lastPaymentDate ? dateLabel(subscription.lastPaymentDate) : "尚未记录"}</strong><small>{subscription.payments[0] ? amountText(subscription.payments[0].amountMinor, subscription.payments[0].currency) : ""}</small></div></div>
+  const cancelled = subscription.status === "cancelled";
+  const needsConfirmation = subscriptionNeedsConfirmation(subscription, today);
+  const dueSoon = subscriptionIsDueSoon(subscription, today);
+  const statusLabel = cancelled ? "已取消" : subscription.status === "paused" ? "已暂停" : needsConfirmation ? "待确认" : hint;
+  const statusTone = needsConfirmation || dueSoon ? "due" : subscription.status;
+  return <article className={`subscription-card ${dueSoon ? "is-due" : ""} ${cancelled ? "is-cancelled" : ""}`.trim()}>
+    <div className="subscription-card__top"><span className="subscription-card__logo">{subscription.name.slice(0, 1)}</span><div className="subscription-card__identity"><strong>{subscription.name}</strong><small>{subscription.plan || "订阅服务"} · {subscription.cycle === "month" ? "每月" : subscription.cycle === "year" ? "每年" : `每 ${subscription.customDays} 天`}</small></div><span className={`matter-status matter-status--${statusTone}`}>{statusLabel}</span></div>
+    <div className="subscription-card__summary"><div><span>常规价格</span><strong>{amountText(subscription.recurringAmountMinor, subscription.currency)}</strong></div><div><span>下次续费</span><strong>{cancelled ? "不再续费" : subscription.nextBillingDate ? dateLabel(subscription.nextBillingDate) : "未设置"}</strong><small>{cancelled ? "" : hint}</small></div><div><span>上次付款</span><strong>{subscription.lastPaymentDate ? dateLabel(subscription.lastPaymentDate) : "尚未记录"}</strong><small>{subscription.payments[0] ? amountText(subscription.payments[0].amountMinor, subscription.payments[0].currency) : ""}</small></div></div>
     {subscription.note && <p className="subscription-card__note">{subscription.note}</p>}
-    <div className="matter-card-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate()}><ArchiveRestore size={16} />恢复订阅</button> : <><button type="button" className="primary-button" onClick={() => onPay(subscription)} disabled={subscription.status === "cancelled"}><Check size={16} />记录续费</button><button type="button" className="secondary-button" onClick={() => setShowPayments((value) => !value)}>{showPayments ? "收起付款记录" : "付款记录"}<ChevronDown size={15} /></button>{subscription.website && <a className="icon-button" href={subscription.website} target="_blank" rel="noreferrer" aria-label="打开订阅网址"><ExternalLink size={16} /></a>}<button className="icon-button" type="button" aria-label="编辑订阅" onClick={() => onEdit(subscription)}><Pencil size={16} /></button><button className="icon-button danger-icon" type="button" aria-label="删除订阅" onClick={() => remove.mutate()}><Trash2 size={16} /></button><button className="secondary-button" type="button" onClick={() => update.mutate(subscription.status === "paused" ? "active" : "paused")}>{subscription.status === "paused" ? "恢复" : "暂停"}</button>{subscription.status !== "cancelled" && <button className="text-button" type="button" onClick={() => update.mutate("cancelled")}>取消订阅</button>}</>}</div>
+    <div className="matter-card-actions">{trash ? <button type="button" className="secondary-button" onClick={() => restore.mutate()}><ArchiveRestore size={16} />恢复订阅</button> : <>
+      {cancelled
+        ? <button type="button" className="primary-button" disabled={update.isPending} onClick={() => update.mutate("active")}><RotateCcw size={16} />重新启用</button>
+        : <button type="button" className="primary-button" onClick={() => onPay(subscription)}><Check size={16} />记录续费</button>}
+      <button type="button" className="secondary-button" aria-expanded={showPayments} onClick={() => setShowPayments((value) => !value)}>{showPayments ? "收起付款记录" : "付款记录"}<ChevronDown size={15} /></button>
+      {subscription.website && <a className="icon-button" href={subscription.website} target="_blank" rel="noreferrer" aria-label="打开订阅网址"><ExternalLink size={16} /></a>}
+      <button className="icon-button" type="button" aria-label="编辑订阅" onClick={() => onEdit(subscription)}><Pencil size={16} /></button>
+      <button className="icon-button danger-icon" type="button" aria-label="删除订阅" onClick={() => remove.mutate()}><Trash2 size={16} /></button>
+      {!cancelled && <button className="secondary-button" type="button" disabled={update.isPending} onClick={() => update.mutate(subscription.status === "paused" ? "active" : "paused")}>{subscription.status === "paused" ? "恢复" : "暂停"}</button>}
+      {!cancelled && <button className="text-button" type="button" disabled={update.isPending} onClick={() => update.mutate("cancelled")}>取消订阅</button>}
+    </>}</div>
     {showPayments && <div className="subscription-payments"><div className="subscription-payments__toolbar"><button type="button" className="text-button" onClick={() => setShowPaymentTrash((value) => !value)}>{showPaymentTrash ? "返回付款记录" : "付款回收站"}</button></div>{paymentsQuery.isLoading ? <span>正在读取付款记录…</span> : (paymentsQuery.data ?? []).length === 0 ? <span>{showPaymentTrash ? "没有已删除的付款" : "还没有付款记录"}</span> : (paymentsQuery.data ?? []).map((payment: SubscriptionPayment) => <div key={payment.id}><span>{dateLabel(payment.localDate)}</span><strong>{amountText(payment.amountMinor, payment.currency)}</strong><small>{payment.paymentType === "initial" ? "首笔付款" : payment.paymentType === "renewal" ? "续费" : "手动记录"}</small>{showPaymentTrash ? <button type="button" className="icon-button" aria-label="恢复付款" onClick={() => restorePayment.mutate(payment)}><ArchiveRestore size={15} /></button> : <button type="button" className="icon-button danger-icon" aria-label="删除付款" onClick={() => removePayment.mutate(payment)}><Trash2 size={15} /></button>}</div>)}</div>}
   </article>;
 }
@@ -595,15 +642,27 @@ function SubscriptionsTab({ today }: { today: string }) {
   const [form, setForm] = useState<{ open: boolean; editing?: Subscription }>({ open: false });
   const [paymentSubscription, setPaymentSubscription] = useState<Subscription>();
   const [showTrash, setShowTrash] = useState(false);
-  const subscriptionsQuery = useQuery({ queryKey: ["matters", "subscriptions", showTrash], queryFn: () => api.subscriptions({ status: showTrash ? "trash" : "active", pageSize: 100 }) });
+  const [showCancelled, setShowCancelled] = useState(false);
+  const subscriptionsQuery = useQuery({ queryKey: ["matters", "subscriptions", showTrash], queryFn: () => api.allSubscriptions(showTrash ? "trash" : "active") });
   const subscriptions = listOf(subscriptionsQuery.data);
-  const active = subscriptions.filter((item) => item.status !== "cancelled");
-  const due = active.filter((item) => item.renewalState === "due" || item.renewalState === "overdue" || (item.nextBillingDate ? daysUntil(item.nextBillingDate, today) <= item.reminderDays : false));
-  const upcoming = active.filter((item) => !due.includes(item)).sort((a, b) => (a.nextBillingDate ?? "9999-12-31").localeCompare(b.nextBillingDate ?? "9999-12-31"));
+  const current = subscriptions.filter((item) => item.status !== "cancelled");
+  const cancelled = subscriptions.filter((item) => item.status === "cancelled");
+  const running = current.filter((item) => item.status === "active");
+  const due = current.filter((item) => subscriptionIsDueSoon(item, today));
+  const confirmCount = due.filter((item) => subscriptionNeedsConfirmation(item, today)).length;
+  const upcoming = current.filter((item) => !due.includes(item)).sort((a, b) => (a.nextBillingDate ?? "9999-12-31").localeCompare(b.nextBillingDate ?? "9999-12-31"));
+  const monthlyByCurrency = (["CNY", "USD"] as const)
+    .map((currency) => ({ currency, amountMinor: Math.round(running.filter((item) => item.currency === currency).reduce((sum, item) => sum + monthlyCostMinor(item), 0)) }))
+    .filter((item) => item.amountMinor > 0);
+  const card = (item: Subscription) => <SubscriptionCard key={item.id} subscription={item} today={today} onEdit={(value) => setForm({ open: true, editing: value })} onPay={setPaymentSubscription} />;
   return <>
-    {!showTrash && <div className="matter-summary-grid"><article className="matter-summary-grid__main"><span>启用中的订阅</span><strong>{active.filter((item) => item.status === "active").length} 项</strong></article><article><span>近期续费</span><strong className={due.length ? "expense-text" : ""}>{due.length} 项</strong></article><article><span>本月记录</span><strong>{subscriptions.filter((item) => item.lastPaymentDate?.slice(0, 7) === today.slice(0, 7)).length} 项</strong></article></div>}
+    {!showTrash && <div className="matter-summary-grid"><article className="matter-summary-grid__main"><span>启用中的订阅</span><strong>{running.length} 项</strong></article><article><span>{confirmCount > 0 ? "待确认续费" : "近期续费"}</span><strong className={due.length ? "expense-text" : ""}>{confirmCount > 0 ? confirmCount : due.length} 项</strong></article><article><span>折合每月</span><strong>{monthlyByCurrency.length ? monthlyByCurrency.map((item) => amountText(item.amountMinor, item.currency)).join(" + ") : "—"}</strong></article></div>}
     <div className="matter-section-heading"><div><h2>{showTrash ? "订阅回收站" : "订阅列表"}</h2><p>{showTrash ? "删除满 30 天后会自动清理。" : "到期后不会自动视为已续费，确认付款后再更新下一次日期。"}</p></div><div className="matter-heading-actions"><button className="secondary-button" onClick={() => setShowTrash((value) => !value)}>{showTrash ? <RotateCcw size={17} /> : <Archive size={17} />}{showTrash ? "返回订阅" : "回收站"}</button>{!showTrash && <button className="primary-button" onClick={() => setForm({ open: true })}><Plus size={17} />添加订阅</button>}</div></div>
-    {subscriptionsQuery.isLoading ? <div className="skeleton matter-skeleton" /> : subscriptions.length === 0 ? <div className="content-card matter-empty"><Clock3 size={34} /><strong>{showTrash ? "回收站为空" : "还没有订阅"}</strong><p>{showTrash ? "删除的订阅会在这里保留 30 天。" : "把每月或每年的固定服务放在这里，续费日期就不会被忘记。"}</p>{!showTrash && <button className="secondary-button" onClick={() => setForm({ open: true })}><Plus size={16} />添加第一项</button>}</div> : showTrash ? <div className="subscription-list">{subscriptions.map((item) => <SubscriptionCard key={item.id} subscription={item} today={today} trash onEdit={() => undefined} onPay={() => undefined} />)}</div> : <div className="subscription-groups">{due.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>需要留意</h3><p>近期续费或已经到期的项目。</p></div><span className="matter-count-badge">{due.length}</span></div><div className="subscription-list">{due.map((item) => <SubscriptionCard key={item.id} subscription={item} today={today} onEdit={(value) => setForm({ open: true, editing: value })} onPay={setPaymentSubscription} />)}</div></section>}<section><div className="matter-section-heading matter-section-heading--small"><div><h3>其他订阅</h3><p>{upcoming.length} 项启用中或已暂停。</p></div></div><div className="subscription-list">{upcoming.map((item) => <SubscriptionCard key={item.id} subscription={item} today={today} onEdit={(value) => setForm({ open: true, editing: value })} onPay={setPaymentSubscription} />)}</div></section></div>}
+    {subscriptionsQuery.isLoading ? <div className="skeleton matter-skeleton" /> : subscriptions.length === 0 ? <div className="content-card matter-empty"><Clock3 size={34} /><strong>{showTrash ? "回收站为空" : "还没有订阅"}</strong><p>{showTrash ? "删除的订阅会在这里保留 30 天。" : "把每月或每年的固定服务放在这里，续费日期就不会被忘记。"}</p>{!showTrash && <button className="secondary-button" onClick={() => setForm({ open: true })}><Plus size={16} />添加第一项</button>}</div> : showTrash ? <div className="subscription-list">{subscriptions.map((item) => <SubscriptionCard key={item.id} subscription={item} today={today} trash onEdit={() => undefined} onPay={() => undefined} />)}</div> : <div className="subscription-groups">
+      {due.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>需要留意</h3><p>{confirmCount > 0 ? "续费日已到，确认付款后会推进下一次日期。" : "进入提醒窗口、即将续费的项目。"}</p></div><span className="matter-count-badge">{due.length}</span></div><div className="subscription-list">{due.map(card)}</div></section>}
+      {upcoming.length > 0 && <section><div className="matter-section-heading matter-section-heading--small"><div><h3>其他订阅</h3><p>{upcoming.length} 项启用中或已暂停。</p></div></div><div className="subscription-list">{upcoming.map(card)}</div></section>}
+      {cancelled.length > 0 && <section className="subscription-cancelled"><button type="button" className="subscription-cancelled__toggle" aria-expanded={showCancelled} aria-controls="subscription-cancelled-list" onClick={() => setShowCancelled((value) => !value)}><span><strong>已取消</strong><small>{cancelled.length} 项，不再提醒续费，可以重新启用</small></span><ChevronDown className={showCancelled ? "is-rotated" : ""} size={18} /></button>{showCancelled && <div id="subscription-cancelled-list" className="subscription-list">{cancelled.map(card)}</div>}</section>}
+    </div>}
     {form.open && <SubscriptionForm key={form.editing?.id ?? "new-subscription"} open onClose={() => { setForm({ open: false }); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }} editing={form.editing} today={today} />}
     {paymentSubscription && <PaymentForm key={paymentSubscription.id} open onClose={() => { setPaymentSubscription(undefined); void queryClient.invalidateQueries({ queryKey: ["matters"] }); }} subscription={paymentSubscription} today={today} />}
   </>;
@@ -646,7 +705,8 @@ function PlanForm({ open, onClose, editing, today }: { open: boolean; onClose: (
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title={editing ? "编辑计划" : "添加计划"} closeLabel={editing ? "关闭编辑计划" : "关闭添加计划"} onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存计划"}</button>}>
+  const dirty = useDirtyCheck({ title, amount, dueDate, reminderDays, note });
+  return <BottomSheet open={open} title={editing ? "编辑计划" : "添加计划"} closeLabel={editing ? "关闭编辑计划" : "关闭添加计划"} onClose={onClose} dirty={dirty} discardDescription="计划修改还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editing ? "保存修改" : "保存计划"}</button>}>
     <form id="plan-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">先记下以后要做的事。付款时再选账户并记账，现在不用绑定账户。</p>
       <label className="matter-field"><span>标题</span><input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="预购尾款、想买的东西…" maxLength={100} /></label>
@@ -694,7 +754,8 @@ function PlanCompleteForm({ open, onClose, plan, today }: { open: boolean; onClo
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["matters"] }); void queryClient.invalidateQueries({ queryKey: ["transactions"] }); void queryClient.invalidateQueries({ queryKey: ["funds"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open={open} title="完成并记账" closeLabel="关闭完成计划" onClose={onClose} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-complete-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款并记账</button>}>
+  const dirty = useDirtyCheck({ amount, paidDate, note, linkMode, linkTransactionId, linkCategory, accountId, accountAmount });
+  return <BottomSheet open={open} title="完成并记账" closeLabel="关闭完成计划" onClose={onClose} dirty={dirty} discardDescription="完成计划的信息还没有保存，关闭后会丢失。" busy={save.isPending} className="matter-sheet" footer={<button className="primary-button matter-submit" form="plan-complete-form" disabled={save.isPending} type="submit">{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}确认已付款并记账</button>}>
     <form id="plan-complete-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">{plan.title} · 会按实际付款金额记一笔支出，之后计划与账单不再同步。</p>
       <div className="matter-form-grid"><label className="matter-field"><span>实际付款金额</span><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>付款日期</span><input required type="date" value={paidDate} onChange={(event) => setPaidDate(event.target.value)} /></label></div>
@@ -746,7 +807,7 @@ function PlansTab({ today }: { today: string }) {
   const [completing, setCompleting] = useState<Plan>();
   const [showTrash, setShowTrash] = useState(false);
   const planView = parsePlanView(searchParams.get("planView"));
-  const plansQuery = useQuery({ queryKey: ["matters", "plans", showTrash], queryFn: () => api.plans({ status: showTrash ? "trash" : "active", pageSize: 100 }) });
+  const plansQuery = useQuery({ queryKey: ["matters", "plans", showTrash], queryFn: () => api.allPlans(showTrash ? "trash" : "active") });
   const plans = listOf(plansQuery.data);
   const openPlans = plans.filter((item) => item.status === "open");
   const attention = openPlans.filter((item) => item.attentionState === "due" || item.attentionState === "overdue");

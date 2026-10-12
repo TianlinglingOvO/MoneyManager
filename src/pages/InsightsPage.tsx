@@ -1,9 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { addMonths, addWeeks, addYears, format } from "date-fns";
-import { ArrowDownRight, ArrowUpRight, CalendarDays, ChartLine, ChevronLeft, ChevronRight, Clock3, Minus, ReceiptText, ShieldCheck, Target, WalletCards } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, CalendarDays, ChartLine, ChevronDown, ChevronLeft, ChevronRight, Clock3, HandCoins, Minus, ReceiptText, ShieldCheck, Target, Undo2, WalletCards } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import type { ReportGrain, SubscriptionSummary, TransactionKind } from "@shared/types";
+import type { PlanSummary, ReportGrain, SubscriptionSummary, TransactionKind } from "@shared/types";
 import { api } from "../api";
 import { buildCategoryComposition, categoryCompositionPercent } from "../category-composition";
 import { formatAccountBalance } from "../components/AccountPicker";
@@ -28,6 +28,7 @@ const grains: Array<{ value: Exclude<ReportGrain, "day">; label: string }> = [
 ];
 
 type InsightGrain = Exclude<ReportGrain, "day">;
+type TrendMode = "daily" | "cumulative";
 const insightMotionSessionKey = "money-manager.insights-motion-seen";
 
 function shouldPlayInitialMotion(): boolean {
@@ -49,18 +50,47 @@ function parseInsightState(searchParams: URLSearchParams, fallbackAnchor: string
   const grain: InsightGrain = rawGrain === "week" || rawGrain === "year" ? rawGrain : "month";
   const rawKind = searchParams.get("kind");
   const kind: TransactionKind = rawKind === "income" ? "income" : "expense";
+  const trendMode: TrendMode = searchParams.get("trend") === "cumulative" ? "cumulative" : "daily";
   return {
     grain,
     kind,
+    trendMode,
     anchor: isLocalDate(searchParams.get("anchor")) ? searchParams.get("anchor")! : fallbackAnchor
   };
 }
 
-/** The headline counts renewals needing confirmation; the hint must not relabel not-yet-due ones as needing it. */
-export function subscriptionRenewalHint(summary: Pick<SubscriptionSummary, "attentionCount" | "activeCount">): string {
-  if (summary.attentionCount > 0) return `${summary.attentionCount} 项待确认续费`;
+/**
+ * Only renewals whose date has arrived need confirming; ones inside the reminder window are "即将续费".
+ * Servers before 2.9.0 send no confirmCount, so attention keeps its old meaning there.
+ */
+export function subscriptionRenewalHint(summary: Pick<SubscriptionSummary, "attentionCount" | "activeCount" | "confirmCount">): string {
+  const confirmCount = summary.confirmCount ?? summary.attentionCount;
+  if (confirmCount > 0) return `${confirmCount} 项待确认续费`;
+  if (summary.attentionCount > 0) return `${summary.attentionCount} 项即将续费`;
   if (summary.activeCount > 0) return `暂无待确认，共 ${summary.activeCount} 项订阅`;
   return "暂无订阅";
+}
+
+function shortDateLabel(value: string): string {
+  return format(new Date(`${value}T12:00:00`), "M月d日");
+}
+
+/** The overview row leads with the most urgent count, otherwise names the next renewal. */
+export function subscriptionOverview(summary: SubscriptionSummary): { headline: string; detail: string } {
+  const confirmCount = summary.confirmCount ?? summary.attentionCount;
+  const next = summary.upcoming[0];
+  const nextLabel = next ? `${next.name} · ${next.nextBillingDate ? shortDateLabel(next.nextBillingDate) : "未设日期"}` : "";
+  if (confirmCount > 0) return { headline: `${confirmCount} 项待确认`, detail: `续费日已到，请确认付款${nextLabel ? ` · ${nextLabel}` : ""}` };
+  if (summary.attentionCount > 0) return { headline: `${summary.attentionCount} 项即将续费`, detail: nextLabel || "进入提醒窗口" };
+  if (summary.activeCount > 0) return { headline: next?.nextBillingDate ? `下次 ${shortDateLabel(next.nextBillingDate)}` : `${summary.activeCount} 项订阅`, detail: next ? `${next.name} · 共 ${summary.activeCount} 项订阅` : `共 ${summary.activeCount} 项订阅` };
+  return { headline: "暂无订阅", detail: "添加后会在续费前提醒" };
+}
+
+export function planOverview(summary: PlanSummary): { headline: string; detail: string } {
+  const next = summary.upcoming[0];
+  if (summary.attentionCount > 0) return { headline: `${summary.attentionCount} 项需留意`, detail: `共 ${summary.openCount} 项未完成${next ? ` · ${next.title}` : ""}` };
+  if (summary.openCount > 0) return { headline: `${summary.openCount} 项未完成`, detail: next ? `下一项：${next.title}` : "暂时都不急" };
+  return { headline: "暂无计划", detail: "预购尾款、某天要付的钱都可以记在这里" };
 }
 
 export function InsightsPage() {
@@ -70,7 +100,7 @@ export function InsightsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const fallbackAnchor = today;
   const state = useMemo(() => parseInsightState(searchParams, fallbackAnchor), [searchParams, fallbackAnchor]);
-  const { grain, kind, anchor } = state;
+  const { grain, kind, anchor, trendMode } = state;
   const [breakdownView, setBreakdownView] = useState<"detail" | "composition">("detail");
   const [showAllCategories, setShowAllCategories] = useState(false);
   const reducedMotion = useReducedMotion();
@@ -79,6 +109,26 @@ export function InsightsPage() {
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
+  const [barCondensed, setBarCondensed] = useState(false);
+  const [barExpanded, setBarExpanded] = useState(false);
+
+  useEffect(() => {
+    // Phones condense the pinned bar after scrolling past the summary; CSS ignores the flag on wider screens.
+    const container = document.querySelector<HTMLElement>(".main-column");
+    const read = () => (container && container.scrollHeight > container.clientHeight ? container.scrollTop : window.scrollY);
+    const onScroll = () => {
+      const condensed = read() > 180;
+      setBarCondensed(condensed);
+      if (!condensed) setBarExpanded(false);
+    };
+    onScroll();
+    container?.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      container?.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -93,11 +143,14 @@ export function InsightsPage() {
     const nextGrain = changes.grain ?? grain;
     const nextAnchor = changes.anchor ?? anchor;
     const nextKind = changes.kind ?? kind;
-    if (nextGrain === grain && nextAnchor === anchor && nextKind === kind) return;
+    const nextTrend = changes.trendMode ?? trendMode;
+    if (nextGrain === grain && nextAnchor === anchor && nextKind === kind && nextTrend === trendMode) return;
     const next = new URLSearchParams(searchParams);
     next.set("grain", nextGrain);
     next.set("anchor", nextAnchor);
     next.set("kind", nextKind);
+    if (nextTrend === "cumulative") next.set("trend", "cumulative");
+    else next.delete("trend");
     setSearchParams(next, { replace: true });
     requestChartMotion();
   };
@@ -168,19 +221,29 @@ export function InsightsPage() {
       period: grain === "year" ? "year" : "month",
       anchor,
       kind,
-      returnTo: `/?grain=${grain}&anchor=${anchor}&kind=${kind}`
+      returnTo: `/?grain=${grain}&anchor=${anchor}&kind=${kind}${trendMode === "cumulative" ? "&trend=cumulative" : ""}`
     });
     if (categoryId) params.set("categoryId", categoryId);
     return `/bills?${params.toString()}`;
   };
   // Stable across unrelated re-renders so the memoized donut does not re-render mid-animation; ledgerPath only reads grain, anchor, and kind.
-  const selectCategory = useCallback((categoryId: string) => navigate(ledgerPath(categoryId)), [navigate, grain, anchor, kind]);
+  const selectCategory = useCallback((categoryId: string) => navigate(ledgerPath(categoryId)), [navigate, grain, anchor, kind, trendMode]);
   const planningBudget = budgetQuery.data;
   const planningProgress = budgetProgress(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
   const planningTone = budgetTone(planningBudget?.totalMinor ?? null, planningBudget?.spentMinor ?? 0);
   const activeHealthIssues = healthQuery.data?.issues.filter((issue) => !issue.acknowledged) ?? [];
   const criticalHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "critical").length;
   const warningHealthIssues = activeHealthIssues.filter((issue) => issue.severity === "warning").length;
+  const infoHealthIssues = activeHealthIssues.length - criticalHealthIssues - warningHealthIssues;
+  const healthBreakdown = [
+    criticalHealthIssues > 0 ? `${criticalHealthIssues} 项需要处理` : null,
+    warningHealthIssues > 0 ? `${warningHealthIssues} 项建议核对` : null,
+    infoHealthIssues > 0 ? `${infoHealthIssues} 项提示` : null
+  ].filter(Boolean).join(" · ");
+  const subscriptionRow = subscriptionSummaryQuery.data ? subscriptionOverview(subscriptionSummaryQuery.data) : null;
+  const planRow = planSummaryQuery.data ? planOverview(planSummaryQuery.data) : null;
+  const showForecast = Boolean(planningBudget?.totalMinor != null && planningBudget.elapsedDays > 0 && planningBudget.elapsedDays < planningBudget.daysInMonth);
+  const currentPeriodLabel = grain === "week" ? "回到本周" : grain === "month" ? "回到本月" : "回到今年";
   const otherFunds = fundsSummaryQuery.data ? (["USD", "USDT"] as const)
     .filter((currency) => fundsSummaryQuery.data.currencyTotals[currency] !== 0)
     .map((currency) => formatAccountBalance(fundsSummaryQuery.data!.currencyTotals[currency], currency)) : [];
@@ -191,7 +254,7 @@ export function InsightsPage() {
 
   return (
     <div className={`page insights-page ${reportQuery.isFetching && report ? "is-refreshing" : ""}`}>
-      <section className="insights-bar" aria-label="期间与收支">
+      <section className={`insights-bar ${barCondensed ? "is-condensed" : ""} ${barExpanded ? "is-expanded" : ""}`.trim()} aria-label="期间与收支">
         <div className="period-switcher insights-bar__period">
           <button className="icon-button" onClick={() => move(-1)} aria-label="上一个期间"><ChevronLeft size={20} /></button>
           <div className="anchor-date">
@@ -199,7 +262,9 @@ export function InsightsPage() {
             <input type="date" value={anchor} aria-label="选择期间日期" onChange={(event) => updateState({ anchor: event.target.value })} />
           </div>
           <button className="icon-button" onClick={() => move(1)} aria-label="下一个期间"><ChevronRight size={20} /></button>
+          {report && !report.isCurrentPeriod && <button type="button" className="text-button insights-bar__today" onClick={() => updateState({ anchor: today })}><Undo2 size={15} />{currentPeriodLabel}</button>}
         </div>
+        <button type="button" className="insights-bar__mode" aria-expanded={barExpanded} aria-label="切换周月年与收支" onClick={() => setBarExpanded((value) => !value)}>{grains.find((item) => item.value === grain)?.label} · {kind === "expense" ? "支出" : "收入"}<ChevronDown size={15} /></button>
         <div className="segment-control grain-control">
           {grains.map((item) => <button key={item.value} className={grain === item.value ? "is-active" : ""} onClick={() => updateState({ grain: item.value })}>{item.label}</button>)}
         </div>
@@ -213,10 +278,10 @@ export function InsightsPage() {
       {reportQuery.isPending && !report ? <div className="skeleton chart-skeleton" /> : !report ? <div className="error-card">洞察暂时无法加载。</div> : (
         <>
           <section className="insight-summary" aria-label="期间摘要">
-            <article className="insight-summary__primary"><span>{kind === "expense" ? "本期支出" : "本期收入"}</span><strong><MoneyValue amountMinor={report.selectedTotalMinor} animateKey={motionKey} /></strong><small>{report.range.label}</small></article>
+            <article className="insight-summary__primary"><span>{kind === "expense" ? "本期支出" : "本期收入"}</span><strong><MoneyValue amountMinor={report.selectedTotalMinor} animateKey={motionKey} /></strong><small>{kind === "expense" ? `收入 ${money(report.incomeMinor)}` : `支出 ${money(report.expenseMinor)}`} · 结余 {report.balanceMinor < 0 ? "−" : ""}{money(Math.abs(report.balanceMinor))}</small></article>
             <div className="insight-summary__metrics">
               <article><span>{averageLabel}</span><strong><MoneyValue amountMinor={report.selectedAverageMinor} animateKey={motionKey} /></strong><small>按 {report.averageDivisor} 个{report.averageUnit === "month" ? "月" : "自然日"}计算</small></article>
-              <article className={`is-${comparisonTone}`}><span>{comparisonHeadline(report.grain, report.isCurrentPeriod, report.previousRange.label)}</span><strong><ComparisonIcon size={19} />{percentLabel(report.selectedComparison.percent, report.selectedComparison.state)}</strong><small>{formatSameProgressWindow(report.previousRange.start, report.previousRange.end, report.grain === "year")} · {report.selectedComparison.delta >= 0 ? "+" : "−"}{money(Math.abs(report.selectedComparison.delta))}</small></article>
+              <article className={`is-${comparisonTone}`}><span>{comparisonHeadline(report.grain, report.isCurrentPeriod, report.previousRange.label)}</span><strong><ComparisonIcon size={19} />{percentLabel(report.selectedComparison.percent, report.selectedComparison.state)}</strong><small>{formatSameProgressWindow(report.previousRange.start, report.previousRange.end, report.grain === "year")} · <span className="nowrap">{report.selectedComparison.delta >= 0 ? "+" : "−"}{money(Math.abs(report.selectedComparison.delta))}</span></small></article>
               <article><span>记录笔数</span><strong>{report.transactionCount}</strong><small>本期有效账目</small></article>
             </div>
           </section>
@@ -236,7 +301,7 @@ export function InsightsPage() {
                       ? "按分类分别提醒"
                       : planningBudget.remainingMinor != null && planningBudget.remainingMinor < 0
                         ? `已超支 ${money(Math.abs(planningBudget.remainingMinor))}`
-                        : `还可使用 ${money(planningBudget.remainingMinor ?? 0)}`}</span>
+                        : `还可使用 ${money(planningBudget.remainingMinor ?? 0)}`}{showForecast && planningBudget ? ` · 预计月底 ${money(planningBudget.forecastMinor)}` : ""}</span>
                   </> : <><strong>设置本月预算</strong><span>只提醒，不限制记账</span></>}
                 </span>
                 <ChevronRight size={16} />
@@ -245,8 +310,8 @@ export function InsightsPage() {
                 <span className="insights-overview__icon"><ShieldCheck size={18} /></span>
                 <span className="insights-overview__body">
                   <small>账本体检</small>
-                  <strong>{healthQuery.isPending ? "正在检查…" : `${activeHealthIssues.length} 项待核对`}</strong>
-                  <span>{activeHealthIssues.length > 0 ? `${criticalHealthIssues > 0 ? `${criticalHealthIssues} 项需要处理` : "无严重问题"}${warningHealthIssues > 0 ? ` · ${warningHealthIssues} 项建议核对` : ""}` : `目前没有需要处理的项目 · 数据健康度 ${healthQuery.data?.score ?? 100} 分`}</span>
+                  <strong>{healthQuery.isPending ? "正在检查…" : activeHealthIssues.length > 0 ? `${activeHealthIssues.length} 项待核对` : "暂无待核对"}</strong>
+                  <span>{activeHealthIssues.length > 0 ? healthBreakdown : `目前没有需要处理的项目 · 数据健康度 ${healthQuery.data?.score ?? 100} 分`}</span>
                 </span>
                 <ChevronRight size={16} />
               </button>}
@@ -256,28 +321,31 @@ export function InsightsPage() {
                 <ChevronRight size={16} />
               </Link>}
               {loanSummaryQuery.data && <Link to="/matters?tab=loans" className="insights-overview__row insights-overview__row--loan">
-                <span className="insights-overview__icon"><WalletCards size={18} /></span>
+                <span className="insights-overview__icon"><HandCoins size={18} /></span>
                 <span className="insights-overview__body"><small>待收款</small><strong>{money(loanSummaryQuery.data.outstandingMinor)}</strong><span>{loanSummaryQuery.data.borrowerCount} 位借款人 · 查看借款</span></span>
                 <ChevronRight size={16} />
               </Link>}
-              {subscriptionSummaryQuery.data && <Link to="/matters?tab=subscriptions" className="insights-overview__row insights-overview__row--subscription">
+              {subscriptionRow && <Link to="/matters?tab=subscriptions" className="insights-overview__row insights-overview__row--subscription">
                 <span className="insights-overview__icon"><Clock3 size={18} /></span>
-                <span className="insights-overview__body"><small>近期续费</small><strong>{subscriptionSummaryQuery.data.attentionCount} 项</strong><span>{subscriptionRenewalHint(subscriptionSummaryQuery.data)} · 查看订阅</span></span>
+                <span className="insights-overview__body"><small>订阅续费</small><strong>{subscriptionRow.headline}</strong><span>{subscriptionRow.detail}</span></span>
                 <ChevronRight size={16} />
               </Link>}
-              {planSummaryQuery.data && <Link to="/matters?tab=plans" className="insights-overview__row insights-overview__row--plan">
+              {planRow && <Link to="/matters?tab=plans" className="insights-overview__row insights-overview__row--plan">
                 <span className="insights-overview__icon"><CalendarDays size={18} /></span>
-                <span className="insights-overview__body"><small>待办计划</small><strong>{planSummaryQuery.data.attentionCount > 0 ? `${planSummaryQuery.data.attentionCount} 项` : `${planSummaryQuery.data.openCount} 项`}</strong><span>{planSummaryQuery.data.openCount} 项未完成 · 查看计划</span></span>
+                <span className="insights-overview__body"><small>待办计划</small><strong>{planRow.headline}</strong><span>{planRow.detail}</span></span>
                 <ChevronRight size={16} />
               </Link>}
             </section>}
 
             <div className="insights-main">
               <section className="content-card chart-card insights-trend-card">
-                <div className="section-title section-title--row"><div><h2>{kind === "expense" ? "支出" : "收入"}趋势</h2></div><span className="chart-legend"><i className={`is-${kind}`} />{averageLabel} {money(report.selectedAverageMinor)}</span></div>
+                <div className="section-title section-title--row"><div><h2>{kind === "expense" ? "支出" : "收入"}{trendMode === "cumulative" ? "累计" : "趋势"}</h2></div><SegmentedControl value={trendMode} label="趋势展示方式" className="trend-mode-switch" options={[{ value: "daily", label: "每日" }, { value: "cumulative", label: "累计" }]} onChange={(value) => updateState({ trendMode: value })} /></div>
+                <p className="chart-legend chart-legend--row">{trendMode === "cumulative"
+                  ? <><i className={`is-${kind}`} />本期累计<i className="is-previous" />上期同期累计</>
+                  : <><i className={`is-${kind}`} />{averageLabel} {money(report.selectedAverageMinor)}</>}</p>
                 {report.selectedTotalMinor === 0 ? <div className="empty-chart"><ChartLine size={36} /><strong>这个期间还没有{kind === "expense" ? "支出" : "收入"}</strong></div> : (
                   <Suspense fallback={<div className="trend-chart chart-loading" role="status">图表加载中…</div>}>
-                    <FinanceCharts trend={report.trend} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={chartMotionToken} motionEnabled={!reducedMotion} variant="trend" />
+                    <FinanceCharts trend={report.trend} previousTrend={report.previousTrend} trendMode={trendMode} categories={report.categories} kind={kind} averageMinor={report.selectedAverageMinor} averageLabel={averageLabel} animationToken={chartMotionToken} motionEnabled={!reducedMotion} variant="trend" />
                   </Suspense>
                 )}
               </section>

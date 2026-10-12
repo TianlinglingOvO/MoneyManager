@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addMonths, addYears, format } from "date-fns";
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, Plus, Search } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Plus, Search, Undo2 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { Transaction, TransactionKind } from "@shared/types";
-import { api } from "../api";
+import { api, apiUrl } from "../api";
 import { BottomSheet } from "../components/BottomSheet";
-import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { FilterSummary } from "../components/FilterSummary";
 import { RecentRecordedList } from "../components/RecentRecordedList";
@@ -17,8 +16,11 @@ import { money, monthRange, yearRange } from "../utils";
 
 type LedgerPeriod = "month" | "year";
 type BillMode = "recent" | "ledger" | "trash";
+type SearchScope = "period" | "all";
 
 const billsSessionKey = "money-manager.bills-session";
+/** Searching all time still needs a bounded range for the daily totals endpoint. */
+const allTimeRange = { start: "1970-01-01", end: "9999-12-31" } as const;
 
 interface BillsSessionState {
   search?: string;
@@ -78,17 +80,19 @@ export function BillsPage() {
   const [categoryId, setCategoryId] = useState(initialState.categoryId);
   const [search, setSearch] = useState(initialState.search);
   const [debouncedSearch, setDebouncedSearch] = useState(initialState.search);
+  const [searchScope, setSearchScope] = useState<SearchScope>("period");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [permanentlyDeleting, setPermanentlyDeleting] = useState<Transaction>();
-  const [refunding, setRefunding] = useState<Transaction>();
-  const [refundConfirm, setRefundConfirm] = useState<Transaction>();
-  const [refundAccountId, setRefundAccountId] = useState("");
   const returnTo = useRef(initialState.returnTo);
   const searchInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
     return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    if (!search.trim()) setSearchScope("period");
   }, [search]);
 
   useEffect(() => {
@@ -145,14 +149,15 @@ export function BillsPage() {
     return () => window.cancelAnimationFrame(frame);
   }, [initialState.focusSearch]);
 
-  const range = useMemo(() => period === "month" ? monthRange(anchor) : yearRange(anchor), [period, anchor]);
+  const searchAllTime = mode === "ledger" && searchScope === "all" && Boolean(debouncedSearch.trim());
+  const periodRange = useMemo(() => period === "month" ? monthRange(anchor) : yearRange(anchor), [period, anchor]);
+  const range = searchAllTime ? allTimeRange : periodRange;
   const report = useQuery({
     queryKey: ["report", period, anchor, "expense", "bills"],
     queryFn: () => api.report(period, anchor, "expense"),
     enabled: mode === "ledger"
   });
   const categories = useQuery({ queryKey: ["categories", "all", true], queryFn: () => api.categories(undefined, true) });
-  const funds = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
   useEffect(() => {
     if (!categoryId || !categories.data) return;
     const category = categories.data.find((item) => item.id === categoryId);
@@ -169,7 +174,7 @@ export function BillsPage() {
     kind: kind === "all" ? undefined : kind,
     categoryId: categoryId || undefined,
     search: debouncedSearch || undefined
-  } : ledgerFilters, [mode, kind, categoryId, debouncedSearch, ledgerFilters]);
+  } : searchAllTime ? { ...ledgerFilters, start: undefined, end: undefined } : ledgerFilters, [mode, kind, categoryId, debouncedSearch, ledgerFilters, searchAllTime]);
   const transactions = useInfiniteQuery({
     queryKey: ["transactions", "bills", mode, range, kind, categoryId, debouncedSearch],
     initialPageParam: 1,
@@ -199,33 +204,13 @@ export function BillsPage() {
       void queryClient.invalidateQueries();
     }
   });
-  const refund = useMutation({
-    mutationFn: ({ transaction, accountId }: { transaction: Transaction; accountId?: string }) =>
-      transaction.refundedAt
-        ? api.undoTransactionRefund(transaction.id, transaction.updatedAt)
-        : api.refundTransaction(transaction.id, transaction.updatedAt, accountId),
-    onSuccess: () => {
-      setRefunding(undefined);
-      setRefundConfirm(undefined);
-      setRefundAccountId("");
-      void queryClient.invalidateQueries();
-    }
-  });
-  const requestRefund = (transaction: Transaction) => {
-    if (transaction.refundedAt || transaction.accountId) {
-      refund.reset();
-      setRefundConfirm(transaction);
-      return;
-    }
-    setRefundAccountId(funds.data?.defaultIncomeAccountId ?? funds.data?.accounts[0]?.id ?? "");
-    setRefunding(transaction);
-  };
 
   const movePeriod = (direction: -1 | 1) => {
     const value = new Date(`${anchor}T12:00:00`);
     const next = period === "month" ? addMonths(value, direction) : addYears(value, direction);
     setAnchor(format(next, "yyyy-MM-dd"));
   };
+  const isCurrentPeriod = period === "month" ? anchor.slice(0, 7) === today.slice(0, 7) : anchor.slice(0, 4) === today.slice(0, 4);
   const periodLabel = period === "month"
     ? format(new Date(`${anchor}T12:00:00`), "yyyy年 M月")
     : format(new Date(`${anchor}T12:00:00`), "yyyy年");
@@ -249,12 +234,15 @@ export function BillsPage() {
   }, [kind, categoryId, debouncedSearch, report.data, dailyTotals.data]);
 
   const activeFilterCount = (kind !== "all" ? 1 : 0) + (categoryId ? 1 : 0);
-  const exportActions = (
-    <div className="export-actions" aria-label="导出全部账本">
-      <a className="secondary-button" href="/api/v1/export.csv"><Download size={16} />导出全部账本 CSV</a>
-      <a className="secondary-button" href="/api/v1/export.json"><Download size={16} />导出全部账本 JSON</a>
-    </div>
-  );
+  // Exports the list exactly as filtered; the full ledger export lives in Settings → 备份与导出.
+  const viewExportUrl = apiUrl("/api/v1/transactions.csv", {
+    start: searchAllTime ? undefined : periodRange.start,
+    end: searchAllTime ? undefined : periodRange.end,
+    kind: kind === "all" ? undefined : kind,
+    categoryId: categoryId || undefined,
+    search: debouncedSearch || undefined
+  });
+  const exportAction = <a className="secondary-button bill-export-link" href={viewExportUrl} title="按当前月份或年份、收支、分类和搜索条件导出 CSV"><Download size={16} />导出当前视图</a>;
   const filterControls = (
     <>
       <div className="kind-pills" role="group" aria-label="收支筛选">
@@ -297,29 +285,36 @@ export function BillsPage() {
         </section>
       ) : (
         <div id={`bills-panel-${mode === "trash" ? "trash" : period}`} className={`bill-view-panel ${mode === "trash" ? "bill-view-panel--trash" : "bill-view-panel--ledger"}`} role="tabpanel" aria-labelledby={`bills-tab-${mode === "trash" ? "trash" : period}`} key={mode === "trash" ? "trash" : period}>
-          {mode === "ledger" && <><section className="bill-toolbar bill-toolbar--period content-card">
-            <div className="period-switcher">
-              <button className="icon-button" onClick={() => movePeriod(-1)} aria-label="上一个期间"><ChevronLeft size={20} /></button>
-              <strong>{periodLabel}</strong>
-              <button className="icon-button" onClick={() => movePeriod(1)} aria-label="下一个期间"><ChevronRight size={20} /></button>
+          {mode === "ledger" && <section className="bill-period-card content-card" aria-label="期间与收支汇总">
+            <div className="bill-period-card__head">
+              {searchAllTime ? <div className="period-switcher period-switcher--static"><strong>全部时间</strong></div> : <div className="period-switcher">
+                <button className="icon-button" onClick={() => movePeriod(-1)} aria-label="上一个期间"><ChevronLeft size={20} /></button>
+                <strong>{periodLabel}</strong>
+                <button className="icon-button" onClick={() => movePeriod(1)} aria-label="下一个期间"><ChevronRight size={20} /></button>
+              </div>}
+              {!searchAllTime && !isCurrentPeriod && <button type="button" className="text-button bill-period-card__today" onClick={() => setAnchor(today)}><Undo2 size={15} />{period === "month" ? "回到本月" : "回到今年"}</button>}
+              <div className="desktop-only bill-period-card__export">{exportAction}</div>
             </div>
-            <div className="desktop-only">{exportActions}</div>
-          </section>
-
-          <div className="summary-strip">
-            <div><span>收入</span><strong className="income-text">{money(summary.incomeMinor)}</strong></div>
-            <div><span>支出</span><strong className="expense-text">{money(summary.expenseMinor)}</strong></div>
-            <div className="summary-strip__balance"><span>结余</span><strong>{money(summary.balanceMinor)}</strong></div>
-          </div></>}
+            <div className="summary-strip">
+              <div><span>收入</span><strong className="income-text">{money(summary.incomeMinor)}</strong></div>
+              <div><span>支出</span><strong className="expense-text">{money(summary.expenseMinor)}</strong></div>
+              <div className="summary-strip__balance"><span>结余</span><strong>{money(summary.balanceMinor)}</strong></div>
+            </div>
+          </section>}
 
           {mode === "trash" && <div className="trash-intro"><div><h2>回收站</h2><p>集中显示最近 30 天删除的账目，不受原账单月份限制。</p></div><strong>{transactionTotal} 笔</strong></div>}
 
           <section className="content-card bill-list-card">
             <div className="filter-row">
-              <label className="search-field"><Search size={17} /><input ref={searchInput} data-global-search value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索备注" /></label>
+              <label className="search-field"><Search size={17} /><input ref={searchInput} data-global-search value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索备注、分类或金额" aria-label="搜索备注、分类或金额" /></label>
               <div className="desktop-only desktop-filter-controls">{filterControls}</div>
               <span className="mobile-only"><FilterSummary count={activeFilterCount} onClick={() => setFiltersOpen(true)} /></span>
             </div>
+            {mode === "ledger" && debouncedSearch.trim() && <div className="search-scope" role="group" aria-label="搜索范围">
+              <span>搜索范围</span>
+              <button type="button" className={searchScope === "period" ? "is-active" : ""} aria-pressed={searchScope === "period"} onClick={() => setSearchScope("period")}>{period === "month" ? "本月" : "本年"}</button>
+              <button type="button" className={searchScope === "all" ? "is-active" : ""} aria-pressed={searchScope === "all"} onClick={() => setSearchScope("all")}>全部时间</button>
+            </div>}
 
             <div className="list-summary"><span>{mode === "trash" ? `已显示 ${transactionItems.length} / ${transactionTotal} 笔 · 删除满 30 天后自动清理` : `已显示 ${transactionItems.length} / ${transactionTotal} 笔`}</span>{transactions.isFetching && !transactions.isLoading && <em role="status">正在更新…</em>}{restore.isError && <em>恢复失败，请稍后重试</em>}</div>
             {transactions.isLoading ? <div className="skeleton list-skeleton" /> : (
@@ -330,8 +325,7 @@ export function BillsPage() {
                   onEdit={mode === "ledger" ? openEntry : undefined}
                   onRestore={mode === "trash" ? (transaction) => restore.mutate(transaction.id) : undefined}
                   onPermanentDelete={mode === "trash" ? setPermanentlyDeleting : undefined}
-                  onRefund={mode === "ledger" && funds.data?.enabled ? requestRefund : undefined}
-                  emptyText={mode === "trash" ? "回收站是空的" : "这个期间还没有账目"}
+                  emptyText={mode === "trash" ? "回收站是空的" : searchAllTime ? "没有找到匹配的账目" : "这个期间还没有账目"}
                 />
                 {transactions.hasNextPage && <button className="secondary-button load-more-button" disabled={transactions.isFetchingNextPage} onClick={() => transactions.fetchNextPage()}>{transactions.isFetchingNextPage ? "正在加载…" : `加载更多（还剩 ${transactionTotal - transactionItems.length} 笔）`}</button>}
               </>
@@ -347,41 +341,9 @@ export function BillsPage() {
           >
             <div className="bottom-sheet__content filter-sheet-content">
               {filterControls}
-              {mode === "ledger" && <div className="filter-sheet__export">{exportActions}</div>}
+              {mode === "ledger" && <div className="filter-sheet__export">{exportAction}</div>}
             </div>
           </BottomSheet>
-          <BottomSheet
-            open={Boolean(refunding)}
-            title="确认全额退款"
-            closeLabel="关闭退款账户选择"
-            onClose={() => { if (!refund.isPending) setRefunding(undefined); }}
-            footer={<button type="button" className="primary-button" disabled={!refundAccountId || refund.isPending} onClick={() => refunding && refund.mutate({ transaction: refunding, accountId: refundAccountId })}>{refund.isPending ? "正在退款…" : "确认全额退款"}</button>}
-          >
-            <div className="bottom-sheet__content refund-account-sheet">
-              <p>这笔旧账发生在资金追踪启用前，请选择退款实际进入的账户。原账会保留并标记为“已退款”。</p>
-              <div className="refund-account-list" role="radiogroup" aria-label="退款到账账户">
-                {(funds.data?.accounts ?? []).map((account) => (
-                  <button type="button" key={account.id} className={refundAccountId === account.id ? "is-active" : ""} role="radio" aria-checked={refundAccountId === account.id} onClick={() => setRefundAccountId(account.id)}>
-                    <span>{account.icon}</span><strong>{account.name}</strong><small>{money(account.balanceMinor)}</small>
-                  </button>
-                ))}
-              </div>
-              {refund.isError && <p className="form-error" role="alert">{refund.error instanceof Error ? refund.error.message : "退款失败"}</p>}
-            </div>
-          </BottomSheet>
-          <ConfirmSheet
-            open={Boolean(refundConfirm)}
-            title={refundConfirm?.refundedAt ? "撤销退款" : "确认全额退款"}
-            closeLabel={refundConfirm?.refundedAt ? "关闭撤销退款确认" : "关闭全额退款确认"}
-            description={refundConfirm?.refundedAt
-              ? "撤销这笔账的退款状态？它会重新计入收支并扣回资金。"
-              : "确认这笔账已全额退款？原账会保留，但不再计入收支和预算。"}
-            confirmLabel={refundConfirm?.refundedAt ? "撤销退款" : "确认全额退款"}
-            isPending={refund.isPending}
-            error={refund.isError ? (refund.error instanceof Error ? refund.error.message : "操作失败") : null}
-            onConfirm={() => refundConfirm && refund.mutate({ transaction: refundConfirm })}
-            onClose={() => { if (!refund.isPending) setRefundConfirm(undefined); }}
-          />
         </div>
       )}
       {permanentlyDeleting && <DangerConfirmDialog

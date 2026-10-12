@@ -68,7 +68,8 @@ export function AppShell() {
   const primaryItems = desktopPrimaryItems.map((item) => item.label === "事项"
     ? { ...item, to: matterDestination }
     : item);
-  const mobilePrimaryItems = primaryItems.filter((item) => ["洞察", "账单", "事项"].includes(item.label));
+  // Phones show every primary section except 分类, which stays one tap away in the header.
+  const mobilePrimaryItems = primaryItems.filter((item) => ["洞察", "账单", "事项", "资金"].includes(item.label));
   const mattersLabel = mattersNavLabel(subscriptionAttention, planAttention);
 
   useEffect(() => localStorage.setItem(sidebarStorageKey, String(collapsed)), [collapsed]);

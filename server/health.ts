@@ -31,8 +31,15 @@ function fingerprint(type: HealthIssueType, values: unknown[]): string {
   return createHash("sha256").update(JSON.stringify([type, ...values])).digest("hex");
 }
 
+const moneyFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function money(minor: number): string {
-  return `¥${(minor / 100).toFixed(2)}`;
+  return `¥${moneyFormatter.format(minor / 100)}`;
+}
+
+/** Puts a space between a Latin name and the Chinese suffix: "Netflix 即将续费", but "房租即将到期". */
+function named(name: string, suffix: string): string {
+  return /[A-Za-z0-9)]$/.test(name) ? `${name} ${suffix}` : `${name}${suffix}`;
 }
 
 function median(values: number[]): number {
@@ -222,6 +229,8 @@ export class HealthService {
 
   private addLargeExpenseIssues(month: string, transactions: Transaction[], issues: HealthIssue[]): void {
     const budget = this.budgets.get(month);
+    const fixedCategoryIds = new Set((this.database.prepare("SELECT id FROM categories WHERE is_fixed = 1")
+      .all() as unknown as Array<{ id: string }>).map((row) => row.id));
     const expenseItems = transactions.filter((item) => item.kind === "expense" && item.amountMinor >= 30_000);
     expenseItems.forEach((transaction) => {
       const historyStart = dateOffset(transaction.localDate, -90);
@@ -229,14 +238,24 @@ export class HealthService {
       const history = this.repository.allTransactionsForPeriod(historyStart, historyEnd)
         .filter((item) => item.kind === "expense" && item.categoryId === transaction.categoryId)
         .map((item) => item.amountMinor);
-      const categoryMedian = history.length >= 5 ? median(history) : null;
-      const unusualForCategory = categoryMedian !== null && transaction.amountMinor >= categoryMedian * 3;
-      const materialForBudget = budget.totalMinor !== null && transaction.amountMinor >= budget.totalMinor * 0.2;
-      if (!unusualForCategory && !materialForBudget) return;
-      const reason = [
-        unusualForCategory ? "达到同分类近 90 天中位数的 3 倍" : null,
-        materialForBudget ? "达到月总预算的 20%" : null
-      ].filter(Boolean).join("，");
+      let categoryMedian: number | null;
+      let reason: string;
+      if (fixedCategoryIds.has(transaction.categoryId)) {
+        // A fixed expense (rent, insurance) is large every month by design; flag it only when it jumps above the usual payment.
+        categoryMedian = history.length >= 1 ? median(history) : null;
+        if (categoryMedian === null || transaction.amountMinor < categoryMedian * 1.5) return;
+        reason = "比这项固定支出近 90 天的常见金额高出 50% 以上";
+      } else {
+        categoryMedian = history.length >= 5 ? median(history) : null;
+        const unusualForCategory = categoryMedian !== null && transaction.amountMinor >= categoryMedian * 3;
+        const materialForBudget = budget.totalMinor !== null && transaction.amountMinor >= budget.totalMinor * 0.2;
+        if (!unusualForCategory && !materialForBudget) return;
+        reason = [
+          unusualForCategory ? "达到同分类近 90 天中位数的 3 倍" : null,
+          materialForBudget ? "达到月总预算的 20%" : null
+        ].filter(Boolean).join("，");
+        if (!unusualForCategory) reason += "。如果这是房租、保险等每月固定的支出，可在“分类”里把它标记为固定支出，之后不再按大额提醒";
+      }
       issues.push({
         fingerprint: fingerprint("large_expense", [
           transaction.id,
@@ -285,7 +304,9 @@ export class HealthService {
           type: "budget_warning",
           severity: "warning",
           title: "预计月底会超出预算",
-          detail: `按当前进度预计月底支出 ${money(budget.forecastMinor)}。`,
+          detail: (budget.fixedSpentMinor ?? 0) > 0
+            ? `固定支出 ${money(budget.fixedSpentMinor ?? 0)} 按实际计入，其余支出按当前日均外推，预计月底支出 ${money(budget.forecastMinor)}。`
+            : `按当前日均外推，预计月底支出 ${money(budget.forecastMinor)}。`,
           relatedTransactionIds: [],
           href: `/?grain=month&anchor=${month}-01&kind=expense`,
           acknowledged: false
@@ -340,7 +361,7 @@ export class HealthService {
         ]),
         type: "subscription_due",
         severity: due ? "critical" : "info",
-        title: due ? `${subscription.name}续费待确认` : `${subscription.name}即将续费`,
+        title: due ? named(subscription.name, "续费待确认") : named(subscription.name, "即将续费"),
         detail: `续费日期为 ${subscription.next_billing_date}，SMB 不会自动假定已经续费。`,
         relatedTransactionIds: [],
         href: "/matters?tab=subscriptions",
@@ -376,7 +397,7 @@ export class HealthService {
         ]),
         type: "plan_due",
         severity: due ? "critical" : "info",
-        title: due ? `${plan.title}待付款` : `${plan.title}即将到期`,
+        title: due ? named(plan.title, "待付款") : named(plan.title, "即将到期"),
         detail: `计划日期为 ${plan.due_date}，完成时才会记账。`,
         relatedTransactionIds: [],
         href: "/matters?tab=plans",

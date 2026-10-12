@@ -46,10 +46,10 @@ export function RecentRecordedList({
             <strong>{transaction.category?.name ?? "未知分类"}</strong>
             <small>{transaction.note ?? "无备注"}</small>
             <em>
-              {transaction.source === "openclaw" ? <Bot size={13} /> : <PenLine size={13} />}
-              {transaction.source === "openclaw" ? "OpenClaw" : "手动"}
-              <i />发生于 {format(new Date(`${transaction.localDate}T12:00:00`), "M月d日")}
-              <i />{recordedLabel(transaction.createdAt, today, timezone)}
+              {/* Each segment stays whole; narrow columns wrap between segments, never inside a date. */}
+              <span>{transaction.source === "openclaw" ? <Bot size={13} /> : <PenLine size={13} />}{transaction.source === "openclaw" ? "OpenClaw" : "手动"}</span>
+              <span>发生于 {format(new Date(`${transaction.localDate}T12:00:00`), "M月d日")}</span>
+              <span>{recordedLabel(transaction.createdAt, today, timezone)}</span>
             </em>
           </span>
           <span className={`recent-recorded-list__amount is-${transaction.kind}`}>

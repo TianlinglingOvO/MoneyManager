@@ -3,8 +3,55 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, Check, ChevronDown, Clock3, History, Pencil, RotateCcw, ShieldCheck, X } from "lucide-react";
 import type { Category, OpenClawOperation, OpenClawOperationDetail, Proposal, TransactionKind } from "@shared/types";
 import { api, ApiError } from "../api";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { QuickEntry } from "../components/QuickEntry";
 import { money } from "../utils";
+
+const operationEntities: Record<string, string> = {
+  transaction: "账目",
+  category: "分类",
+  budget: "预算",
+  borrower: "借款人",
+  loan: "借款",
+  "loan.repayment": "还款",
+  subscription: "订阅",
+  "subscription.payment": "订阅付款",
+  plan: "计划",
+  account: "资金账户",
+  transfer: "转账",
+  backup: "备份",
+  settings: "设置"
+};
+const operationVerbs: Record<string, string> = {
+  create: "新增",
+  update: "修改",
+  delete: "移入回收站",
+  restore: "恢复",
+  archive: "停用",
+  migrate: "迁移",
+  purge: "永久删除",
+  set: "设置",
+  adjust: "校准余额",
+  complete: "完成",
+  refund: "全额退款",
+  "refund.undo": "撤销退款",
+  "batch.create": "批量新增",
+  timezone: "时区"
+};
+
+/** "loan.repayment.create" → "还款 · 新增"; unknown actions fall back to the raw name. */
+export function operationActionLabel(action: string): string {
+  const entity = Object.keys(operationEntities)
+    .sort((left, right) => right.length - left.length)
+    .find((key) => action === key || action.startsWith(`${key}.`));
+  if (!entity) return action;
+  const verb = action.slice(entity.length + 1);
+  return verb ? `${operationEntities[entity]} · ${operationVerbs[verb] ?? verb}` : operationEntities[entity]!;
+}
+
+function kindLabel(kind: TransactionKind | undefined): string {
+  return kind === "income" ? "收入" : "支出";
+}
 
 function actionLabel(proposal: Proposal): string {
   if (proposal.action === "create") return "新增一笔账";
@@ -42,6 +89,14 @@ function ProposalCard({ proposal, categoryMap, busy, onEdit, onResolve }: Propos
       : payload;
   const category = effective.categoryId ? categoryMap.get(effective.categoryId) : undefined;
   const targetUnavailable = target.isError || Boolean(target.data?.deletedAt);
+  const before = target.data;
+  const changes = proposal.action === "update" && before ? [
+    payload.kind !== undefined && payload.kind !== before.kind ? { label: "类型", from: kindLabel(before.kind), to: kindLabel(payload.kind) } : null,
+    payload.amountMinor !== undefined && payload.amountMinor !== before.amountMinor ? { label: "金额", from: money(before.amountMinor), to: money(payload.amountMinor) } : null,
+    payload.categoryId !== undefined && payload.categoryId !== before.categoryId ? { label: "分类", from: `${before.category?.icon ?? ""} ${before.category?.name ?? "未知分类"}`.trim(), to: `${categoryMap.get(payload.categoryId)?.icon ?? ""} ${categoryMap.get(payload.categoryId)?.name ?? "未知分类"}`.trim() } : null,
+    payload.localDate !== undefined && payload.localDate !== before.localDate ? { label: "日期", from: before.localDate, to: payload.localDate } : null,
+    payload.note !== undefined && (payload.note || null) !== (before.note || null) ? { label: "备注", from: before.note || "（无备注）", to: payload.note || "（无备注）" } : null
+  ].filter((item): item is { label: string; from: string; to: string } => Boolean(item)) : [];
 
   return (
     <article className="content-card proposal-card">
@@ -58,7 +113,8 @@ function ProposalCard({ proposal, categoryMap, busy, onEdit, onResolve }: Propos
         {effective.amountMinor !== undefined && <div><span>金额</span><strong className={effective.kind === "income" ? "income-text" : "expense-text"}>{effective.kind === "income" ? "+" : "−"}{money(effective.amountMinor)}</strong></div>}
         {category && <div><span>分类</span><strong>{category.icon} {category.name}</strong></div>}
         {effective.localDate && <div><span>日期</span><strong>{effective.localDate}</strong></div>}
-        {proposal.targetTransactionId && <div><span>目标记录</span><strong>{proposal.targetTransactionId.slice(0, 8)}…</strong></div>}
+        {proposal.targetTransactionId && before && <div className="wide"><span>目标账目</span><strong>{before.category?.icon} {before.category?.name ?? "未知分类"} · {before.kind === "income" ? "+" : "−"}{money(before.amountMinor)} · {before.localDate}{before.note ? ` · ${before.note}` : ""}</strong></div>}
+        {changes.length > 0 && <div className="wide proposal-card__changes"><span>修改内容</span><ul>{changes.map((change) => <li key={change.label}><b>{change.label}</b><del>{change.from}</del><span aria-hidden="true">→</span><ins>{change.to}</ins></li>)}</ul></div>}
         {effective.note !== undefined && <div className="wide"><span>备注</span><strong>{effective.note || "（无备注）"}</strong></div>}
         {targetUnavailable && <div className="wide proposal-card__target-error"><span>目标账目</span><strong>已删除或不可读取，无法执行或修订</strong></div>}
         {proposal.reason && <div className="wide"><span>OpenClaw 说明</span><strong>{proposal.reason}</strong></div>}
@@ -123,6 +179,8 @@ export function ProposalsPage() {
   const [editing, setEditing] = useState<Proposal | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [confirmDirect, setConfirmDirect] = useState(false);
+  const [undoTarget, setUndoTarget] = useState<OpenClawOperation | null>(null);
   const proposals = useQuery({ queryKey: ["proposals", "pending"], queryFn: () => api.proposals("pending") });
   const control = useQuery({ queryKey: ["openclaw", "settings"], queryFn: api.openClawSettings });
   const operations = useQuery({ queryKey: ["openclaw", "operations"], queryFn: () => api.openClawOperations(50) });
@@ -144,12 +202,12 @@ export function ProposalsPage() {
   });
   const updateMode = useMutation({
     mutationFn: api.updateOpenClawSettings,
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["openclaw"] }); }
+    onSuccess: async () => { setConfirmDirect(false); await queryClient.invalidateQueries({ queryKey: ["openclaw"] }); }
   });
   const undo = useMutation({
     mutationFn: api.undoOpenClawOperation,
-    onSuccess: async () => { setError(""); await queryClient.invalidateQueries(); },
-    onError: (reason) => setError(reason instanceof Error ? reason.message : "撤销失败")
+    // Errors stay inside the confirmation sheet, next to the action that failed.
+    onSuccess: async () => { setError(""); setUndoTarget(null); await queryClient.invalidateQueries(); }
   });
   const categoryMap = new Map(categories.data?.map((item) => [item.id, item]) ?? []);
 
@@ -158,8 +216,8 @@ export function ProposalsPage() {
       <header className="page-heading"><h1>OpenClaw 操作中心</h1><p>管理直接接管模式、撤销最近操作，并处理以前留下的待确认提案。</p></header>
       <section className={`safety-note openclaw-mode-card is-${control.data?.mode ?? "confirm"}`}>
         <ShieldCheck size={22} />
-        <div><strong>{control.data?.mode === "direct" ? "直接接管已开启" : "网页确认已开启"}</strong><p>{control.data?.mode === "direct" ? "账目、分类、借款、订阅、计划、AI、备份和时区操作会立即执行；可逆修改保留 30 天撤销记录。" : "普通账目只会创建待确认提案；借款、订阅和计划只允许查询。"}</p></div>
-        <button className={control.data?.mode === "direct" ? "secondary-button" : "primary-button"} disabled={!control.data || updateMode.isPending} onClick={() => updateMode.mutate(control.data?.mode === "direct" ? "confirm" : "direct")}>{control.data?.mode === "direct" ? "改为需要确认" : "开启直接接管"}</button>
+        <div><strong>{control.data?.mode === "direct" ? "直接接管已开启" : "网页确认已开启"}</strong><p>{control.data?.mode === "direct" ? "账目、分类、预算、借款、订阅、计划、资金账户、备份和时区操作会立即执行；可逆修改保留 30 天撤销记录。" : "普通账目只会创建待确认提案；借款、订阅和计划只允许查询。"}</p></div>
+        <button className={control.data?.mode === "direct" ? "secondary-button" : "primary-button"} disabled={!control.data || updateMode.isPending} onClick={() => { if (control.data?.mode === "direct") updateMode.mutate("confirm"); else { updateMode.reset(); setConfirmDirect(true); } }}>{control.data?.mode === "direct" ? "改为需要确认" : "开启直接接管"}</button>
       </section>
 
       <section className="content-card openclaw-history">
@@ -171,10 +229,10 @@ export function ProposalsPage() {
             return <article className="openclaw-operation-card" key={operation.id}>
               <div className="openclaw-operation-row">
                 <span className={`operation-status is-${operation.status}`}>{operation.status === "undone" ? "已撤销" : operation.status === "running" ? "处理中" : operation.status === "failed" ? "失败" : "已执行"}</span>
-                <div><strong>{operation.summary}</strong><small>{new Date(operation.createdAt).toLocaleString("zh-CN")} · {operation.action}</small></div>
+                <div><strong>{operation.summary}</strong><small>{new Date(operation.createdAt).toLocaleString("zh-CN")} · {operationActionLabel(operation.action)}</small></div>
                 <div className="openclaw-operation-actions">
                   <button className="secondary-button" type="button" aria-expanded={isOpen} onClick={() => setDetailId(isOpen ? null : operation.id)}>查看详情</button>
-                  {canUndo && <button className="secondary-button" disabled={undo.isPending} onClick={() => undo.mutate(operation.id)}><RotateCcw size={16} />撤销</button>}
+                  {canUndo && <button className="secondary-button" disabled={undo.isPending} onClick={() => { undo.reset(); setUndoTarget(operation); }}><RotateCcw size={16} />撤销</button>}
                   {!operation.undoable && <em>不可撤销</em>}
                 </div>
               </div>
@@ -203,6 +261,29 @@ export function ProposalsPage() {
         </div>
       )}
       {error && <div className="inline-error" role="alert">{error}</div>}
+      <ConfirmSheet
+        open={confirmDirect}
+        title="开启直接接管？"
+        closeLabel="关闭直接接管确认"
+        description="开启后，OpenClaw 对账目、分类、预算、借款、订阅、计划、资金账户、备份和时区的操作会立即生效，不再等你在网页上批准。可逆修改 30 天内可以在这里撤销；永久删除不能撤销。"
+        confirmLabel="开启直接接管"
+        isPending={updateMode.isPending}
+        error={updateMode.isError ? (updateMode.error instanceof Error ? updateMode.error.message : "切换失败") : null}
+        onConfirm={() => updateMode.mutate("direct")}
+        onClose={() => { if (!updateMode.isPending) setConfirmDirect(false); }}
+      />
+      <ConfirmSheet
+        open={Boolean(undoTarget)}
+        title="撤销这次操作？"
+        closeLabel="关闭撤销确认"
+        description={undoTarget ? `“${undoTarget.summary}”涉及的内容会恢复到执行前的样子。如果这些内容之后又被修改过，撤销会失败并保持现状。` : ""}
+        confirmLabel="撤销操作"
+        danger
+        isPending={undo.isPending}
+        error={undo.isError ? (undo.error instanceof Error ? undo.error.message : "撤销失败") : null}
+        onConfirm={() => { if (undoTarget) undo.mutate(undoTarget.id); }}
+        onClose={() => { if (!undo.isPending) setUndoTarget(null); }}
+      />
       <QuickEntry
         open={Boolean(editing)}
         proposal={editing ?? undefined}

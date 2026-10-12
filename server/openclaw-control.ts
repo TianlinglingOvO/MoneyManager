@@ -139,6 +139,7 @@ function categorySnapshot(category: Category): Record<string, unknown> {
     color: category.color,
     sortOrder: category.sortOrder,
     isArchived: category.isArchived,
+    isFixed: Boolean(category.isFixed),
     createdAt: category.createdAt,
     updatedAt: category.updatedAt
   };
@@ -611,12 +612,14 @@ export class OpenClawControlService {
     }
     if (!before) throw new ConflictError("分类恢复快照不完整");
     if (after && currentRow?.updated_at !== after.updatedAt) throw new ConflictError("分类后来已经改变，不能覆盖新内容");
-    this.database.prepare(`INSERT INTO categories(id, kind, name, icon, color, sort_order, is_archived, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    // Snapshots written before 2.9.0 carry no isFixed; keep the category's current flag for those.
+    const isFixed = before.isFixed === undefined ? Number(currentRow?.is_fixed ?? 0) : before.isFixed ? 1 : 0;
+    this.database.prepare(`INSERT INTO categories(id, kind, name, icon, color, sort_order, is_archived, is_fixed, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name, icon=excluded.icon, color=excluded.color,
-        sort_order=excluded.sort_order, is_archived=excluded.is_archived, updated_at=excluded.updated_at`)
+        sort_order=excluded.sort_order, is_archived=excluded.is_archived, is_fixed=excluded.is_fixed, updated_at=excluded.updated_at`)
       .run(id, sql(before.kind), sql(before.name), sql(before.icon), sql(before.color), sql(before.sortOrder),
-        before.isArchived ? 1 : 0, sql(before.createdAt), sql(before.updatedAt));
+        before.isArchived ? 1 : 0, isFixed, sql(before.createdAt), sql(before.updatedAt));
   }
 
   private restoreProposalSnapshot(id: string, before: Record<string, unknown> | null, after: Record<string, unknown> | null): void {

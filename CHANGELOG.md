@@ -2,6 +2,60 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.9.0 — 2026-10-12
+
+### Fixes
+
+- Accounts with a zero or negative balance can be renamed, edited, and calibrated again. The balance fields used the entry-amount parser, which rejects anything not above zero, so a ¥0.00 account failed to save with “请输入当前余额”, calibrating to 0 was impossible, and a negative opening balance in the activation wizard was silently saved as 0.
+- “查看/隐藏停用账户” and deleted transfers work again. The server parsed `?includeArchived=false` and `?includeDeleted=false` with `z.coerce.boolean()`, which turns the string `"false"` into `true`, so archived accounts and deleted transfers always showed. Query flags are now true only for `true` or `1`. Deleted transfers have their own “显示已删除” switch in the transfer list.
+- Closing an untouched 记一笔 sheet no longer asks “放弃这次修改？”. The dirty check compared two JSON strings built with different key orders, so it always saw a change.
+- Cancelling a subscription no longer makes it disappear. It acts immediately with an undo toast, and cancelled subscriptions stay listed under a collapsible 已取消 group where they can be reactivated. Paused subscriptions no longer count as due.
+- Switching 记一笔 to 收入 picks the default income account unless you already chose one.
+- “今天/昨天” in bill groups follow the ledger timezone instead of the device clock.
+- Every editable sheet now asks before discarding unsaved input: loans, repayments, subscriptions, renewals, plans, plan completion, transfers, calibration, and categories.
+- Matter lists load every page, so borrowers past 30 and loans, subscriptions, or plans past 100 no longer drop off silently.
+- Several inline text buttons (查看停用账户, 显示字段值, and others) rendered as grey browser-default buttons; `.text-button` now has a base style and keeps 44px targets on phones.
+
+### Budgets and ledger health
+
+- New **固定支出** flag on expense categories (migration 12). The month-end forecast counts fixed categories such as rent as recorded and extrapolates only the other spending per elapsed day, so paying rent on the 5th no longer predicts a budget overrun. The budget sheet and Settings explain the forecast.
+- Large-expense findings flag a fixed category only when the amount is at least 1.5× its usual payment; other categories keep the existing rules, and a large expense found only by the 20%-of-budget rule suggests marking the category as fixed.
+- Health text formats money with thousands separators (`¥3,200.00`) and spaces Latin names (`Netflix 即将续费`).
+
+### Insights
+
+- The summary card adds the other kind and the balance (`收入 ¥… · 结余 ¥…`).
+- The trend card switches between 每日 and 累计; the cumulative view draws the previous period's same-progress total as a dashed line. The choice lives in the URL (`trend=cumulative`). Axis labels keep thousands separators.
+- The overview counts match their breakdowns: health lists 需要处理, 建议核对, and 提示; renewals separate 待确认 (billing date reached) from 即将续费 and name the next one; plans show 需留意 versus 未完成.
+- 回到本月/本周/今年 appears when viewing another period. On phones the pinned bar condenses to one row after scrolling; tap 「月 · 支出」 to expand it.
+- Percent changes use the true minus sign, and a signed amount never wraps away from its number.
+
+### Bills and entry
+
+- Search matches the note, the category name, or an exact amount (`35`, `35.5`), and can widen from 本月 to 全部时间.
+- The month and year card merges the period switcher with the income/expense/balance strip; phones show the three totals in one row and hide the page description. “导出当前视图” downloads a CSV of the filtered list (`GET /api/v1/transactions.csv`); full exports stay in Settings.
+- 全额退款 moved from every row into the transaction edit sheet. A refunded entry is locked until 撤销退款, and refunding an untracked entry asks for a CNY account (USD accounts are no longer offered).
+- Account names show as a small chip instead of “账户：微 微信”. 最近录入 metadata wraps between segments, never inside a date.
+- 记一笔 adds 保存并再记一笔, which keeps the kind, category, date, and account. On phones the date shortcuts share one row with the date picker, so the note field is visible above the save bar.
+
+### Funds
+
+- Phones get a 资金 tab in the bottom bar.
+- Each movement names its source (category and note, transfer route, or borrower) and tags follow-up appends as 修改差额, 冲销, or 恢复; tapping a row opens the transaction or transfer. Tapping an account card filters the movement list to that account.
+- The transfer form uses the in-app account picker. Account cards stack name, balance, and actions below 1280px so names stay visible.
+
+### Categories, settings, and OpenClaw
+
+- Category add/edit and 分类处理 use the shared sheet (Escape, Android back, focus return, unsaved-change prompt). Icons have quick suggestions, rows show a 固定 badge, and reordering writes the whole order in one request (`PUT /api/v1/categories/order`).
+- Enabling OpenClaw direct mode and undoing an operation now ask first. Proposals show the target entry and a before → after list instead of an ID; operation types read as “账目 · 新增”. Removed the outdated “AI” from the direct-mode description.
+- MCP: `direct_create_category` and `direct_update_category` accept `isFixed`, and undo restores it; `list_transactions`, `get_budget_summary`, and `get_subscription_summary` describe the new search, forecast, `confirmCount`, and `monthlyEquivalent` fields.
+- Removed the unused `/api/v1/dashboard` endpoint.
+
+### Upgrade notes
+
+- Migration 12 adds `categories.is_fixed` (default off) and runs on the next service start after a verified pre-migration snapshot. Mark rent, insurance, or other monthly fixed categories in 分类 afterwards.
+- `npm.cmd run build` updates the served web files before the service reloads; use Settings → 检查并刷新 right after building so the page and the API match.
+
 ## 2.8.1 — 2026-09-29
 
 - Fixed: page backgrounds and personal wallpapers disappeared in 2.8.0. The new fixed background layer sat underneath `body`'s own background colour; `body` now isolates its stacking context so the layer paints above it and below all content. A stylesheet test guards the layer.

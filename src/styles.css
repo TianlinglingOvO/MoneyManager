@@ -94,6 +94,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 button { color: inherit; }
 a { color: inherit; text-decoration: none; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+/* Base for quiet inline actions; component rules later in the file refine size and colour. */
+.text-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; padding: 0 8px; white-space: nowrap; border: 0; border-radius: 9px; color: var(--accent-text, var(--accent-strong)); background: transparent; font-size: var(--text-caption); font-weight: 750; cursor: pointer; }
+.text-button:hover:not(:disabled) { background: var(--surface-selected); }
+.text-button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 900px) { .text-button { min-height: 44px; } }
 
 .app-shell { min-height: 100vh; }
 .boot-splash { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; pointer-events: none; background: var(--surface-page); opacity: 1; }
@@ -350,24 +355,37 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .date-shortcuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
 .date-shortcuts button { min-height: 42px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--surface-control); font-size: var(--text-caption); font-weight: 700; cursor: pointer; }
 .date-shortcuts button.is-active { border-color: var(--accent); color: var(--on-accent); background: var(--accent); }
-.entry-sheet__actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.entry-sheet__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 .save-button { min-width: 155px; }
+.entry-sheet__fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.entry-sheet__fieldset:disabled { opacity: .62; }
+.entry-sheet__hint--refunded { color: var(--expense); background: var(--orange-soft); }
+.entry-date-row { display: grid; gap: 7px; }
+.entry-refund-button, .entry-again-button { min-height: 44px; }
+.refund-confirm .account-picker { margin: -6px 0 16px; text-align: left; }
 .danger-ghost { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; border: 0; color: var(--danger); background: transparent; font-size: var(--text-caption); cursor: pointer; }
 .entry-success { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 14px 0 -9px; color: var(--income); font-size: 13px; font-weight: 750; }
 
-/* Bills */
-.bill-toolbar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18px; padding: 14px 16px; }
-.bill-toolbar--period { grid-template-columns: 1fr auto 1fr; }
-.bill-toolbar--period .period-switcher { grid-column: 2; }
-.bill-toolbar--period > .desktop-only { grid-column: 3; justify-self: end; }
+/* Bills: one card holds the period switcher and the income/expense/balance strip. */
+.bill-period-card { display: grid; padding: 0; overflow: hidden; }
+.bill-period-card__head { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.bill-period-card__head .period-switcher { grid-column: 2; }
+.bill-period-card__today { grid-column: 1; grid-row: 1; justify-self: start; display: inline-flex; align-items: center; gap: 5px; min-height: 36px; }
+.bill-period-card__export { grid-column: 3; grid-row: 1; justify-self: end; }
+.period-switcher--static { min-height: 33px; }
+.bill-export-link { min-height: 40px; padding: 0 12px; font-size: var(--text-caption); }
+.bill-period-card .summary-strip { border: 0; border-radius: 0; box-shadow: none; }
+.bill-period-card .summary-strip__balance { border-radius: 0; }
+.search-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); font-size: var(--text-caption); }
+.search-scope > span { margin-right: 2px; }
+.search-scope button { min-height: 36px; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface-control); font-size: var(--text-caption); font-weight: 750; cursor: pointer; }
+.search-scope button.is-active { border-color: var(--accent); color: var(--on-accent); background: var(--accent); }
 .segment-control { display: flex; gap: 3px; padding: 3px; border-radius: 11px; background: var(--surface-subtle); }
 .segment-control button { min-width: 72px; height: 40px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: var(--text-control); font-weight: 750; cursor: pointer; }
 .segment-control button.is-active { color: var(--accent-text, var(--accent)); background: var(--surface-control); box-shadow: var(--shadow); }
 .period-switcher { display: flex; align-items: center; justify-content: center; gap: 10px; }
 .period-switcher strong { min-width: 120px; text-align: center; font-family: var(--font-display); font-size: 17px; font-weight: 600; }
 .period-switcher .icon-button { width: 33px; height: 33px; }
-.export-actions { display: flex; gap: 7px; }
-.export-actions .secondary-button { min-height: 40px; padding: 0 12px; font-size: var(--text-caption); }
 .summary-strip { display: grid; grid-template-columns: 1fr 1fr 1.1fr; border: 1px solid rgba(173, 164, 148, .36); border-radius: 20px; background: var(--paper); box-shadow: var(--shadow); }
 .summary-strip > div { padding: 20px 24px; border-right: 1px solid var(--line); }
 .summary-strip > div:last-child { border-right: 0; }
@@ -501,15 +519,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .status-grid small { margin-top: auto; color: var(--muted); font-size: var(--text-caption); }
 .category-kind-tabs { margin-top: 17px; }
 .category-settings-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 13px; margin-top: 15px; }
-.category-settings-list > div { display: grid; grid-template-columns: 40px minmax(0,1fr) 28px 34px 34px; align-items: center; gap: 7px; min-height: 57px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-control); }
+.category-settings-list > div { display: grid; grid-template-columns: 40px minmax(0,1fr) auto; align-items: center; gap: 8px; min-height: 57px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-control); }
 .category-settings-list > div.is-archived { opacity: .62; background: var(--surface-subtle); }
 .category-settings-list__icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; font-size: 17px; }
-.category-settings-list > div > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.category-settings-list__body { min-width: 0; display: grid; gap: 3px; }
+.category-settings-list__body strong { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .category-settings-list strong { font-size: var(--text-body); }
 .category-settings-list small { color: var(--muted); font-size: var(--text-caption); }
-.category-settings-list .icon-button { width: 31px; height: 31px; }
-.category-order-controls { display: grid; gap: 1px; }
-.category-order-controls .icon-button { width: 26px; height: 22px; border-radius: 7px; }
+.category-settings-list__actions { display: flex; align-items: center; gap: 2px; }
+.category-settings-list .icon-button { width: 34px; height: 34px; }
+.category-fixed-badge { flex: none; padding: 1px 6px; border-radius: 999px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); font-size: 11px; font-style: normal; font-weight: 750; }
+.category-fixed-hint { margin: 10px 0 0; color: var(--muted); font-size: var(--text-caption); }
+.category-form { display: grid; gap: 2px; }
+.category-icon-field { display: grid; gap: 8px; }
+.category-icon-field > input { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--surface-control); font-size: var(--text-control); }
+.category-icon-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.category-icon-suggestions button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-control); font-size: 18px; cursor: pointer; }
+.category-icon-suggestions button.is-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.category-fixed-toggle { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-subtle); cursor: pointer; }
+.category-fixed-toggle input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent); }
+.category-fixed-toggle span { display: grid; gap: 4px; }
+.category-fixed-toggle small { color: var(--muted); font-size: var(--text-caption); line-height: 1.55; }
 .category-settings-list > .category-settings-empty { grid-column: 1 / -1; min-height: 140px; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 24px; border-style: dashed; color: var(--muted); text-align: center; }
 .category-settings-empty > span { color: var(--green-2); font-size: 27px; line-height: 1; }
 .category-settings-list .category-settings-empty strong { color: var(--ink); font-size: 14px; }
@@ -540,7 +570,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .category-preview { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 12px; border-radius: 13px; background: var(--paper-soft); }
 .category-preview span { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 12px; font-size: 18px; }
 .category-preview strong { font-size: var(--text-control); }
-.dialog-save { width: 100%; margin-top: 17px; }
 .category-usage-copy { margin: -5px 0 16px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .category-usage-copy strong { color: var(--ink); }
 .category-action-list { display: grid; gap: 10px; }
@@ -618,7 +647,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .amount-field input { font-size: 48px; }
   .category-picker { grid-template-columns: repeat(4, 1fr); }
   .entry-fields { grid-template-columns: 1fr; }
+  /* One row for 今天/昨天/前天 and the picker keeps the note field above the sticky save bar on phones. */
+  .entry-date-row { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: center; }
+  .entry-date-row > input { min-width: 0; padding-inline: 8px; }
   .entry-sheet__actions { position: sticky; bottom: 0; padding-top: 10px; background: var(--paper); }
+  .entry-sheet__actions > .primary-button, .entry-sheet__actions > .entry-again-button { flex: 1 1 140px; min-width: 0; }
   .proposal-card { padding: 16px; }
   .openclaw-mode-card { grid-template-columns: auto minmax(0, 1fr); }
   .openclaw-mode-card > button { grid-column: 1 / -1; width: 100%; margin-top: 4px; }
@@ -629,22 +662,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .operation-detail dl { grid-template-columns: 1fr; }
   .proposal-card__actions { flex-wrap: wrap; }
   .proposal-card__actions .primary-button { flex: 1; }
-  .bill-toolbar { grid-template-columns: 1fr; justify-items: stretch; padding: 12px; }
-  .bill-toolbar--period .period-switcher { grid-column: 1; }
-  .export-actions { justify-content: center; }
-  .summary-strip { grid-template-columns: 1fr 1fr; }
-  .summary-strip > div { padding: 15px; }
-  .summary-strip > div:nth-child(2) { border-right: 0; }
-  .summary-strip__balance { grid-column: 1 / -1; border-radius: 0 0 18px 18px; }
-  .summary-strip strong { font-size: 19px; }
+  .bill-period-card__head { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 10px; }
+  .bill-period-card__head .period-switcher { grid-column: 1 / -1; grid-row: 1; }
+  .bill-period-card__today { grid-column: 2; grid-row: 1; min-height: 44px; padding-inline: 4px; font-size: 12px; }
+  .bill-period-card__head:has(.bill-period-card__today) .period-switcher { grid-column: 1; justify-content: flex-start; }
+  .bills-page .page-heading p:not(.eyebrow) { display: none; }
+  .summary-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary-strip > div { min-width: 0; padding: 11px 10px; }
+  .summary-strip span { font-size: 11px; }
+  .summary-strip strong { margin-top: 3px; overflow: hidden; font-size: clamp(14px, 4.1vw, 17px); text-overflow: ellipsis; white-space: nowrap; }
+  .search-scope button { min-height: 44px; }
   .bill-list-card { padding: 14px; }
   .filter-row { grid-template-columns: 1fr 1fr; }
   .kind-pills { grid-column: 1 / -1; }
   .kind-pills button { flex: 1; }
   .search-field { grid-column: 1 / -1; }
   .filter-row select { width: 100%; max-width: none; }
-  .transaction-group__heading { align-items: start; }
-  .transaction-group__totals { width: 100%; justify-content: flex-start; margin-left: 0; }
+  /* Day totals stay on the date row and only wrap when income and expense both show. */
+  .transaction-group__totals b { padding: 4px 7px; }
   .grain-control, .kind-pills--large { width: 100%; }
   .grain-control button, .kind-pills--large button { flex: 1; }
   .chart-card, .category-breakdown-card { padding: 17px 13px; }
@@ -657,6 +692,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .status-grid > div:last-child:nth-child(odd) { grid-column: 1 / -1; min-height: 0; }
   .status-section, .categories-section, .backup-section, .connection-section { padding: 17px; }
   .category-settings-list { grid-template-columns: 1fr; }
+  .category-settings-list .icon-button { width: 44px; min-width: 44px; height: 44px; }
+  .category-settings-list__actions { gap: 0; }
+  .category-icon-suggestions button { width: 44px; height: 44px; }
+  .color-picker { gap: 6px; }
+  .color-picker button, .color-picker input { width: 40px; height: 40px; }
   .backup-status-grid { grid-template-columns: 1fr; }
   .connection-grid { grid-template-columns: 1fr; }
   .button-stack { display: grid; }
@@ -748,6 +788,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .confirm-sheet .bottom-sheet__footer > button { width: 100%; }
 .subscription-card { padding: 17px; }
 .subscription-card.is-due { border-color: color-mix(in srgb, var(--expense) 46%, var(--line)); box-shadow: 0 11px 30px color-mix(in srgb, var(--expense) 10%, transparent); }
+.subscription-card.is-cancelled { box-shadow: none; background: color-mix(in srgb, var(--surface-card) 70%, transparent); }
+.subscription-card.is-cancelled .subscription-card__identity, .subscription-card.is-cancelled .subscription-card__summary { opacity: .72; }
+.subscription-cancelled { display: grid; gap: 12px; }
+.subscription-cancelled__toggle { width: 100%; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 4px; border: 0; border-top: 1px solid var(--line); color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.subscription-cancelled__toggle > span { display: grid; gap: 3px; }
+.subscription-cancelled__toggle small { color: var(--muted); font-size: var(--text-caption); }
+.subscription-cancelled__toggle svg { flex: none; color: var(--muted); transition: transform var(--motion-micro, 140ms) ease; }
+.subscription-cancelled__toggle svg.is-rotated { transform: rotate(180deg); }
+.matter-summary-grid article > strong { overflow-wrap: anywhere; }
 .subscription-card__top { display: grid; grid-template-columns: 43px minmax(0,1fr) auto; align-items: center; gap: 11px; }
 .subscription-card__logo { width: 43px; height: 43px; display: grid; place-items: center; border-radius: 13px; color: var(--on-accent); background: var(--accent); font-family: var(--font-display); font-size: 19px; font-weight: 700; }
 .subscription-card__summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -888,8 +937,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .recent-recorded-list__body { min-width: 0; display: grid; gap: 3px; }
 .recent-recorded-list__body strong { font-size: 14px; }
 .recent-recorded-list__body small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.recent-recorded-list__body em { display: flex; align-items: center; gap: 5px; margin-top: 3px; color: var(--muted); font-size: 12px; font-style: normal; }
-.recent-recorded-list__body em i { width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: .65; }
+.recent-recorded-list__body em { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; margin-top: 3px; color: var(--muted); font-size: 12px; font-style: normal; }
+.recent-recorded-list__body em > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.recent-recorded-list__body em > span + span::before { content: ""; width: 3px; height: 3px; margin: 0 6px; border-radius: 50%; background: currentColor; opacity: .65; }
 .recent-recorded-list__amount { justify-self: end; font-family: var(--font-display); font-size: 15px; font-weight: 700; }
 .recent-recorded-list__amount.is-expense { color: var(--orange); }
 .recent-recorded-list__amount.is-income { color: var(--green-2); }
@@ -1000,7 +1050,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .main-column, .sidebar-is-collapsed .main-column { margin-left: 0; }
   .mobile-header { background: color-mix(in srgb, var(--canvas) 90%, transparent); }
   .brand--mobile strong { color: var(--ink); font-family: var(--font-display); }
-  .mobile-nav { grid-template-columns: repeat(4, 1fr); color: var(--muted); border-color: var(--line); background: color-mix(in srgb, var(--paper) 94%, transparent); box-shadow: var(--shadow-raised); }
+  .mobile-nav { grid-template-columns: repeat(5, 1fr); color: var(--muted); border-color: var(--line); background: color-mix(in srgb, var(--paper) 94%, transparent); box-shadow: var(--shadow-raised); }
   .mobile-nav__item { min-height: 54px; }
   .mobile-nav__item.is-active { color: var(--accent); }
   .mobile-nav__add { align-self: center; width: auto; height: 54px; display: grid; place-items: center; gap: 3px; margin: 0; border: 0; border-radius: 13px; color: var(--on-accent); background: var(--accent); box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 24%, transparent); font-size: 12px; font-weight: 750; }
@@ -1229,7 +1279,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .filter-sheet-content .filter-category-field { display: grid; gap: 7px; }
 .filter-sheet-content .filter-category-field select { width: 100%; max-width: none; min-height: 44px; }
 .filter-sheet__export { padding-top: 14px; border-top: 1px solid var(--line); }
-.filter-sheet__export .export-actions { display: grid; grid-template-columns: 1fr; }
+.filter-sheet__export .bill-export-link { width: 100%; min-height: 44px; }
 .filter-sheet__done { width: 100%; }
 
 @media (max-width: 900px) {
@@ -1253,7 +1303,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     right: 0;
     bottom: 0;
     height: calc(70px + env(safe-area-inset-bottom));
-    grid-template-columns: repeat(3, minmax(0, 1fr)) 64px;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) 64px;
     align-items: start;
     padding: 7px 12px max(6px, env(safe-area-inset-bottom));
     border: 0;
@@ -1350,13 +1400,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .funds-summary > :last-child { border-right: 0; }
 
 .funds-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.funds-account-card { min-width: 0; display: grid; grid-template-columns: 46px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface-card) 92%, transparent); }
+.funds-account-card { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface-card) 92%, transparent); transition: border-color var(--motion-micro, 140ms) ease, box-shadow var(--motion-micro, 140ms) ease; }
 .funds-account-card.is-archived { opacity: .68; }
+.funds-account-card.is-selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.funds-account-card__select { min-width: 0; min-height: 44px; display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 12px; padding: 0; border: 0; border-radius: 12px; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.funds-account-card__select:hover .funds-account-card__identity strong { text-decoration: underline; text-underline-offset: 3px; }
 .funds-account-card__icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 13px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); font-weight: 800; }
-.funds-account-card > div:nth-child(2) { min-width: 0; display: grid; gap: 4px; }
-.funds-account-card > div:nth-child(2) strong,
-.funds-account-card > div:nth-child(2) small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.funds-account-card > div:nth-child(2) small { color: var(--muted); font-size: var(--text-caption); }
+.funds-account-card__identity { min-width: 0; display: grid; gap: 4px; }
+.funds-account-card__identity strong,
+.funds-account-card__identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funds-account-card__identity small { color: var(--muted); font-size: var(--text-caption); }
+.funds-filter-chip { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; }
+.funds-movement-tag { display: inline-flex; margin-left: 6px; padding: 0 6px; border-radius: 999px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); font-size: 11px; font-style: normal; font-weight: 750; }
+.funds-movement-tag.is-muted { color: var(--muted); background: var(--surface-subtle); }
 .funds-account-card .money-value { font-size: 20px; }
 .funds-account-card__actions { display: flex; align-items: center; gap: 4px; }
 .funds-account-card__actions .icon-button { width: 40px; height: 40px; }
@@ -1371,10 +1427,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto 40px 40px; }
 .funds-movement-row:last-child,
 .funds-transfer-row:last-child { border-bottom: 0; }
-.funds-movement-row > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; }
+.funds-movement-row { width: 100%; border-top: 0; border-inline: 0; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.funds-movement-row:hover { background: var(--surface-subtle); }
+.funds-movement-row > span:first-child { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; }
 .funds-movement-row > span.is-in { color: var(--income); background: var(--green-soft); }
 .funds-movement-row > span.is-out { color: var(--expense); background: var(--orange-soft); }
-.funds-movement-row > div,
+.funds-movement-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funds-movement-row__body,
 .funds-transfer-row > div { min-width: 0; display: grid; gap: 3px; }
 .funds-movement-row small,
 .funds-transfer-row small { overflow: hidden; color: var(--muted); font-size: var(--text-caption); text-overflow: ellipsis; white-space: nowrap; }
@@ -1412,14 +1471,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .funds-adjustment-row__balances { justify-items: end; }
   .funds-adjustment-undo { grid-column: 1 / -1; width: 100%; }
 }
-.entry-account-field { display: grid; gap: 7px; }
+.entry-account-field { display: grid; gap: 7px; margin-top: 16px; }
 .entry-account-field select { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-control); }
 .transaction-refunded { display: inline-flex; align-items: center; width: fit-content; padding: 2px 7px; border-radius: 999px; color: var(--expense); background: var(--orange-soft); font-size: 11px; font-weight: 750; }
-.transaction-refund-button { min-height: 32px; padding: 0 8px; border: 0; border-radius: 9px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); cursor: pointer; }
-.refund-account-sheet { display: grid; gap: 14px; }
-.refund-account-list { display: grid; gap: 8px; }
-.refund-account-list button { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--text-primary); background: var(--surface-control); cursor: pointer; }
-.refund-account-list button:hover { border-color: var(--accent); background: var(--surface-selected); }
+.transaction-row__amount.is-refunded { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+.transaction-row__body small.transaction-account-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; width: fit-content; }
+.transaction-account-chip i { width: 16px; height: 16px; flex: 0 0 auto; display: inline-grid; place-items: center; border-radius: 5px; color: var(--accent-text, var(--accent-strong)); background: var(--surface-selected); font-size: 10px; font-style: normal; font-weight: 800; line-height: 1; }
+
+/* Below the wide two-column layout an account card is too narrow for name, balance and four actions in one row. */
+@media (max-width: 1279px) {
+  .funds-account-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .funds-account-card .money-value { grid-column: 1; justify-self: start; padding-left: 56px; }
+  .funds-account-card__actions { grid-column: 2; grid-row: 1 / span 2; display: grid; grid-template-columns: repeat(2, auto); }
+}
 
 @media (max-width: 900px) {
   .plan-view-tabs button { min-height: 44px; }
@@ -1441,9 +1505,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .funds-summary > button { min-height: 108px; padding: 17px; }
   .funds-summary__total { grid-column: 1 / -1; border-right: 0 !important; border-bottom: 1px solid var(--line); }
   .funds-summary > article:nth-child(2) { border-bottom: 0; }
-  .funds-account-card { grid-template-columns: 44px minmax(0, 1fr) auto; }
-  .funds-account-card .money-value { grid-column: 2; justify-self: start; }
-  .funds-account-card__actions { grid-column: 3; grid-row: 1 / span 2; display: grid; }
+  .funds-account-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .funds-account-card .money-value { grid-column: 1; justify-self: start; padding-left: 56px; }
+  .funds-account-card__actions { grid-column: 2; grid-row: 1 / span 2; display: grid; }
+  .funds-filter-chip { min-height: 44px; }
   .funds-account-card__actions .icon-button,
   .funds-transfer-row .icon-button { width: 44px; height: 44px; }
   .funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto 44px 44px; }
@@ -1451,14 +1516,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 @media (max-width: 520px) {
-  .funds-summary { grid-template-columns: 1fr; }
-  .funds-summary > article,
-  .funds-summary > button { border-right: 0; border-bottom: 1px solid var(--line); }
-  .funds-summary > :last-child { border-bottom: 0; }
-  .funds-summary__total { grid-column: auto; }
-  .funds-account-card { grid-template-columns: 44px minmax(0, 1fr); }
-  .funds-account-card .money-value { grid-column: 2; }
-  .funds-account-card__actions { grid-column: 1 / -1; grid-row: auto; display: flex; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 8px; }
+  /* Accounts and 新增账户 stay side by side under the total; the card stacks name, balance, then actions. */
+  .funds-summary > article:not(.funds-summary__total),
+  .funds-summary > button { min-height: 92px; }
+  .funds-account-card { grid-template-columns: minmax(0, 1fr); }
+  .funds-account-card .money-value { grid-column: 1; padding-left: 56px; }
+  .funds-account-card__actions { grid-column: 1; grid-row: auto; display: flex; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 8px; }
   .funds-transfer-row { grid-template-columns: minmax(0, 1fr) auto; }
   .funds-transfer-row > .icon-button { grid-row: 2; }
   .funds-transfer-row > .icon-button:nth-last-child(2) { grid-column: 1; justify-self: end; }
@@ -1491,7 +1554,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .entry-account-preview > span { min-width: 0; display: grid; gap: 3px; padding: 6px 8px; }
 .entry-account-preview small { color: var(--muted); font-size: 11px; }
 .entry-account-preview strong { overflow: hidden; font-family: var(--font-number); font-size: 14px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.transaction-account-impact { color: var(--accent-text, var(--accent-strong)) !important; }
 .confirm-action-group { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .confirm-action-group > button { width: 100%; min-height: 44px; }
 
@@ -1547,3 +1609,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 @media (prefers-reduced-motion: reduce) { .health-issue__expand svg { transition: none; } }
+
+/* 2.9.0: insights bar extras, cumulative trend legend */
+.nowrap { white-space: nowrap; }
+.insights-bar__mode { display: none; }
+.insights-bar__today { display: inline-flex; align-items: center; gap: 4px; min-height: 38px; padding: 0 6px; white-space: nowrap; }
+.chart-legend--row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 0 6px; }
+.chart-legend--row i { width: 9px; height: 9px; border-radius: 50%; }
+.chart-legend--row i + i, .chart-legend--row i:not(:first-child) { margin-left: 8px; }
+.chart-legend i.is-previous { width: 14px; height: 0; border-radius: 0; border-top: 2px dashed var(--muted); background: transparent; }
+@media (max-width: 680px) {
+  .insights-bar__today { min-height: 44px; font-size: 12px; }
+  .insights-bar.is-condensed { grid-template-columns: minmax(0, 1fr) auto; }
+  .insights-bar.is-condensed .insights-bar__period { grid-column: 1; }
+  .insights-bar.is-condensed .insights-bar__mode { grid-column: 2; grid-row: 1; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; color: var(--accent-text, var(--accent)); background: var(--surface-control); font-weight: 750; white-space: nowrap; }
+  .insights-bar.is-condensed:not(.is-expanded) .grain-control,
+  .insights-bar.is-condensed:not(.is-expanded) .insight-kind-switch,
+  .insights-bar.is-condensed .insights-bar__today { display: none; }
+}
+
+.budget-sheet__forecast { margin: -4px 0 14px; padding: 10px 12px; border-radius: 12px; color: var(--muted); background: var(--surface-subtle); font-size: var(--text-caption); line-height: 1.6; }
+.budget-sheet__forecast strong { color: var(--ink); font-family: var(--font-number); font-variant-numeric: tabular-nums; }
+.proposal-card__changes ul { display: grid; gap: 6px; margin: 4px 0 0; padding: 0; list-style: none; }
+.proposal-card__changes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: var(--text-control); }
+.proposal-card__changes b { min-width: 34px; color: var(--muted); font-size: var(--text-caption); }
+.proposal-card__changes del { color: var(--muted); }
+.proposal-card__changes ins { color: var(--ink); font-weight: 750; text-decoration: none; }

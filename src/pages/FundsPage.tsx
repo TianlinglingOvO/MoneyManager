@@ -14,17 +14,23 @@ import {
   RefreshCcw,
   Trash2,
   Undo2,
-  WalletCards
+  WalletCards,
+  X
 } from "lucide-react";
-import type { Account, AccountAdjustment, AccountCurrency, Transfer } from "@shared/types";
+import { format } from "date-fns";
+import { useNavigate } from "react-router-dom";
+import type { Account, AccountAdjustment, AccountCurrency, AccountMovement, Transfer } from "@shared/types";
 import { api } from "../api";
 import { AccountPicker, formatAccountBalance } from "../components/AccountPicker";
 import { BottomSheet } from "../components/BottomSheet";
 import { ConfirmSheet } from "../components/ConfirmSheet";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { MoneyValue } from "../components/MoneyValue";
+import { useEntry } from "../entry-context";
+import { useDirtyCheck } from "../form-state";
 import { useLedgerClock } from "../ledger-clock";
-import { money, parseAmountMinor } from "../utils";
+import { useReducedMotion } from "../motion";
+import { money, parseAmountMinor, parseSignedAmountMinor } from "../utils";
 
 type FundsSheet =
   | { type: "account"; account?: Account }
@@ -42,9 +48,29 @@ const presets: Array<{ name: string; icon: string; currency: AccountCurrency }> 
   { name: "招商银行", icon: "招", currency: "CNY" }
 ];
 
+/** Positive amounts: transfers and fees. */
 function cents(value: string): number | null {
   return parseAmountMinor(value);
 }
+
+/** Account balances may be zero or negative (an emptied wallet, an overdrawn card). */
+function balanceCents(value: string): number | null {
+  return parseSignedAmountMinor(value);
+}
+
+const movementSourceLabels: Record<AccountMovement["sourceType"], string> = {
+  transaction: "账目",
+  loan: "借出",
+  loan_repayment: "还款",
+  transfer: "转账",
+  adjustment: "余额校准"
+};
+
+const movementRevisionLabels: Partial<Record<NonNullable<AccountMovement["revision"]>, string>> = {
+  change: "修改差额",
+  reversal: "冲销",
+  restore: "恢复"
+};
 
 function ActivationPanel() {
   const queryClient = useQueryClient();
@@ -54,11 +80,14 @@ function ActivationPanel() {
   const [error, setError] = useState("");
   const activate = useMutation({
     mutationFn: () => {
+      const invalid = accounts.find((item) => item.balance.trim() && balanceCents(item.balance) === null);
+      if (invalid) throw new Error(`“${invalid.name || "账户"}”的余额格式不正确，最多保留两位小数`);
       const input = accounts.map((item) => ({
         name: item.name.trim(),
         icon: item.icon.trim() || "账",
         currency: item.currency,
-        openingBalanceMinor: cents(item.balance) ?? 0,
+        // An empty balance means zero; negative balances (an overdrawn card) are kept as entered.
+        openingBalanceMinor: item.balance.trim() ? balanceCents(item.balance) ?? 0 : 0,
         aliases: []
       }));
       if (input.some((item) => !item.name)) throw new Error("账户名称不能为空");
@@ -131,7 +160,7 @@ function AccountForm({ account, today, isDefault, onClose }: { account?: Account
   const [balanceNote, setBalanceNote] = useState("");
   const [aliases, setAliases] = useState(account?.aliases.join("、") ?? "");
   const [error, setError] = useState("");
-  const parsedBalanceMinor = cents(balance);
+  const parsedBalanceMinor = balanceCents(balance);
   const balanceChanged = account ? !account.isArchived && parsedBalanceMinor !== null && parsedBalanceMinor !== initialBalanceMinor : false;
   const canEditCurrency = !account || (!account.isArchived && account.isUnused && !isDefault);
   const currencyReason = account?.isArchived ? "请先恢复账户，再修改币种或余额。" : isDefault ? "默认收支账户不能更换币种。" : "已有资金流水或业务引用的账户不能更换币种。";
@@ -144,7 +173,7 @@ function AccountForm({ account, today, isDefault, onClose }: { account?: Account
   const save = useMutation({
     mutationFn: () => {
       if (!name.trim()) throw new Error("账户名称不能为空");
-      if (parsedBalanceMinor === null) throw new Error(account?.isUnused ? "请输入初始余额" : "请输入当前余额");
+      if (parsedBalanceMinor === null) throw new Error(account && !account.isUnused ? "请输入当前余额，可以是 0 或负数" : "请输入初始余额，可以是 0 或负数");
       const normalizedAliases = aliases.split(/[、,，]/).map((item) => item.trim()).filter(Boolean);
       if (!account) return api.createAccount({ name, icon, currency, openingBalanceMinor: parsedBalanceMinor, aliases: normalizedAliases });
       return api.updateAccount(account.id, {
@@ -199,9 +228,10 @@ function TransferForm({ accounts, transfer, today, onClose }: { accounts: Accoun
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["funds"] }); void queryClient.invalidateQueries({ queryKey: ["transactions"] }); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存失败")
   });
-  return <BottomSheet open title={transfer ? "编辑转账" : "记录转账"} closeLabel="关闭转账" onClose={onClose} className="funds-sheet" footer={<button className="primary-button" type="submit" form="transfer-form" disabled={save.isPending}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{transfer ? "保存转账" : "确认转账"}</button>}>
+  const dirty = useDirtyCheck({ fromId, toId, debited, credited, date, categoryId, note });
+  return <BottomSheet open title={transfer ? "编辑转账" : "记录转账"} closeLabel="关闭转账" onClose={onClose} dirty={dirty} discardDescription="这笔转账还没有保存，关闭后会丢失。" busy={save.isPending} className="funds-sheet" footer={<button className="primary-button" type="submit" form="transfer-form" disabled={save.isPending}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{transfer ? "保存转账" : "确认转账"}</button>}>
     <form id="transfer-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
-      <div className="matter-form-grid"><label className="matter-field"><span>转出账户</span><select value={fromId} onChange={(event) => setFromId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.icon} {account.name} · {formatAccountBalance(account.balanceMinor, account.currency)}</option>)}</select></label><label className="matter-field"><span>转入账户</span><select value={toId} onChange={(event) => setToId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.icon} {account.name} · {formatAccountBalance(account.balanceMinor, account.currency)}</option>)}</select></label></div>
+      <div className="matter-form-grid"><AccountPicker accounts={accounts} value={fromId} onChange={setFromId} label="转出账户" required /><AccountPicker accounts={accounts.filter((account) => !fromAccount || account.currency === fromAccount.currency)} value={toId} onChange={setToId} label="转入账户" emptyLabel="选择同币种账户" required /></div>
       <div className="matter-form-grid"><label className="matter-field"><span>实际扣款（{transferCurrency}）</span><input autoFocus inputMode="decimal" value={debited} onChange={(event) => setDebited(event.target.value.replace(/[^\d.]/g, ""))} /></label><label className="matter-field"><span>实际到账（{toAccount?.currency ?? transferCurrency}）</span><input inputMode="decimal" value={credited} onChange={(event) => setCredited(event.target.value.replace(/[^\d.]/g, ""))} /></label></div>
       {fromAccount && toAccount && fromAccount.currency !== toAccount.currency ? <p className="form-error" role="alert">请选择两个相同币种的账户。</p> : fromAccount?.currency !== "CNY" ? <p className="matter-form-intro">外币转账按原币等额记录，不产生人民币手续费账目。</p> : null}
       {feeMinor > 0 && <label className="matter-field"><span>手续费分类 <small>{money(feeMinor)}</small></span><select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">请选择</option>{expenseCategories.data?.map((category) => <option key={category.id} value={category.id}>{category.icon} {category.name}</option>)}</select></label>}
@@ -221,14 +251,15 @@ function AdjustmentForm({ accounts, account, today, onClose }: { accounts: Accou
   const [error, setError] = useState("");
   const save = useMutation({
     mutationFn: () => {
-      const targetBalanceMinor = cents(balance);
-      if (targetBalanceMinor === null) throw new Error("请输入实际余额");
+      const targetBalanceMinor = balanceCents(balance);
+      if (targetBalanceMinor === null) throw new Error("请输入实际余额，可以是 0 或负数");
       return api.adjustAccount({ accountId, targetBalanceMinor, localDate: date, note: note.trim() || null, requestId: crypto.randomUUID() });
     },
     onSuccess: () => { void Promise.all([queryClient.invalidateQueries({ queryKey: ["funds"] }), queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["insights"] })]); onClose(); },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "校准失败")
   });
-  return <BottomSheet open title="校准账户余额" closeLabel="关闭余额校准" onClose={onClose} className="funds-sheet" footer={<button className="primary-button" type="submit" form="adjustment-form" disabled={save.isPending}><RefreshCcw size={17} />保存校准</button>}>
+  const dirty = useDirtyCheck({ accountId, balance, date, note });
+  return <BottomSheet open title="校准账户余额" closeLabel="关闭余额校准" onClose={onClose} dirty={dirty} discardDescription="这次余额校准还没有保存，关闭后会丢失。" busy={save.isPending} className="funds-sheet" footer={<button className="primary-button" type="submit" form="adjustment-form" disabled={save.isPending}><RefreshCcw size={17} />保存校准</button>}>
     <form id="adjustment-form" className="matter-form" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
       <p className="matter-form-intro">只追加一笔差额流水，不会把差额算成收入或支出。</p>
       <AccountPicker accounts={accounts} value={accountId} onChange={(value) => { setAccountId(value); const next = accounts.find((item) => item.id === value); setBalance(next ? (next.balanceMinor / 100).toFixed(2) : ""); }} label="账户" required />
@@ -241,24 +272,31 @@ function AdjustmentForm({ accounts, account, today, onClose }: { accounts: Accou
 
 export function FundsPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { openEntry } = useEntry();
+  const reducedMotion = useReducedMotion();
   const { today } = useLedgerClock();
   const [sheet, setSheet] = useState<FundsSheet>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showDeletedTransfers, setShowDeletedTransfers] = useState(false);
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  const [movementError, setMovementError] = useState("");
   const [accountActionError, setAccountActionError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [showAdjustments, setShowAdjustments] = useState(false);
   const [adjustmentActionError, setAdjustmentActionError] = useState("");
   const [transferToDelete, setTransferToDelete] = useState<Transfer | null>(null);
   const summaryQuery = useQuery({ queryKey: ["funds", "summary"], queryFn: api.fundsSummary });
-  const accountsQuery = useQuery({ queryKey: ["accounts", showArchived], queryFn: () => api.accounts(showArchived), enabled: summaryQuery.data?.enabled === true });
+  // Archived accounts are always loaded so transfer and movement rows can still name them; the toggle only filters the grid.
+  const accountsQuery = useQuery({ queryKey: ["accounts", "with-archived"], queryFn: () => api.accounts(true), enabled: summaryQuery.data?.enabled === true });
   const movementsQuery = useInfiniteQuery({
-    queryKey: ["funds", "movements"],
-    queryFn: ({ pageParam }) => api.accountMovements({ page: pageParam, pageSize: 30, sort: "recent" }),
+    queryKey: ["funds", "movements", accountFilter ?? "all"],
+    queryFn: ({ pageParam }) => api.accountMovements({ accountId: accountFilter ?? undefined, page: pageParam, pageSize: 30, sort: "recent" }),
     initialPageParam: 1,
     getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
     enabled: summaryQuery.data?.enabled === true
   });
-  const transfersQuery = useQuery({ queryKey: ["funds", "transfers", showArchived], queryFn: () => api.transfers(showArchived), enabled: summaryQuery.data?.enabled === true });
+  const transfersQuery = useQuery({ queryKey: ["funds", "transfers", showDeletedTransfers], queryFn: () => api.transfers(showDeletedTransfers), enabled: summaryQuery.data?.enabled === true });
   const adjustmentsQuery = useInfiniteQuery({
     queryKey: ["funds", "adjustments"],
     queryFn: ({ pageParam }) => api.accountAdjustments({ page: pageParam, pageSize: 30 }),
@@ -268,9 +306,40 @@ export function FundsPage() {
   });
   const adjustmentItems = adjustmentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const movementItems = (movementsQuery.data?.pages.flatMap((page) => page.items) ?? []).filter((movement) => movement.sourceType !== "adjustment");
-  const accounts = accountsQuery.data ?? summaryQuery.data?.accounts ?? [];
-  const activeAccounts = accounts.filter((item) => !item.isArchived);
-  const accountMap = useMemo(() => new Map(accounts.map((item) => [item.id, item])), [accounts]);
+  const allAccounts = accountsQuery.data ?? summaryQuery.data?.accounts ?? [];
+  const archivedCount = allAccounts.filter((item) => item.isArchived).length;
+  const accounts = showArchived ? allAccounts : allAccounts.filter((item) => !item.isArchived);
+  const activeAccounts = allAccounts.filter((item) => !item.isArchived);
+  const accountMap = useMemo(() => new Map(allAccounts.map((item) => [item.id, item])), [allAccounts]);
+  const filteredAccount = accountFilter ? accountMap.get(accountFilter) : undefined;
+  const shortDate = (value: string) => format(new Date(`${value}T12:00:00`), value.slice(0, 4) === today.slice(0, 4) ? "M月d日" : "yyyy年M月d日");
+  const selectAccount = (accountId: string) => {
+    setMovementError("");
+    setAccountFilter((current) => current === accountId ? null : accountId);
+    window.requestAnimationFrame(() => document.getElementById("funds-movements")?.scrollIntoView?.({ behavior: reducedMotion ? "auto" : "smooth", block: "start" }));
+  };
+  const openMovementSource = async (movement: AccountMovement) => {
+    setMovementError("");
+    if (movement.sourceType === "transaction") {
+      if (movement.sourceDeleted) {
+        navigate("/bills?view=trash");
+        return;
+      }
+      try {
+        openEntry(await queryClient.fetchQuery({ queryKey: ["transaction", movement.sourceId], queryFn: () => api.transaction(movement.sourceId) }));
+      } catch {
+        setMovementError("这笔账暂时无法打开，请稍后重试。");
+      }
+      return;
+    }
+    if (movement.sourceType === "transfer") {
+      const transfer = transfersQuery.data?.find((item) => item.id === movement.sourceId);
+      if (transfer && !transfer.deletedAt) setSheet({ type: "transfer", transfer });
+      else setShowDeletedTransfers(true);
+      return;
+    }
+    if (movement.sourceType === "loan" || movement.sourceType === "loan_repayment") navigate("/matters?tab=loans");
+  };
   const otherCurrencyBalances = (["USD", "USDT"] as const).filter((currency) => (summaryQuery.data?.currencyTotals[currency] ?? 0) !== 0)
     .map((currency) => formatAccountBalance(summaryQuery.data!.currencyTotals[currency], currency));
   const archive = useMutation({
@@ -315,36 +384,47 @@ export function FundsPage() {
 
     <section className="funds-summary">
       <article className="funds-summary__total"><span>人民币可用资金</span><MoneyValue amountMinor={summaryQuery.data.totalMinor} />{otherCurrencyBalances.length > 0 && <small>其他币种：{otherCurrencyBalances.join(" · ")}</small>}</article>
-      <article><span>可用账户</span><strong>{summaryQuery.data.accountCount} 个</strong><small>启用于 {summaryQuery.data.startedOn}</small></article>
+      <article><span>可用账户</span><strong>{summaryQuery.data.accountCount} 个</strong><small>{summaryQuery.data.startedOn ? `${format(new Date(`${summaryQuery.data.startedOn}T12:00:00`), "yyyy年M月d日")}开始追踪` : "资金追踪已启用"}</small></article>
       <button type="button" onClick={() => setSheet({ type: "account" })}><Plus size={18} /><span>新增账户</span></button>
     </section>
 
     <section className="ledger-section">
-      <div className="section-title section-title--row"><div><h2>账户</h2><p>负数余额允许保留，但会在账本体检中提示。</p></div><button className="text-button" type="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? "隐藏停用账户" : "查看停用账户"}</button></div>
+      <div className="section-title section-title--row"><div><h2>账户</h2><p>点账户可只看它的资金流水。负数余额允许保留，但会在账本体检中提示。</p></div>{archivedCount > 0 && <button className="text-button" type="button" aria-pressed={showArchived} onClick={() => setShowArchived((value) => !value)}>{showArchived ? "隐藏停用账户" : `查看停用账户（${archivedCount}）`}</button>}</div>
       {accountActionError && <p className="form-error" role="alert">{accountActionError}</p>}
-      <div className="funds-account-grid">{accounts.map((account) => <article className={`funds-account-card ${account.isArchived ? "is-archived" : ""}`} key={account.id}>
-        <span className="funds-account-card__icon">{account.icon}</span>
-        <div><strong>{account.name}</strong><small>{account.currency} 账户{account.isArchived ? " · 已停用" : account.aliases.length ? ` · 别名：${account.aliases.join("、")}` : ""}</small></div>
+      <div className="funds-account-grid">{accounts.map((account) => <article className={`funds-account-card ${account.isArchived ? "is-archived" : ""} ${accountFilter === account.id ? "is-selected" : ""}`.trim()} key={account.id}>
+        <button type="button" className="funds-account-card__select" aria-pressed={accountFilter === account.id} title={accountFilter === account.id ? "显示全部账户的流水" : "只看这个账户的资金流水"} onClick={() => selectAccount(account.id)}>
+          <span className="funds-account-card__icon" aria-hidden="true">{account.icon}</span>
+          <span className="funds-account-card__identity"><strong>{account.name}</strong><small>{account.currency} 账户{account.isArchived ? " · 已停用" : account.aliases.length ? ` · 别名：${account.aliases.join("、")}` : ""}</small></span>
+        </button>
         <MoneyValue amountMinor={account.balanceMinor} currency={account.currency} />
         <div className="funds-account-card__actions"><button className="icon-button" type="button" aria-label={"编辑 " + account.name} onClick={() => setSheet({ type: "account", account })}><Pencil size={15} /></button><button className="icon-button" type="button" aria-label={(account.isArchived ? "恢复 " : "停用 ") + account.name} onClick={() => archive.mutate(account)}>{account.isArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}</button><button className="icon-button" type="button" aria-label={"校准 " + account.name} title={account.isArchived ? "请先恢复账户，再校准余额" : "校准账户余额"} disabled={account.isArchived} onClick={() => setSheet({ type: "adjust", account })}><RefreshCcw size={15} /></button><button className="icon-button danger-icon" type="button" title={!account.isUnused ? "已有资金记录的账户不能永久删除" : summaryQuery.data.defaultExpenseAccountId === account.id || summaryQuery.data.defaultIncomeAccountId === account.id ? "默认收支账户不能永久删除" : "永久删除未使用账户"} aria-label={"永久删除 " + account.name} disabled={!account.isUnused || summaryQuery.data.defaultExpenseAccountId === account.id || summaryQuery.data.defaultIncomeAccountId === account.id} onClick={() => { setAccountActionError(""); setDeleteTarget(account); }}><Trash2 size={15} /></button></div>
       </article>)}</div>
     </section>
 
     <div className="funds-columns">
-      <section className="ledger-section"><div className="section-title"><h2>最近资金流水</h2><p>展示记账、转账、借款和还款，不含余额校准。最新发生的在上。</p></div><div className="funds-movement-list" onScroll={(event) => {
-        const node = event.currentTarget;
-        if (node.scrollTop + node.clientHeight < node.scrollHeight - 48) return;
-        if (movementsQuery.hasNextPage && !movementsQuery.isFetchingNextPage) void movementsQuery.fetchNextPage();
-      }}>{movementItems.map((movement) => {
-        const movementAccount = accountMap.get(movement.accountId);
-        return <div className="funds-movement-row" key={movement.id}><span className={movement.deltaMinor >= 0 ? "is-in" : "is-out"}>{movement.deltaMinor >= 0 ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</span><div><strong>{movement.accountName ?? movementAccount?.name ?? "账户"}</strong><small>{movement.localDate} · {movement.sourceType === "transaction" ? "账目" : movement.sourceType === "loan" ? "借出" : movement.sourceType === "loan_repayment" ? "还款" : movement.sourceType === "transfer" ? "转账" : "余额校准"}</small></div><b className={movement.deltaMinor >= 0 ? "income-text" : "expense-text"}>{movement.deltaMinor >= 0 ? "+" : "−"}{formatAccountBalance(Math.abs(movement.deltaMinor), movement.currency)}</b></div>;
-      })}{movementItems.length === 0 && <p className="muted-copy">还没有资金流水。</p>}{movementsQuery.hasNextPage && <button className="secondary-button funds-movements-load-more" type="button" disabled={movementsQuery.isFetchingNextPage} onClick={() => movementsQuery.fetchNextPage()}>{movementsQuery.isFetchingNextPage ? <><LoaderCircle className="spin" size={16} />加载中</> : "加载更多"}</button>}</div></section>
-      <section className="ledger-section"><div className="section-title"><h2>转账记录</h2><p>人民币账户的扣到账差额可记录手续费；外币按原币等额转账。</p></div><div className="funds-transfer-list">{(transfersQuery.data ?? []).map((transfer) => {
+      <section className="ledger-section" id="funds-movements"><div className="section-title section-title--row"><div><h2>{filteredAccount ? `${filteredAccount.name}的资金流水` : "最近资金流水"}</h2><p>记账、转账、借款和还款，不含余额校准。点一行可打开对应的账目或转账。</p></div>{filteredAccount && <button type="button" className="text-button funds-filter-chip" onClick={() => setAccountFilter(null)}><X size={14} />全部账户</button>}</div>
+        {movementError && <p className="form-error" role="alert">{movementError}</p>}
+        <div className="funds-movement-list" onScroll={(event) => {
+          const node = event.currentTarget;
+          if (node.scrollTop + node.clientHeight < node.scrollHeight - 48) return;
+          if (movementsQuery.hasNextPage && !movementsQuery.isFetchingNextPage) void movementsQuery.fetchNextPage();
+        }}>{movementItems.map((movement) => {
+          const accountName = movement.accountName ?? accountMap.get(movement.accountId)?.name ?? "账户";
+          const sourceLabel = movementSourceLabels[movement.sourceType];
+          const revisionLabel = movement.revision ? movementRevisionLabels[movement.revision] : undefined;
+          const amountLabel = `${movement.deltaMinor >= 0 ? "+" : "−"}${formatAccountBalance(Math.abs(movement.deltaMinor), movement.currency)}`;
+          return <button type="button" className="funds-movement-row" key={movement.id} aria-label={`${movement.description ?? sourceLabel}，${accountName}，${shortDate(movement.localDate)}，${amountLabel}${revisionLabel ? `，${revisionLabel}` : ""}。查看来源`} onClick={() => void openMovementSource(movement)}>
+            <span className={movement.deltaMinor >= 0 ? "is-in" : "is-out"}>{movement.deltaMinor >= 0 ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</span>
+            <span className="funds-movement-row__body"><strong>{movement.description ?? sourceLabel}</strong><small>{filteredAccount ? "" : `${accountName} · `}{shortDate(movement.localDate)} · {sourceLabel}{revisionLabel && <em className="funds-movement-tag">{revisionLabel}</em>}{movement.sourceDeleted && <em className="funds-movement-tag is-muted">已删除</em>}</small></span>
+            <b className={movement.deltaMinor >= 0 ? "income-text" : "expense-text"}>{amountLabel}</b>
+          </button>;
+        })}{movementItems.length === 0 && <p className="muted-copy">{filteredAccount ? "这个账户还没有资金流水。" : "还没有资金流水。"}</p>}{movementsQuery.hasNextPage && <button className="secondary-button funds-movements-load-more" type="button" disabled={movementsQuery.isFetchingNextPage} onClick={() => movementsQuery.fetchNextPage()}>{movementsQuery.isFetchingNextPage ? <><LoaderCircle className="spin" size={16} />加载中</> : "加载更多"}</button>}</div></section>
+      <section className="ledger-section"><div className="section-title section-title--row"><div><h2>转账记录</h2><p>人民币账户的扣到账差额可记录手续费；外币按原币等额转账。</p></div><button type="button" className="text-button" aria-pressed={showDeletedTransfers} onClick={() => setShowDeletedTransfers((value) => !value)}>{showDeletedTransfers ? "隐藏已删除" : "显示已删除"}</button></div><div className="funds-transfer-list">{(transfersQuery.data ?? []).map((transfer) => {
         const fromAccount = accountMap.get(transfer.fromAccountId);
         const toAccount = accountMap.get(transfer.toAccountId);
         const currency = transfer.currency;
-        return <div className={`funds-transfer-row ${transfer.deletedAt ? "is-deleted" : ""}`} key={transfer.id}><div><strong>{fromAccount?.name ?? "账户"} → {toAccount?.name ?? "账户"}</strong><small>{transfer.localDate}{transfer.feeMinor && currency === "CNY" ? ` · 手续费 ${money(transfer.feeMinor)}` : ""}</small></div><b>{formatAccountBalance(transfer.creditedMinor, currency)}</b><button className="icon-button" type="button" aria-label={transfer.deletedAt ? "恢复转账" : "编辑转账"} onClick={() => transfer.deletedAt ? removeTransfer.mutate(transfer) : setSheet({ type: "transfer", transfer })}>{transfer.deletedAt ? <ArchiveRestore size={15} /> : <Pencil size={15} />}</button>{!transfer.deletedAt && <button className="icon-button danger-icon" type="button" aria-label="删除转账" onClick={() => { removeTransfer.reset(); setTransferToDelete(transfer); }}><Trash2 size={15} /></button>}</div>;
-      })}{transfersQuery.data?.length === 0 && <p className="muted-copy">还没有转账记录。</p>}</div></section>
+        return <div className={`funds-transfer-row ${transfer.deletedAt ? "is-deleted" : ""}`} key={transfer.id}><div><strong>{fromAccount?.name ?? "账户"} → {toAccount?.name ?? "账户"}</strong><small>{shortDate(transfer.localDate)}{transfer.feeMinor && currency === "CNY" ? ` · 手续费 ${money(transfer.feeMinor)}` : ""}{transfer.note ? ` · ${transfer.note}` : ""}</small></div><b>{formatAccountBalance(transfer.creditedMinor, currency)}</b><button className="icon-button" type="button" aria-label={transfer.deletedAt ? "恢复转账" : "编辑转账"} onClick={() => transfer.deletedAt ? removeTransfer.mutate(transfer) : setSheet({ type: "transfer", transfer })}>{transfer.deletedAt ? <ArchiveRestore size={15} /> : <Pencil size={15} />}</button>{!transfer.deletedAt && <button className="icon-button danger-icon" type="button" aria-label="删除转账" onClick={() => { removeTransfer.reset(); setTransferToDelete(transfer); }}><Trash2 size={15} /></button>}</div>;
+      })}{transfersQuery.data?.length === 0 && <p className="muted-copy">{showDeletedTransfers ? "没有转账记录。" : "还没有转账记录。"}</p>}</div></section>
     </div>
 
 
@@ -389,7 +469,7 @@ export function FundsPage() {
       open={Boolean(transferToDelete)}
       title="删除转账"
       closeLabel="关闭删除转账确认"
-      description="删除转账会同时冲销本金和手续费的资金影响。之后可在“查看停用账户”中找到并恢复这笔转账。"
+      description="删除转账会同时冲销本金和手续费的资金影响。之后可在“转账记录 → 显示已删除”中找到并恢复这笔转账。"
       confirmLabel="删除转账"
       danger
       isPending={removeTransfer.isPending}

@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Account, FundsSummary, Transfer } from "../shared/types";
 import { api } from "../src/api";
+import { EntryContext } from "../src/entry-context";
 import { FundsPage } from "../src/pages/FundsPage";
 import { DangerConfirmDialog } from "../src/components/DangerConfirmDialog";
 
@@ -16,11 +17,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderPage() {
+function renderPage(openEntry = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter><FundsPage /></MemoryRouter>
+      <EntryContext.Provider value={{ openEntry, closeEntry: vi.fn() }}>
+        <MemoryRouter><FundsPage /></MemoryRouter>
+      </EntryContext.Provider>
     </QueryClientProvider>
   );
 }
@@ -152,12 +155,97 @@ describe("资金页面", () => {
     vi.spyOn(api, "transfers").mockResolvedValue([]);
     renderPage();
     expect(await screen.findByText("人民币可用资金")).toBeInTheDocument();
-    expect(await screen.findByText("2026-08-29 · 账目")).toBeInTheDocument();
-    expect(screen.queryByText("2026-08-27 · 账目")).not.toBeInTheDocument();
+    expect(await screen.findByText("微信 · 8月29日 · 账目")).toBeInTheDocument();
+    expect(screen.queryByText("微信 · 8月27日 · 账目")).not.toBeInTheDocument();
     expect(document.querySelector(".funds-movement-list")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
-    await waitFor(() => expect(screen.getByText("2026-08-27 · 账目")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("微信 · 8月27日 · 账目")).toBeInTheDocument());
     expect(movements).toHaveBeenCalledWith(expect.objectContaining({ sort: "recent" }));
+  });
+
+  it("流水显示来源说明和修改差额，点一行打开对应账目，点账户只看它的流水", async () => {
+    const transactionId = "33333333-3333-4333-8333-333333333333";
+    const original = {
+      id: "22222222-2222-4222-8222-222222222222",
+      accountId: account.id,
+      accountName: account.name,
+      currency: "CNY" as const,
+      deltaMinor: -3_000,
+      sourceType: "transaction" as const,
+      sourceId: transactionId,
+      localDate: "2026-08-29",
+      requestId: null,
+      operationId: null,
+      reversalOfId: null,
+      createdAt: "2026-08-29T00:00:00.000Z",
+      description: "🍜 餐饮 · 早餐",
+      revision: "original" as const,
+      sourceDeleted: false
+    };
+    const change = { ...original, id: "66666666-6666-4666-8666-666666666666", deltaMinor: -500, revision: "change" as const, createdAt: "2026-08-29T01:00:00.000Z" };
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(summary());
+    vi.spyOn(api, "accounts").mockResolvedValue([account]);
+    const movements = vi.spyOn(api, "accountMovements").mockResolvedValue({ items: [change, original], total: 2, page: 1, pageSize: 30 });
+    vi.spyOn(api, "transfers").mockResolvedValue([]);
+    const fullTransaction = { id: transactionId, kind: "expense" as const, amountMinor: 3_500, accountAmountMinor: null, currency: "CNY" as const, categoryId: "77777777-7777-4777-8777-777777777777", accountId: account.id, fundsBaseline: false, refundedAt: null, refundAccountId: null, localDate: "2026-08-29", note: "早餐", source: "user" as const, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T01:00:00.000Z", deletedAt: null };
+    vi.spyOn(api, "transaction").mockResolvedValue(fullTransaction);
+    const openEntry = vi.fn();
+    renderPage(openEntry);
+
+    const rows = await screen.findAllByRole("button", { name: /🍜 餐饮 · 早餐/ });
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("修改差额")).toBeInTheDocument();
+    expect(within(rows[1]!).queryByText("修改差额")).not.toBeInTheDocument();
+    fireEvent.click(rows[1]!);
+    await waitFor(() => expect(openEntry).toHaveBeenCalledWith(fullTransaction));
+
+    fireEvent.click(screen.getByRole("button", { name: /微信/, pressed: false }));
+    await waitFor(() => expect(movements).toHaveBeenCalledWith(expect.objectContaining({ accountId: account.id })));
+    expect(await screen.findByRole("heading", { name: "微信的资金流水" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "全部账户" }));
+    expect(await screen.findByRole("heading", { name: "最近资金流水" })).toBeInTheDocument();
+  });
+
+  it("停用账户默认隐藏，开关可以显示；已删除转账有单独开关", async () => {
+    const archived = { ...account, id: "88888888-8888-4888-8888-888888888888", name: "旧钱包", isArchived: true, balanceMinor: 0, openingBalanceMinor: 0, isUnused: true };
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(summary());
+    const accounts = vi.spyOn(api, "accounts").mockResolvedValue([account, archived]);
+    vi.spyOn(api, "accountMovements").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 30 });
+    const transfers = vi.spyOn(api, "transfers").mockResolvedValue([]);
+    renderPage();
+
+    expect(await screen.findByText("人民币可用资金")).toBeInTheDocument();
+    await waitFor(() => expect(accounts).toHaveBeenCalledWith(true));
+    expect(screen.queryByText("旧钱包")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "查看停用账户（1）" }));
+    expect(await screen.findByText("旧钱包")).toBeInTheDocument();
+    expect(transfers).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "显示已删除" }));
+    await waitFor(() => expect(transfers).toHaveBeenLastCalledWith(true));
+  });
+
+  it("余额为 0 或负数的账户可以修改，也可以校准到 0", async () => {
+    const empty = { ...account, balanceMinor: 0 };
+    vi.spyOn(api, "fundsSummary").mockResolvedValue(summary({ accounts: [empty], totalMinor: 0 }));
+    vi.spyOn(api, "accounts").mockResolvedValue([empty]);
+    vi.spyOn(api, "accountMovements").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 30 });
+    vi.spyOn(api, "transfers").mockResolvedValue([]);
+    const update = vi.spyOn(api, "updateAccount").mockResolvedValue({ ...empty, name: "微信钱包" });
+    const adjust = vi.spyOn(api, "adjustAccount").mockResolvedValue({ id: "99999999-9999-4999-8999-999999999999", accountId: empty.id, accountName: empty.name, currency: "CNY", targetBalanceMinor: -1_250, deltaMinor: -1_250, localDate: "2026-08-29", balanceBeforeMinor: 0, note: null, createdAt: "2026-08-29T00:00:00.000Z", canUndo: true, updatedAt: "2026-08-29T00:00:00.000Z" });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑 微信" }));
+    let dialog = await screen.findByRole("dialog", { name: "编辑资金账户" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "账户名称" }), { target: { value: "微信钱包" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保存账户/ }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(empty.id, expect.objectContaining({ name: "微信钱包" })));
+    expect(update.mock.calls[0]?.[1]).not.toHaveProperty("balanceChange");
+
+    fireEvent.click(screen.getByRole("button", { name: "校准 微信" }));
+    dialog = await screen.findByRole("dialog", { name: "校准账户余额" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /现实余额/ }), { target: { value: "-12.5" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保存校准/ }));
+    await waitFor(() => expect(adjust).toHaveBeenCalledWith(expect.objectContaining({ targetBalanceMinor: -1_250 })));
   });
 
   it("允许永久删除带非零初始余额但从未使用的非默认账户", async () => {

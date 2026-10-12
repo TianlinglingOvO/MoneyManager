@@ -1006,8 +1006,15 @@ export class MattersRepository {
     const list = this.allPages((page) => this.listSubscriptions({ page, pageSize: 100, status: "active" }, today));
     const dueItems = list.filter((item) => item.renewalState === "due" || item.renewalState === "overdue");
     const upcoming = list.filter((item) => item.renewalState === "upcoming").slice(0, 10);
-    const currencies = (["CNY", "USD"] as const).map((currency) => ({ currency, amountMinor: list.filter((item) => item.currency === currency && item.status !== "paused" && item.status !== "cancelled").reduce((sum, item) => sum + item.recurringAmountMinor, 0) })).filter((item) => item.amountMinor > 0);
-    return { activeCount: list.filter((item) => item.status !== "paused" && item.status !== "cancelled").length, attentionCount: dueItems.length, dueCount: dueItems.length, upcomingCount: upcoming.length, upcoming: [...dueItems.slice(0, 10), ...upcoming].slice(0, 10), currencies };
+    const running = list.filter((item) => item.status !== "paused" && item.status !== "cancelled");
+    const currencies = (["CNY", "USD"] as const).map((currency) => ({ currency, amountMinor: running.filter((item) => item.currency === currency).reduce((sum, item) => sum + item.recurringAmountMinor, 0) })).filter((item) => item.amountMinor > 0);
+    // Yearly plans count 1/12 per month and custom cycles scale to a 30-day month, so the total reads as a monthly cost.
+    const monthlyCost = (item: Subscription) => item.cycle === "year"
+      ? item.recurringAmountMinor / 12
+      : item.cycle === "custom" ? item.recurringAmountMinor * 30 / Math.max(1, item.customDays ?? 30) : item.recurringAmountMinor;
+    const monthlyEquivalent = (["CNY", "USD"] as const).map((currency) => ({ currency, amountMinor: Math.round(running.filter((item) => item.currency === currency).reduce((sum, item) => sum + monthlyCost(item), 0)) })).filter((item) => item.amountMinor > 0);
+    const confirmCount = dueItems.filter((item) => item.nextBillingDate !== null && item.nextBillingDate <= today).length;
+    return { activeCount: running.length, attentionCount: dueItems.length, dueCount: dueItems.length, confirmCount, upcomingCount: upcoming.length, upcoming: [...dueItems.slice(0, 10), ...upcoming].slice(0, 10), currencies, monthlyEquivalent };
   }
 
   private planAttentionState(row: PlanRow, today = todayInTimezone(this.timezone)): PlanAttentionState {

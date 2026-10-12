@@ -118,7 +118,7 @@ export function createLedgerMcpServer(
   annotateTools(server);
 
   server.registerTool("list_categories", {
-    description: "列出可用于记账的收入或支出分类。",
+    description: "列出可用于记账的收入或支出分类。isFixed=true 表示房租、保险这类每月固定的支出分类。",
     inputSchema: {
       kind: z.enum(["expense", "income"]).optional().describe("expense=支出，income=收入"),
       includeArchived: z.boolean().optional().default(false)
@@ -143,7 +143,7 @@ export function createLedgerMcpServer(
   });
 
   server.registerTool("list_transactions", {
-    description: "按日期、分类或关键词查询账目。默认查询正常账目，也可查看 30 天回收站；默认最多返回最近 50 条。",
+    description: "按日期、分类或关键词查询账目。search 同时匹配备注和分类名称；输入纯金额（如 35 或 35.5）时也精确匹配这个金额。默认查询正常账目，也可查看 30 天回收站；默认最多返回最近 50 条。",
     inputSchema: {
       kind: z.enum(["expense", "income"]).optional(),
       categoryId: z.string().uuid().optional(),
@@ -844,7 +844,7 @@ function registerDirectTools(
 
   if (budgets) {
     server.registerTool("get_budget_summary", {
-      description: "读取指定月份的月总预算、分类预算、已使用、剩余和当前月预测。不会修改预算。",
+      description: "读取指定月份的月总预算、分类预算、已使用、剩余和当前月预测。forecastMinor 把固定支出分类（isFixed）按已发生计入，只把其余支出按已过天数外推；fixedSpentMinor 是本月固定支出。不会修改预算。",
       inputSchema: { month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }
     }, async ({ month }) => {
       const result = budgets.get(month);
@@ -923,8 +923,8 @@ function registerDirectTools(
   }
 
   server.registerTool("direct_create_category", {
-    description: "立即新增收支分类。",
-    inputSchema: { requestId, kind: z.enum(["expense", "income"]), name: z.string().min(1).max(16), icon: z.string().min(1).max(8), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }
+    description: "立即新增收支分类。isFixed 只用于支出分类，表示房租、保险这类每月固定的支出：预算预测按已发生计入、不按天外推，体检只在金额明显高于往常时提醒。",
+    inputSchema: { requestId, kind: z.enum(["expense", "income"]), name: z.string().min(1).max(16), icon: z.string().min(1).max(8), color: z.string().regex(/^#[0-9a-fA-F]{6}$/), isFixed: z.boolean().optional() }
   }, async (input) => textResult(openclaw.execute({
     requestId: input.requestId, action: "category.create", entityType: "category", summary: "OpenClaw 新增分类", request: input,
     run: () => {
@@ -934,10 +934,11 @@ function registerDirectTools(
   })));
 
   server.registerTool("direct_update_category", {
-    description: "立即修改分类名称、图标、颜色、排序或停用状态。必须传入最近查询到的 updatedAt。",
+    description: "立即修改分类名称、图标、颜色、排序、停用状态或固定支出标记（isFixed，只用于支出分类）。必须传入最近查询到的 updatedAt。",
     inputSchema: {
       requestId, categoryId: z.string().uuid(), expectedUpdatedAt: z.string().min(1), name: z.string().min(1).max(16).optional(),
-      icon: z.string().min(1).max(8).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), sortOrder: z.number().int().min(0).max(999).optional(), isArchived: z.boolean().optional()
+      icon: z.string().min(1).max(8).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), sortOrder: z.number().int().min(0).max(999).optional(), isArchived: z.boolean().optional(),
+      isFixed: z.boolean().optional()
     }
   }, async ({ requestId: idempotency, categoryId, expectedUpdatedAt, ...changes }) => textResult(openclaw.execute({
     requestId: idempotency, action: "category.update", entityType: "category", summary: "OpenClaw 修改分类", request: { categoryId, expectedUpdatedAt, ...changes },
@@ -1158,7 +1159,7 @@ function registerMatterTools(
   });
 
   server.registerTool("get_subscription_summary", {
-    description: "获取启用中的订阅、近期需要处理的续费和按币种汇总。",
+    description: "获取启用中的订阅、近期需要处理的续费和按币种汇总。attentionCount 含提醒窗口内即将续费的项目，confirmCount 只含续费日已到、需要确认付款的项目；currencies 是常规价格直接相加，monthlyEquivalent 把年付除以 12、自定义周期按 30 天折算成每月花费。",
     inputSchema: {}
   }, async () => {
     const result = matters.subscriptionSummary();

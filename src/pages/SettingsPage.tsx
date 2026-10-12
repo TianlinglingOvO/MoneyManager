@@ -28,6 +28,7 @@ import { BudgetSheet } from "../components/BudgetSheet";
 import { timezoneOffsetLabel, useLedgerClock } from "../ledger-clock";
 import { refreshApplication } from "../pwa-update";
 import { reminderHeadline } from "../reminder-status";
+import { money } from "../utils";
 
 const appearancePresets: Array<{ value: AppearancePreset; name: string; description: string; colors: string[] }> = [
   { value: "warm-paper", name: "温暖纸张", description: "米白、炭黑与温暖留白", colors: ["#F3EFE7", "#FEFCF7", "#282622"] },
@@ -224,15 +225,15 @@ export function SettingsPage() {
         </div>
         <div className="budget-settings-summary">
           <span>{currentMonth.replace("-", " 年 ")} 月</span>
-          <strong>{budget.data?.totalMinor == null ? "未设置月总预算" : `¥${(budget.data.totalMinor / 100).toFixed(2)}`}</strong>
-          <small>{budget.data?.categories.length ?? 0} 个分类预算</small>
+          <strong>{budget.data?.totalMinor == null ? "未设置月总预算" : money(budget.data.totalMinor)}</strong>
+          <small>{budget.data?.categories.length ?? 0} 个分类预算{budget.data && budget.data.spentMinor > 0 ? ` · 已用 ${money(budget.data.spentMinor)} · 预计月底 ${money(budget.data.forecastMinor)}` : ""}</small>
         </div>
       </section>
 
       <section className="content-card status-section">
         <div className="section-title section-title--row"><div><h2>运行状态</h2><p>{reloadHint}</p></div><button className="secondary-button" type="button" disabled={refreshing} onClick={() => void refreshNow()}>{refreshing ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{refreshing ? "正在同步…" : "检查并刷新"}</button></div>
         <div className="status-grid">
-          <div><span className="status-icon"><Database size={20} /></span><p>数据库</p><strong>{status.data?.database === "ok" ? "运行正常" : "等待连接"}</strong><small>SQLite · 本机 SSD</small></div>
+          <div><span className="status-icon"><Database size={20} /></span><p>数据库</p><strong>{status.data?.database === "ok" ? "运行正常" : "等待连接"}</strong><small>SQLite · WAL 与完整同步写入</small></div>
           <div><span className="status-icon"><HardDrive size={20} /></span><p>最近备份</p><strong>{status.data?.backup.lastSuccessAt ? new Date(status.data.backup.lastSuccessAt).toLocaleDateString("zh-CN") : "尚未备份"}</strong><small>{status.data?.backup.remoteConfigured ? "本地 + Google Drive" : "本地快照可用"}</small></div>
           <div><span className="status-icon"><ShieldCheck size={20} /></span><p>版本</p><strong>SMB {status.data?.version ?? APP_VERSION}</strong><small>{status.data?.reload?.stale ? `运行 ${status.data.version} · 磁盘 ${status.data.reload.builtVersion}` : "私人账本"}</small></div>
           <div><span className="status-icon"><Globe size={20} /></span><p>账本时区</p><strong>{timezoneOffsetLabel(ledgerTimezone)}</strong><small>{ledgerTimezone} · 决定账本的“今天”</small></div>

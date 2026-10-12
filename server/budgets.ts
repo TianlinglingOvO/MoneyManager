@@ -96,12 +96,18 @@ export class BudgetService {
       WHERE b.month = ? ORDER BY b.amount_minor DESC, c.sort_order, c.name`)
       .all(month) as unknown as CategoryBudgetRow[];
     const spentMinor = Number(spentRow.value);
+    const fixedRow = this.database.prepare(`SELECT COALESCE(SUM(t.amount_minor), 0) AS value
+      FROM transactions t JOIN categories c ON c.id = t.category_id
+      WHERE t.kind = 'expense' AND t.deleted_at IS NULL AND t.refunded_at IS NULL AND c.is_fixed = 1
+        AND t.local_date >= ? AND t.local_date <= ?`).get(range.start, range.end) as { value: number };
+    const fixedSpentMinor = Number(fixedRow.value);
     const today = localToday(this.timezone());
     const todayMonth = today.slice(0, 7);
     const elapsedDays = month < todayMonth ? range.days : month > todayMonth ? 0 : Number(today.slice(8, 10));
     const remainingDays = month === todayMonth ? Math.max(0, range.days - elapsedDays) : 0;
+    // Fixed expenses (rent, insurance) happen once a month, so only the other spending is extrapolated by day.
     const forecastMinor = month === todayMonth && elapsedDays > 0
-      ? Math.round(spentMinor / elapsedDays * range.days)
+      ? fixedSpentMinor + Math.round((spentMinor - fixedSpentMinor) / elapsedDays * range.days)
       : spentMinor;
     const remainingMinor = row?.total_minor == null ? null : Number(row.total_minor) - spentMinor;
     return {
@@ -110,6 +116,7 @@ export class BudgetService {
       spentMinor,
       remainingMinor,
       forecastMinor,
+      fixedSpentMinor,
       elapsedDays,
       daysInMonth: range.days,
       remainingDays,

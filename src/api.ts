@@ -10,7 +10,6 @@ import type {
   CategoryDeletionImpact,
   CategoryDispositionResult,
   DailyTransactionTotal,
-  DashboardData,
   FinanceReport,
   OpenClawControlSettings,
   OpenClawOperationDetail,
@@ -154,14 +153,39 @@ function queryString(values: Record<string, string | number | boolean | undefine
   return result ? `?${result}` : "";
 }
 
+/** Builds a same-origin URL with the same query encoding the API calls use, for download links. */
+export function apiUrl(path: string, values: Record<string, string | number | boolean | undefined | null>): string {
+  return `${path}${queryString(values)}`;
+}
+
+/**
+ * Loads every page of a paginated matter list. Matter screens group items client-side, so they must
+ * never silently stop at the first page.
+ */
+async function allPages<T>(load: (page: number) => Promise<T[] | MatterList<T>>): Promise<T[]> {
+  const first = await load(1);
+  if (Array.isArray(first)) return first;
+  const items = [...first.items];
+  let page = 2;
+  while (items.length < first.total) {
+    const next = await load(page);
+    const nextItems = Array.isArray(next) ? next : next.items;
+    if (nextItems.length === 0) break;
+    items.push(...nextItems);
+    page += 1;
+  }
+  return items;
+}
+
 export const api = {
-  dashboard: (date: string) => request<DashboardData>(`/api/v1/dashboard${queryString({ date })}`),
   categories: (kind?: "expense" | "income", includeArchived = false) =>
     request<Category[]>(`/api/v1/categories${queryString({ kind, includeArchived })}`),
-  createCategory: (input: Pick<Category, "kind" | "name" | "icon" | "color">) =>
+  createCategory: (input: Pick<Category, "kind" | "name" | "icon" | "color"> & { isFixed?: boolean }) =>
     request<Category>("/api/v1/categories", { method: "POST", body: JSON.stringify(input) }),
-  updateCategory: (id: string, input: Partial<Pick<Category, "name" | "icon" | "color" | "sortOrder" | "isArchived">>) =>
+  updateCategory: (id: string, input: Partial<Pick<Category, "name" | "icon" | "color" | "sortOrder" | "isArchived" | "isFixed">>) =>
     request<Category>(`/api/v1/categories/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  reorderCategories: (kind: "expense" | "income", categoryIds: string[]) =>
+    request<Category[]>("/api/v1/categories/order", { method: "PUT", body: JSON.stringify({ kind, categoryIds }) }),
   manageCategory: (id: string, input: { action: "archive" | "restore" | "delete" } | { action: "migrate"; targetCategoryId: string } | { action: "purge"; expectedRevision: string; confirmName: string }) =>
     request<CategoryDispositionResult>(`/api/v1/categories/${id}/disposition`, { method: "POST", body: JSON.stringify(input) }),
   categoryDeletionImpact: (id: string) => request<CategoryDeletionImpact>(`/api/v1/categories/${id}/deletion-impact`),
@@ -247,8 +271,10 @@ export const api = {
   openClawOperation: (id: string) => request<OpenClawOperationDetail>(`/api/v1/openclaw/operations/${id}`),
   undoOpenClawOperation: (id: string) => request<OpenClawOperation>(`/api/v1/openclaw/operations/${id}/undo`, { method: "POST" }),
 
-  borrowers: (includeArchived = false) =>
-    request<Borrower[] | MatterList<Borrower>>(`/api/v1/borrowers${queryString({ includeArchived })}`),
+  borrowers: (includeArchived = false, page?: number) =>
+    request<Borrower[] | MatterList<Borrower>>(`/api/v1/borrowers${queryString({ includeArchived, page, pageSize: page ? 100 : undefined })}`),
+  // The all* helpers go through the single-page calls so every list request shares one code path.
+  allBorrowers: () => allPages<Borrower>((page) => api.borrowers(true, page)),
   createBorrower: (input: { name: string }, requestId = crypto.randomUUID()) =>
     request<Borrower>("/api/v1/borrowers", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
   updateBorrower: (id: string, input: { name?: string; isArchived?: boolean; expectedUpdatedAt?: string }) =>
@@ -256,6 +282,7 @@ export const api = {
   loanSummary: () => request<LoanSummary>("/api/v1/loans/summary"),
   loans: (filters: { borrowerId?: string; status?: string; loanStatus?: "active" | "settled"; includeDeleted?: boolean; page?: number; pageSize?: number } = {}) =>
     request<Loan[] | MatterList<Loan>>(`/api/v1/loans${queryString(filters)}`),
+  allLoans: (status: "active" | "trash") => allPages<Loan>((page) => api.loans({ status, page, pageSize: 100 })),
   loan: (id: string) => request<Loan>(`/api/v1/loans/${id}`),
   createLoan: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<Loan>("/api/v1/loans", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
@@ -271,6 +298,7 @@ export const api = {
   subscriptionSummary: () => request<SubscriptionSummary>("/api/v1/subscriptions/summary"),
   subscriptions: (filters: { status?: string; subscriptionStatus?: "active" | "paused" | "cancelled"; includeDeleted?: boolean; page?: number; pageSize?: number } = {}) =>
     request<Subscription[] | MatterList<Subscription>>(`/api/v1/subscriptions${queryString(filters)}`),
+  allSubscriptions: (status: "active" | "trash") => allPages<Subscription>((page) => api.subscriptions({ status, page, pageSize: 100 })),
   subscription: (id: string) => request<Subscription>(`/api/v1/subscriptions/${id}`),
   createSubscription: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<Subscription>("/api/v1/subscriptions", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),
@@ -286,6 +314,7 @@ export const api = {
   planSummary: () => request<PlanSummary>("/api/v1/plans/summary"),
   plans: (filters: { status?: string; planStatus?: "open" | "completed" | "cancelled"; includeDeleted?: boolean; page?: number; pageSize?: number } = {}) =>
     request<Plan[] | MatterList<Plan>>(`/api/v1/plans${queryString(filters)}`),
+  allPlans: (status: "active" | "trash") => allPages<Plan>((page) => api.plans({ status, page, pageSize: 100 })),
   plan: (id: string) => request<Plan>(`/api/v1/plans/${id}`),
   createPlan: (input: Record<string, unknown>, requestId = crypto.randomUUID()) =>
     request<Plan>("/api/v1/plans", { method: "POST", headers: { "Idempotency-Key": requestId }, body: JSON.stringify(input) }),

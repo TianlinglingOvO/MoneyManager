@@ -66,6 +66,24 @@ interface MovementRow {
   created_at: string;
 }
 
+interface MovementDetailRow extends MovementRow {
+  revision_seq: number;
+  running_after: number;
+  tx_note: string | null;
+  tx_deleted_at: string | null;
+  tx_refunded_at: string | null;
+  tx_category_name: string | null;
+  tx_category_icon: string | null;
+  transfer_from_name: string | null;
+  transfer_to_name: string | null;
+  transfer_deleted_at: string | null;
+  loan_borrower_name: string | null;
+  loan_purpose: string | null;
+  loan_deleted_at: string | null;
+  repayment_borrower_name: string | null;
+  repayment_deleted_at: string | null;
+}
+
 interface TransferRow {
   id: string;
   from_account_id: string;
@@ -671,7 +689,26 @@ export class FundsService {
     this.database.prepare("DELETE FROM account_movements WHERE source_type = 'transaction' AND source_id = ?").run(id);
   }
 
-  private movementFromRow(row: MovementRow): AccountMovement {
+  private movementFromRow(row: MovementDetailRow): AccountMovement {
+    const runningAfter = Number(row.running_after);
+    const revision: AccountMovement["revision"] = Number(row.revision_seq) === 1
+      ? "original"
+      : runningAfter === 0
+        ? "reversal"
+        : runningAfter - Number(row.delta_minor) === 0 ? "restore" : "change";
+    let description: string | null = null;
+    if (row.source_type === "transaction" && row.tx_category_name) {
+      description = `${row.tx_category_icon ?? ""} ${row.tx_category_name}${row.tx_note ? ` · ${row.tx_note}` : ""}`.trim();
+      if (row.tx_refunded_at) description += "（已退款）";
+    } else if (row.source_type === "transfer" && row.transfer_from_name) {
+      description = `${row.transfer_from_name} → ${row.transfer_to_name ?? "账户"}`;
+    } else if (row.source_type === "loan" && row.loan_borrower_name) {
+      description = `借给 ${row.loan_borrower_name}${row.loan_purpose ? ` · ${row.loan_purpose}` : ""}`;
+    } else if (row.source_type === "loan_repayment" && row.repayment_borrower_name) {
+      description = `${row.repayment_borrower_name} 还款`;
+    } else if (row.source_type === "adjustment") {
+      description = "余额校准";
+    }
     return {
       id: row.id,
       accountId: row.account_id,
@@ -684,7 +721,10 @@ export class FundsService {
       requestId: row.request_id,
       operationId: row.operation_id,
       reversalOfId: row.reversal_of_id,
-      createdAt: row.created_at
+      createdAt: row.created_at,
+      description,
+      revision,
+      sourceDeleted: Boolean(row.tx_deleted_at || row.transfer_deleted_at || row.loan_deleted_at || row.repayment_deleted_at)
     };
   }
 
@@ -698,11 +738,37 @@ export class FundsService {
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const total = this.database.prepare(`SELECT COUNT(*) AS count FROM account_movements m ${where}`).get(...values) as { count: number };
     const order = query.sort === "oldest"
-      ? "ORDER BY m.local_date ASC, m.created_at ASC, m.rowid ASC"
-      : "ORDER BY m.local_date DESC, m.created_at DESC, m.rowid DESC";
-    const rows = this.database.prepare(`SELECT m.*, a.name AS account_name, a.currency FROM account_movements m
-      JOIN accounts a ON a.id = m.account_id ${where} ${order} LIMIT ? OFFSET ?`)
-      .all(...values, query.pageSize, (query.page - 1) * query.pageSize) as unknown as MovementRow[];
+      ? "ORDER BY m.local_date ASC, m.created_at ASC, m.movement_rowid ASC"
+      : "ORDER BY m.local_date DESC, m.created_at DESC, m.movement_rowid DESC";
+    // Movements are append-only, so an edit appends a difference and a delete appends a reversal. The window
+    // over each source and account labels those follow-ups; the joins describe what the money was for.
+    const rows = this.database.prepare(`WITH ranked AS (
+        SELECT m.*, m.rowid AS movement_rowid,
+          ROW_NUMBER() OVER (PARTITION BY m.source_type, m.source_id, m.account_id ORDER BY m.rowid) AS revision_seq,
+          SUM(m.delta_minor) OVER (PARTITION BY m.source_type, m.source_id, m.account_id ORDER BY m.rowid
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_after
+        FROM account_movements m
+      )
+      SELECT m.*, a.name AS account_name, a.currency,
+        t.note AS tx_note, t.deleted_at AS tx_deleted_at, t.refunded_at AS tx_refunded_at,
+        c.name AS tx_category_name, c.icon AS tx_category_icon,
+        fa.name AS transfer_from_name, ta.name AS transfer_to_name, tr.deleted_at AS transfer_deleted_at,
+        lb.name AS loan_borrower_name, l.purpose AS loan_purpose, l.deleted_at AS loan_deleted_at,
+        rb.name AS repayment_borrower_name, r.deleted_at AS repayment_deleted_at
+      FROM ranked m
+      JOIN accounts a ON a.id = m.account_id
+      LEFT JOIN transactions t ON m.source_type = 'transaction' AND t.id = m.source_id
+      LEFT JOIN categories c ON c.id = t.category_id
+      LEFT JOIN transfers tr ON m.source_type = 'transfer' AND tr.id = m.source_id
+      LEFT JOIN accounts fa ON fa.id = tr.from_account_id
+      LEFT JOIN accounts ta ON ta.id = tr.to_account_id
+      LEFT JOIN loans l ON m.source_type = 'loan' AND l.id = m.source_id
+      LEFT JOIN borrowers lb ON lb.id = l.borrower_id
+      LEFT JOIN loan_repayments r ON m.source_type = 'loan_repayment' AND r.id = m.source_id
+      LEFT JOIN loans rl ON rl.id = r.loan_id
+      LEFT JOIN borrowers rb ON rb.id = rl.borrower_id
+      ${where} ${order} LIMIT ? OFFSET ?`)
+      .all(...values, query.pageSize, (query.page - 1) * query.pageSize) as unknown as MovementDetailRow[];
     return { items: rows.map((row) => this.movementFromRow(row)), total: Number(total.count), page: query.page, pageSize: query.pageSize };
   }
 

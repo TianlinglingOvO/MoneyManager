@@ -51,7 +51,8 @@ export const categoryInputSchema = z.object({
   name: z.string().trim().min(1).max(16),
   icon: z.string().trim().min(1).max(8),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  sortOrder: z.number().int().min(0).max(999).optional()
+  sortOrder: z.number().int().min(0).max(999).optional(),
+  isFixed: z.boolean().optional()
 });
 
 export const categoryPatchSchema = z.object({
@@ -59,8 +60,14 @@ export const categoryPatchSchema = z.object({
   icon: z.string().trim().min(1).max(8).optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   sortOrder: z.number().int().min(0).max(999).optional(),
-  isArchived: z.boolean().optional()
+  isArchived: z.boolean().optional(),
+  isFixed: z.boolean().optional()
 }).refine((value) => Object.keys(value).length > 0, "至少需要修改一个字段");
+
+export const categoryOrderSchema = z.object({
+  kind: transactionKindSchema,
+  categoryIds: z.array(z.string().uuid()).min(1).max(500)
+}).strict().refine((value) => new Set(value.categoryIds).size === value.categoryIds.length, "分类顺序里不能有重复分类");
 
 export const categoryDispositionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("archive") }),

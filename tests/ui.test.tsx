@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -138,6 +138,16 @@ describe("日期快捷操作", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("未修改的记账表单直接关闭，不弹放弃确认", async () => {
+    vi.spyOn(api, "categories").mockResolvedValue([]);
+    const close = vi.fn();
+    renderWithProviders(<QuickEntry open onClose={close} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  });
+
   it("记账内容发生修改后，关闭前要求确认放弃", async () => {
     vi.spyOn(api, "categories").mockResolvedValue([]);
     const close = vi.fn();
@@ -240,7 +250,29 @@ describe("OpenClaw 操作中心", () => {
     expect(screen.queryByText("敏感备注")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /显示字段值/ }));
     expect(await screen.findByText(/敏感备注/)).toBeInTheDocument();
+    expect(screen.getByText(/账目 · 新增/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    const confirmUndo = await screen.findByRole("dialog", { name: "撤销这次操作？" });
+    expect(undo).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmUndo).getByRole("button", { name: "撤销操作" }));
     await waitFor(() => expect(undo).toHaveBeenCalledWith("33333333-3333-4333-8333-333333333333", expect.anything()));
+  });
+
+  it("开启直接接管前先在应用内确认", async () => {
+    vi.spyOn(api, "proposals").mockResolvedValue([]);
+    vi.spyOn(api, "categories").mockResolvedValue([]);
+    vi.spyOn(api, "openClawOperations").mockResolvedValue([]);
+    vi.spyOn(api, "openClawSettings").mockResolvedValue({ mode: "confirm", directCapabilities: [], credentialsExposed: false, updatedAt: "2026-08-12T00:00:00.000Z" });
+    const update = vi.spyOn(api, "updateOpenClawSettings").mockResolvedValue({ mode: "direct", directCapabilities: [], credentialsExposed: false, updatedAt: "2026-08-12T00:01:00.000Z" });
+    renderWithProviders(<ProposalsPage />);
+
+    const enable = await screen.findByRole("button", { name: "开启直接接管" });
+    await waitFor(() => expect(enable).toBeEnabled());
+    fireEvent.click(enable);
+    const dialog = await screen.findByRole("dialog", { name: "开启直接接管？" });
+    expect(update).not.toHaveBeenCalled();
+    expect(dialog).not.toHaveTextContent("AI");
+    fireEvent.click(within(dialog).getByRole("button", { name: "开启直接接管" }));
+    await waitFor(() => expect(update.mock.calls[0]?.[0]).toBe("direct"));
   });
 });

@@ -9,6 +9,7 @@ import {
   appearancePatchSchema,
   categoryDispositionSchema,
   categoryInputSchema,
+  categoryOrderSchema,
   categoryPatchSchema,
   budgetDeleteSchema,
   budgetMonthSchema,
@@ -72,6 +73,28 @@ function localDate(timezone: string): string {
 function csvCell(value: unknown): string {
   const text = value == null ? "" : String(value);
   return `"${text.replaceAll('"', '""')}"`;
+}
+
+/** Query-string flags arrive as strings; only an explicit "true" or "1" turns one on. */
+function queryFlag(value: unknown): boolean {
+  return value === "true" || value === "1";
+}
+
+function transactionCsv(transactions: Array<Record<string, unknown>>): string {
+  const header = ["日期", "类型", "金额（元）", "分类", "备注", "来源", "删除时间", "账户币种", "账本金额（CNY）", "账户实际金额"];
+  const lines = transactions.map((item) => [
+    item.localDate,
+    item.kind === "income" ? "收入" : "支出",
+    (Number(item.amountMinor) / 100).toFixed(2),
+    (item.category as { name?: string } | undefined)?.name ?? "",
+    item.note ?? "",
+    item.source,
+    item.deletedAt ?? "",
+    (item.account as { currency?: string } | null)?.currency ?? "",
+    (Number(item.amountMinor) / 100).toFixed(2),
+    item.accountAmountMinor == null ? "" : (Number(item.accountAmountMinor) / 100).toFixed(2)
+  ].map(csvCell).join(","));
+  return `﻿${header.map(csvCell).join(",")}\r\n${lines.join("\r\n")}`;
 }
 
 
@@ -229,13 +252,6 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.use("/api/v1", apiLimiter, userAuth);
   attachMatterRoutes(app, matters);
 
-  app.get("/api/v1/dashboard", (request, response, next) => {
-    try {
-      const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(request.query.date ?? localDate(config.timezone));
-      response.json({ data: repository.getDashboard(date) });
-    } catch (error) { next(error); }
-  });
-
   app.get("/api/v1/categories", (request, response, next) => {
     try {
       const kind = request.query.kind ? z.enum(["expense", "income"]).parse(request.query.kind) : undefined;
@@ -247,6 +263,12 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.post("/api/v1/categories", (request, response, next) => {
     try {
       response.status(201).json({ data: repository.createCategory(categoryInputSchema.parse(request.body)) });
+    } catch (error) { next(error); }
+  });
+
+  app.put("/api/v1/categories/order", (request, response, next) => {
+    try {
+      response.json({ data: repository.reorderCategories(categoryOrderSchema.parse(request.body)) });
     } catch (error) { next(error); }
   });
 
@@ -290,8 +312,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
 
   app.get("/api/v1/accounts", (request, response, next) => {
     try {
-      const includeArchived = z.coerce.boolean().default(false).parse(request.query.includeArchived ?? false);
-      response.json({ data: funds.listAccounts(includeArchived) });
+      response.json({ data: funds.listAccounts(queryFlag(request.query.includeArchived)) });
     } catch (error) { next(error); }
   });
 
@@ -386,8 +407,7 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
 
   app.get("/api/v1/transfers", (request, response, next) => {
     try {
-      const includeDeleted = z.coerce.boolean().default(false).parse(request.query.includeDeleted ?? false);
-      response.json({ data: funds.listTransfers(includeDeleted) });
+      response.json({ data: funds.listTransfers(queryFlag(request.query.includeDeleted)) });
     } catch (error) { next(error); }
   });
 
@@ -444,6 +464,18 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
       response.json({ data: funds.undoTransactionRefund(String(request.params.id), transactionRefundSchema.parse(request.body)) });
     } catch (error) { next(error); }
   });
+  app.get("/api/v1/transactions.csv", (request, response, next) => {
+    try {
+      const query = transactionQuerySchema.omit({ page: true, pageSize: true, sort: true, deleted: true }).parse(request.query);
+      if (query.start && query.end && query.start > query.end) throw new AppError("开始日期不能晚于结束日期");
+      const transactions = repository.listAllTransactions({ ...query, deleted: "active", sort: "date" }) as unknown as Array<Record<string, unknown>>;
+      const label = query.start && query.end ? `${query.start}_${query.end}` : localDate(config.timezone);
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+      response.setHeader("Content-Disposition", `attachment; filename="money-manager-view-${label}.csv"`);
+      response.send(transactionCsv(transactions));
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v1/transactions", (request, response, next) => {
     try {
       const query = transactionQuerySchema.parse(request.query);
@@ -598,22 +630,9 @@ export function createApp(config: AppConfig, database: DatabaseSync): { app: exp
   app.get("/api/v1/export.csv", (_request, response, next) => {
     try {
       const data = repository.exportData() as { transactions: Array<Record<string, unknown>> };
-      const header = ["日期", "类型", "金额（元）", "分类", "备注", "来源", "删除时间", "账户币种", "账本金额（CNY）", "账户实际金额"];
-      const lines = data.transactions.map((item) => [
-        item.localDate,
-        item.kind === "income" ? "收入" : "支出",
-        (Number(item.amountMinor) / 100).toFixed(2),
-        (item.category as { name?: string } | undefined)?.name ?? "",
-        item.note ?? "",
-        item.source,
-        item.deletedAt ?? "",
-        (item.account as { currency?: string } | null)?.currency ?? "",
-        (Number(item.amountMinor) / 100).toFixed(2),
-        item.accountAmountMinor == null ? "" : (Number(item.accountAmountMinor) / 100).toFixed(2)
-      ].map(csvCell).join(","));
       response.setHeader("Content-Type", "text/csv; charset=utf-8");
       response.setHeader("Content-Disposition", `attachment; filename="money-manager-${localDate(config.timezone)}.csv"`);
-      response.send(`\uFEFF${header.map(csvCell).join(",")}\r\n${lines.join("\r\n")}`);
+      response.send(transactionCsv(data.transactions));
     } catch (error) { next(error); }
   });
 

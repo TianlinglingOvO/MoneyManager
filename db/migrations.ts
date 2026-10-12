@@ -521,5 +521,14 @@ export const migrations: Migration[] = [
       "DROP TABLE openclaw_operation_items_legacy_v11",
       "CREATE UNIQUE INDEX idx_openclaw_operation_items_sequence ON openclaw_operation_items(operation_id, sequence)"
     ]
+  },
+  {
+    version: 12,
+    name: "fixed_expense_categories",
+    statements: [
+      // Fixed expense categories (rent, insurance) count as already spent in the budget forecast
+      // instead of being extrapolated per day, and are only flagged as large when unusual.
+      "ALTER TABLE categories ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0 CHECK (is_fixed IN (0, 1))"
+    ]
   }
 ];

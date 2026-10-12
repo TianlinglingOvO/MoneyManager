@@ -176,6 +176,7 @@ export function calculateFinanceReport(input: {
   const selectedTotalMinor = currentSelected.reduce((sum, item) => sum + item.amountMinor, 0);
   const previousTotalMinor = previousSelected.reduce((sum, item) => sum + item.amountMinor, 0);
   const trend = buildTrend(input.grain, definition.current, currentSelected);
+  const previousTrend = buildTrend(input.grain, definition.previous, previousSelected);
   const averageDivisor = Math.max(1, trend.length);
   const selectedAverageMinor = Math.round(selectedTotalMinor / averageDivisor);
   const averageUnit = input.grain === "year" ? "month" : "day";
@@ -224,6 +225,7 @@ export function calculateFinanceReport(input: {
     selectedComparison: comparison(selectedTotalMinor, previousTotalMinor),
     transactionCount: currentSelected.length,
     trend,
+    previousTrend,
     categories,
     generatedAt: new Date().toISOString()
   };

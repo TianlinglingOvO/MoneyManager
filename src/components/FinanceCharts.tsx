@@ -1,9 +1,10 @@
 import { memo, useMemo } from "react";
 import {
   Area,
-  AreaChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  Line,
   Pie,
   PieChart,
   ReferenceLine,
@@ -19,6 +20,10 @@ import { money, plainMoney } from "../utils";
 
 export interface FinanceChartsProps {
   trend: TrendPoint[];
+  /** Previous period over the same-progress window, aligned by position; drawn only in cumulative mode. */
+  previousTrend?: TrendPoint[];
+  /** daily shows each day's amount; cumulative shows the running total against the previous period's. */
+  trendMode?: "daily" | "cumulative";
   categories: CategoryMetric[];
   kind: TransactionKind;
   averageMinor: number;
@@ -31,8 +36,20 @@ export interface FinanceChartsProps {
   variant?: "trend" | "pie" | "both";
 }
 
+/** Axis labels keep thousands separators; ten thousand and up switch to 万 so labels stay narrow. */
+function axisMoney(value: number): string {
+  const amount = Number(value);
+  if (Math.abs(amount) >= 10_000) return `¥${(amount / 10_000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}万`;
+  return `¥${amount.toLocaleString("zh-CN")}`;
+}
+
+// A stable default keeps the memoized chart data from changing identity on every render.
+const emptyTrend: TrendPoint[] = [];
+
 function FinanceCharts({
   trend,
+  previousTrend = emptyTrend,
+  trendMode = "daily",
   categories,
   kind,
   averageMinor,
@@ -45,7 +62,18 @@ function FinanceCharts({
   variant = "both"
 }: FinanceChartsProps) {
   // Stable data identity keeps Recharts from re-deriving sectors when the page re-renders mid-animation.
-  const chartData = useMemo(() => trend.map((point) => ({ ...point, amount: point.amountMinor / 100 })), [trend]);
+  const chartData = useMemo(() => {
+    if (trendMode === "daily") return trend.map((point) => ({ ...point, amount: point.amountMinor / 100, previous: null as number | null }));
+    let running = 0;
+    let previousRunning = 0;
+    return trend.map((point, index) => {
+      running += point.amountMinor;
+      const previousPoint = previousTrend[index];
+      if (previousPoint) previousRunning += previousPoint.amountMinor;
+      return { ...point, amount: running / 100, previous: previousPoint ? previousRunning / 100 : null };
+    });
+  }, [previousTrend, trend, trendMode]);
+  const cumulative = trendMode === "cumulative";
   const pieData = useMemo(() => buildCategoryComposition(categories), [categories]);
   const selectedTotalMinor = pieData.reduce((total, item) => total + item.amountMinor, 0);
   const color = kind === "expense" ? "var(--expense)" : "var(--income)";
@@ -53,9 +81,9 @@ function FinanceCharts({
   const pieMotion = useChartMotion(animationToken, motionEnabled && (variant === "pie" || variant === "both"));
 
   const trendChart = (
-    <div className="trend-chart" aria-label="收支趋势图" data-animate={trendMotion.isAnimationActive ? "true" : "false"} data-animation-running={trendMotion.isAnimationRunning ? "true" : "false"}>
+    <div className="trend-chart" aria-label={cumulative ? "本期累计与上期同期累计对比图" : "收支趋势图"} data-animate={trendMotion.isAnimationActive ? "true" : "false"} data-animation-running={trendMotion.isAnimationRunning ? "true" : "false"}>
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData} margin={{ top: 12, right: 8, left: -20, bottom: 0 }}>
+        <ComposedChart data={chartData} margin={{ top: 12, right: 8, left: -6, bottom: 0 }}>
           <defs>
             <linearGradient id={`amountFill-${kind}`} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={color} stopOpacity={0.25} />
@@ -64,12 +92,12 @@ function FinanceCharts({
           </defs>
           <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 6" vertical={false} />
           <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 12 }} minTickGap={18} />
-          <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 12 }} tickFormatter={(value) => `¥${value}`} />
+          <YAxis axisLine={false} tickLine={false} width={58} tick={{ fill: "var(--muted)", fontSize: 12 }} tickFormatter={axisMoney} />
           <Tooltip
-            formatter={(value) => [`¥${plainMoney(Number(value) * 100)}`, kind === "expense" ? "支出" : "收入"]}
+            formatter={(value, name) => [`¥${plainMoney(Number(value) * 100)}`, name === "previous" ? "上期同期累计" : cumulative ? "本期累计" : kind === "expense" ? "支出" : "收入"]}
             contentStyle={{ borderRadius: 12, border: "1px solid var(--line)", background: "var(--paper)", boxShadow: "var(--shadow)" }}
           />
-          {averageMinor > 0 && (
+          {!cumulative && averageMinor > 0 && (
             <ReferenceLine
               y={averageMinor / 100}
               stroke="var(--muted)"
@@ -92,7 +120,22 @@ function FinanceCharts({
             onAnimationStart={trendMotion.onAnimationStart}
             onAnimationEnd={trendMotion.onAnimationEnd}
           />
-        </AreaChart>
+          {cumulative && <Line
+            key={`previous-${animationToken}`}
+            type="monotone"
+            dataKey="previous"
+            stroke="var(--muted)"
+            strokeWidth={1.8}
+            strokeDasharray="5 5"
+            dot={false}
+            activeDot={{ r: 4 }}
+            connectNulls
+            isAnimationActive={trendMotion.isAnimationActive}
+            animationBegin={0}
+            animationDuration={motionDurations.trendChart}
+            animationEasing={chartMotionEasing.trend}
+          />}
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
