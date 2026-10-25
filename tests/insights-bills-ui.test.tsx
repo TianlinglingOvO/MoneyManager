@@ -224,8 +224,14 @@ describe("洞察与账单下钻", () => {
     ]);
 
     expect(await screen.findByRole("heading", { level: 1, name: "账单" })).toBeInTheDocument();
-    expect(await screen.findByRole("combobox", { name: "筛选分类" })).toHaveValue(category.id);
+    const categoryFilter = await screen.findByRole("combobox", { name: "筛选分类" });
+    await waitFor(() => expect(categoryFilter).toHaveTextContent("餐饮"));
     await waitFor(() => expect(calls.some((value) => value.kind === "expense" && value.categoryId === category.id)).toBe(true));
+
+    fireEvent.click(categoryFilter);
+    fireEvent.click(screen.getByRole("option", { name: "全部分类" }));
+    expect(categoryFilter).toHaveTextContent("全部分类");
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent(/^view=ledger&period=month&anchor=2026-08-01&kind=expense$/));
 
     fireEvent.click(screen.getByRole("button", { name: "收入" }));
     await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("view=ledger&period=month&anchor=2026-08-01&kind=income"));

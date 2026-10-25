@@ -401,7 +401,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .search-field { min-height: 42px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-control); }
 .search-field svg { color: var(--muted); }
 .search-field input { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: var(--text-control); }
-.filter-row select { min-height: 42px; max-width: 190px; padding: 0 32px 0 11px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--surface-control); font-size: var(--text-control); }
 .list-summary { display: flex; justify-content: space-between; margin: 16px 0 9px; color: var(--muted); font-size: var(--text-caption); }
 .list-summary em { color: var(--orange); font-style: normal; }
 .list-skeleton { min-height: 360px; }
@@ -677,7 +676,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .kind-pills { grid-column: 1 / -1; }
   .kind-pills button { flex: 1; }
   .search-field { grid-column: 1 / -1; }
-  .filter-row select { width: 100%; max-width: none; }
   /* Day totals stay on the date row and only wrap when income and expense both show. */
   .transaction-group__totals b { padding: 4px 7px; }
   .grain-control, .kind-pills--large { width: 100%; }
@@ -970,7 +968,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kind-pills--large button.is-active, .kind-pills button.is-active { border-color: var(--accent); color: var(--on-accent); background: var(--accent); }
 .summary-strip__balance { border-color: var(--accent); background: var(--accent); }
 .summary-strip { border-color: var(--line); background: var(--paper); }
-.search-field, .filter-row select, .category-picker button, .date-shortcuts button, .openclaw-operation-list article, .category-settings-list > div, .connection-grid article, .category-action-list > button, .category-migrate-action { color: var(--ink); background: var(--surface-control); }
+.search-field, .category-picker button, .date-shortcuts button, .openclaw-operation-list article, .category-settings-list > div, .connection-grid article, .category-action-list > button, .category-migrate-action { color: var(--ink); background: var(--surface-control); }
 .category-settings-list > div, .connection-grid article, .category-action-list > button, .category-migrate-action { border-color: var(--line); }
 .kind-switch, .operation-status.is-undone { background: var(--paper-soft); }
 .kind-switch button.is-active, .date-shortcuts button.is-active { border-color: var(--accent); color: var(--on-accent); background: var(--accent); }
@@ -1100,8 +1098,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .category-picker button,
   .date-shortcuts button,
   .entry-fields input,
-  .entry-date-control > input,
-  .filter-row select { min-height: 44px; }
+  .entry-date-control > input { min-height: 44px; }
   .category-picker button { min-height: 70px; }
   .primary-button, .secondary-button { min-height: 44px; }
   .mobile-nav { left: 10px; right: 10px; height: 68px; border-radius: 19px; }
@@ -1244,8 +1241,34 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mobile-only { display: none !important; }
 .filter-row { grid-template-columns: minmax(220px, 1fr) auto; }
 .desktop-filter-controls { display: flex; align-items: center; gap: 9px; }
-.filter-category-field { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: var(--text-caption); font-weight: 700; }
-.filter-category-field select { min-width: 156px; }
+/* Bills category filter: an in-app listbox, because the native select popup ignores the theme tokens. */
+.category-filter-picker { position: relative; min-width: 0; }
+.category-filter-picker__trigger,
+.category-filter-picker__option { width: 100%; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; color: var(--text-primary); text-align: left; cursor: pointer; }
+.category-filter-picker__trigger { min-width: 172px; max-width: 232px; min-height: 42px; padding: 0 10px 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface-control); font-size: var(--text-control); font-weight: 700; transition: border-color var(--motion-micro) ease, background-color var(--motion-micro) ease; }
+.category-filter-picker__trigger:hover,
+.category-filter-picker__trigger.is-open { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+.category-filter-picker__trigger.is-filtered { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--surface-selected); }
+.category-filter-picker__icon { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; background: color-mix(in srgb, var(--category-color, var(--accent)) 16%, var(--surface-control)); font-size: 14px; line-height: 1; }
+.category-filter-picker__icon--all { color: var(--muted); background: var(--surface-subtle); }
+.category-filter-picker__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.category-filter-picker__trigger small,
+.category-filter-picker__option small { padding: 1px 6px; border-radius: 999px; color: var(--muted); background: var(--surface-subtle); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.category-filter-picker__chevron { grid-column: 4; color: var(--muted); transition: transform var(--motion-micro) ease; }
+.category-filter-picker__trigger.is-open .category-filter-picker__chevron { transform: rotate(180deg); }
+.category-filter-picker__options { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: max(100%, 248px); max-height: var(--picker-max-height, 360px); display: grid; gap: 2px; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-card); box-shadow: var(--shadow-raised); animation: category-picker-in var(--motion-micro) var(--ease-ledger) both; }
+.category-filter-picker__options.is-above { top: auto; bottom: calc(100% + 6px); animation-name: category-picker-in-above; }
+.category-filter-picker__option { min-height: 40px; padding: 4px 8px 4px 6px; border: 0; border-radius: 10px; background: transparent; font-size: var(--text-control); font-weight: 650; }
+.category-filter-picker__option:hover,
+.category-filter-picker__option:focus-visible { background: var(--surface-subtle); outline-offset: -2px; }
+/* Selected text stays --text-primary: --accent-text only reaches 4.5:1 on --paper, not on the darker --surface-selected. */
+.category-filter-picker__option[aria-selected="true"] { background: var(--surface-selected); font-weight: 750; }
+.category-filter-picker__option small { grid-column: 3; }
+.category-filter-picker__check { grid-column: 4; color: var(--accent-text, var(--accent-strong)); }
+.category-filter-picker__group { display: grid; gap: 2px; margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+.category-filter-picker__group-label { padding: 2px 8px 4px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .08em; }
+@keyframes category-picker-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes category-picker-in-above { from { opacity: 0; transform: translateY(4px); } }
 .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .transaction-row__trailing { justify-self: end; display: flex; align-items: center; gap: 8px; }
 .transaction-row__edit { flex: none; color: var(--muted); transition: color var(--motion-fast) ease, transform var(--motion-fast) ease; }
@@ -1276,8 +1299,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .filter-sheet-content { display: grid; gap: 14px; }
 .filter-sheet-content .kind-pills { display: grid; grid-template-columns: repeat(3, 1fr); }
 .filter-sheet-content .kind-pills button { min-height: 44px; }
-.filter-sheet-content .filter-category-field { display: grid; gap: 7px; }
-.filter-sheet-content .filter-category-field select { width: 100%; max-width: none; min-height: 44px; }
+.category-filter-picker--inline { display: grid; gap: 8px; }
+.category-filter-picker--inline .category-filter-picker__trigger { max-width: none; min-height: 48px; }
+.category-filter-picker--inline .category-filter-picker__options { position: static; width: 100%; max-height: min(320px, 42dvh); grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 6px; border-radius: 13px; background: var(--surface-subtle); box-shadow: none; animation: none; }
+.category-filter-picker--inline .category-filter-picker__option { min-height: 44px; background: var(--surface-control); }
+.category-filter-picker--inline .category-filter-picker__option:first-child { grid-column: 1 / -1; }
+.category-filter-picker--inline .category-filter-picker__option:hover,
+.category-filter-picker--inline .category-filter-picker__option:focus-visible { background: color-mix(in srgb, var(--accent) 6%, var(--surface-control)); }
+.category-filter-picker--inline .category-filter-picker__option[aria-selected="true"] { background: var(--surface-selected); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.category-filter-picker--inline .category-filter-picker__group { grid-column: 1 / -1; grid-template-columns: inherit; gap: inherit; }
+.category-filter-picker--inline .category-filter-picker__group-label { grid-column: 1 / -1; }
 .filter-sheet__export { padding-top: 14px; border-top: 1px solid var(--line); }
 .filter-sheet__export .bill-export-link { width: 100%; min-height: 44px; }
 .filter-sheet__done { width: 100%; }

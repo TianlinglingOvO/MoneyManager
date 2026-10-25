@@ -2,6 +2,26 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.9.1 — 2026-10-25
+
+### Bills
+
+- The category filter is an in-app list instead of the browser's native select, whose popup ignored the theme and whose arrow sat off-centre. It follows Warm Paper and Ink Night, shows each category's icon chip, groups options under 支出 and 收入 when 全部 is selected, lists archived categories last with a 已停用 tag, and highlights the trigger while a category filter is active. On desktop it floats over the list and opens upwards when there is no room below; in the phone filter sheet it opens inline as a two-column list. Arrow keys, Home/End, and Escape work as in the account picker, and Escape closes only the list, not the sheet. Tab moves on to the next control and Shift+Tab returns to the filter, and the list closes whenever focus leaves it. A category passed in the URL reads 已选分类 until the categories load, instead of 全部分类.
+
+### Fixes
+
+- Settings shows a UTC ledger timezone as “UTC” again. The ICU data in Node.js 22.23.4 writes a zero offset as `GMT+0`, so the label read “UTC+0”.
+
+### Security and dependencies
+
+- Updated runtime dependencies for published advisories: `@modelcontextprotocol/sdk` 1.32.2 (request-validation memory exhaustion, among others), `express` 5.3.0 with `body-parser` 2.4.0 (compressed-body DoS), `proxy-addr` 2.0.8, and `qs` 6.16.1, plus `zod` 4.6.7, `express-rate-limit` 8.7.1 with `ip-address` 10.7.5, and `fast-uri`/`hono` under the MCP SDK. `npm audit --omit=dev` now reports no issues.
+- Dev-only advisories remain in `vite`, `vitest`, and the `drizzle-kit`/`drizzle-orm` schema tooling; none of them ship in `dist-server` or run in production.
+
+### Upgrade notes
+
+- Run SMB on a Node.js release that includes the 2026-10-21 security fixes (22.23.4, 24.22.1, 26.12.1, or later). They patch a Brotli decoder out-of-bounds write (CVE-2026-111497) that Express request-body decompression and `fetch` can reach, plus TLS hostname-check bypasses.
+- `dist-server` loads its packages from `node_modules` when the process starts. After `npm.cmd run build`, Settings → 检查并刷新 restarts onto 2.9.1, which also loads the updated dependencies.
+
 ## 2.9.0 — 2026-10-12
 
 ### Fixes

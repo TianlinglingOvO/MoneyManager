@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { FinanceReport, FundsSummary, Transaction, TransactionList } from "../shared/types";
+import type { Category, FinanceReport, FundsSummary, Transaction, TransactionList } from "../shared/types";
 import { api } from "../src/api";
 import { EntryContext } from "../src/entry-context";
 import { QuickEntry } from "../src/components/QuickEntry";
@@ -118,6 +118,94 @@ describe("账单页移动查询", () => {
     expect(dialog.closest(".modal-backdrop")).toHaveClass("is-closing");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "账单筛选" })).not.toBeInTheDocument());
     await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+});
+
+describe("账单分类筛选接线", () => {
+  const expenseCategory: Category = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    kind: "expense",
+    name: "餐饮",
+    icon: "🍜",
+    color: "#D66A4C",
+    sortOrder: 0,
+    isArchived: false,
+    transactionCount: 0,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-01T00:00:00.000Z"
+  };
+  const incomeCategory: Category = { ...expenseCategory, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", kind: "income", name: "工资", icon: "💰", color: "#3E8066" };
+
+  function mockLedger(categories: Category[] | Promise<Category[]>) {
+    vi.spyOn(api, "report").mockResolvedValue(report);
+    vi.spyOn(api, "categories").mockReturnValue(Promise.resolve(categories));
+    vi.spyOn(api, "dailyTotals").mockResolvedValue([]);
+    vi.spyOn(api, "transactions").mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 });
+  }
+
+  function desktopControls(container: HTMLElement) {
+    return within(container.querySelector<HTMLElement>(".desktop-filter-controls")!);
+  }
+
+  it("桌面筛选栏用浮层：全部收支时分组，切到支出后只列支出分类", async () => {
+    mockLedger([expenseCategory, incomeCategory]);
+    const { container } = renderPage();
+    const desktop = desktopControls(container);
+    const trigger = await desktop.findByRole("combobox", { name: "筛选分类" });
+    expect(trigger.closest(".category-filter-picker")).not.toHaveClass("category-filter-picker--inline");
+
+    fireEvent.click(trigger);
+    const listbox = desktop.getByRole("listbox", { name: "筛选分类" });
+    expect(listbox.style.getPropertyValue("--picker-max-height")).not.toBe("");
+    expect(await within(listbox).findByRole("group", { name: "支出" })).toBeInTheDocument();
+    expect(within(listbox).getByRole("group", { name: "收入" })).toBeInTheDocument();
+
+    const expensePill = desktop.getByRole("button", { name: "支出" });
+    fireEvent.pointerDown(expensePill);
+    fireEvent.click(expensePill);
+    expect(desktop.queryByRole("listbox")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    const expenseList = desktop.getByRole("listbox", { name: "筛选分类" });
+    expect(within(expenseList).queryByRole("group")).not.toBeInTheDocument();
+    expect(within(expenseList).getByRole("option", { name: "餐饮" })).toBeInTheDocument();
+    expect(within(expenseList).queryByRole("option", { name: "工资" })).not.toBeInTheDocument();
+  });
+
+  it("手机筛选抽屉内联展开，Escape 只收起列表，选择后筛选计数加一", async () => {
+    mockLedger([expenseCategory, incomeCategory]);
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /打开筛选/ }));
+    const dialog = await screen.findByRole("dialog", { name: "账单筛选" });
+    const trigger = within(dialog).getByRole("combobox", { name: "筛选分类" });
+    expect(trigger.closest(".category-filter-picker")).toHaveClass("category-filter-picker--inline");
+
+    fireEvent.click(trigger);
+    const listbox = within(dialog).getByRole("listbox", { name: "筛选分类" });
+    expect(listbox).not.toHaveAttribute("style");
+    const first = within(listbox).getByRole("option", { name: "全部分类" });
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    fireEvent.keyDown(first, { key: "Escape" });
+    expect(within(dialog).queryByRole("listbox")).not.toBeInTheDocument();
+    expect(dialog.closest(".modal-backdrop")).not.toHaveClass("is-closing");
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+
+    fireEvent.click(trigger);
+    fireEvent.click(await within(dialog).findByRole("option", { name: "餐饮" }));
+    expect(trigger).toHaveTextContent("餐饮");
+    expect(screen.getByRole("button", { name: /打开筛选，当前启用 1 项/ })).toBeInTheDocument();
+  });
+
+  it("URL 带入分类而分类尚未加载时显示已选分类，加载后显示分类名", async () => {
+    let resolveCategories!: (value: Category[]) => void;
+    mockLedger(new Promise<Category[]>((resolve) => { resolveCategories = resolve; }));
+    const { container } = renderPage([`/bills?view=ledger&period=month&anchor=2026-08-01&kind=expense&categoryId=${expenseCategory.id}`]);
+    const trigger = await desktopControls(container).findByRole("combobox", { name: "筛选分类" });
+    expect(trigger).toHaveTextContent("已选分类");
+    expect(trigger).toHaveClass("is-filtered");
+
+    await act(async () => resolveCategories([expenseCategory, incomeCategory]));
+    await waitFor(() => expect(trigger).toHaveTextContent("餐饮"));
+    expect(trigger).toHaveClass("is-filtered");
   });
 });
 

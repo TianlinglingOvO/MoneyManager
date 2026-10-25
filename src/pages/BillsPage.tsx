@@ -6,6 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import type { Transaction, TransactionKind } from "@shared/types";
 import { api, apiUrl } from "../api";
 import { BottomSheet } from "../components/BottomSheet";
+import { CategoryFilterPicker } from "../components/CategoryFilterPicker";
 import { DangerConfirmDialog } from "../components/DangerConfirmDialog";
 import { FilterSummary } from "../components/FilterSummary";
 import { RecentRecordedList } from "../components/RecentRecordedList";
@@ -243,7 +244,8 @@ export function BillsPage() {
     search: debouncedSearch || undefined
   });
   const exportAction = <a className="secondary-button bill-export-link" href={viewExportUrl} title="按当前月份或年份、收支、分类和搜索条件导出 CSV"><Download size={16} />导出当前视图</a>;
-  const filterControls = (
+  // The desktop row floats the category list over the bills; the phone filter sheet opens it inline.
+  const renderFilterControls = (inSheet: boolean) => (
     <>
       <div className="kind-pills" role="group" aria-label="收支筛选">
         {(["all", "expense", "income"] as const).map((value) => (
@@ -252,13 +254,7 @@ export function BillsPage() {
           </button>
         ))}
       </div>
-      <label className="filter-category-field">
-        <span className="sr-only">筛选分类</span>
-        <select value={categoryId} onChange={(event) => setCategoryId(event.target.value)} aria-label="筛选分类">
-          <option value="">全部分类</option>
-          {selectedCategories.map((category) => <option value={category.id} key={category.id}>{category.icon} {category.name}{category.isArchived ? "（已停用）" : ""}</option>)}
-        </select>
-      </label>
+      <CategoryFilterPicker categories={selectedCategories} value={categoryId} onChange={setCategoryId} grouped={kind === "all"} inline={inSheet} />
     </>
   );
 
@@ -307,7 +303,7 @@ export function BillsPage() {
           <section className="content-card bill-list-card">
             <div className="filter-row">
               <label className="search-field"><Search size={17} /><input ref={searchInput} data-global-search value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索备注、分类或金额" aria-label="搜索备注、分类或金额" /></label>
-              <div className="desktop-only desktop-filter-controls">{filterControls}</div>
+              <div className="desktop-only desktop-filter-controls">{renderFilterControls(false)}</div>
               <span className="mobile-only"><FilterSummary count={activeFilterCount} onClick={() => setFiltersOpen(true)} /></span>
             </div>
             {mode === "ledger" && debouncedSearch.trim() && <div className="search-scope" role="group" aria-label="搜索范围">
@@ -340,7 +336,7 @@ export function BillsPage() {
             footer={<button type="button" className="primary-button filter-sheet__done" onClick={() => setFiltersOpen(false)}>完成筛选</button>}
           >
             <div className="bottom-sheet__content filter-sheet-content">
-              {filterControls}
+              {renderFilterControls(true)}
               {mode === "ledger" && <div className="filter-sheet__export">{exportAction}</div>}
             </div>
           </BottomSheet>

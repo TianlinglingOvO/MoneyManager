@@ -47,7 +47,8 @@ export function timezoneOffsetLabel(timezone: string, at = new Date()): string {
   try {
     const part = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "shortOffset" })
       .formatToParts(at).find((item) => item.type === "timeZoneName")?.value;
-    return part ? part.replace(/^GMT/, "UTC") : timezone;
+    // ICU 78 (Node 22.23.4) spells a zero offset "GMT+0" where older ICU wrote "GMT".
+    return part ? part.replace(/^GMT(?:[+-]0)?$/, "GMT").replace(/^GMT/, "UTC") : timezone;
   } catch {
     return timezone;
   }
