@@ -9,7 +9,7 @@
 先在 Cloudflare Access 中创建两个应用并记下它们各自的 Audience Tag：
 
 1. 网页应用：`money.example.com`，不填写路径。
-2. MCP 应用：`money.example.com/mcp`。更具体的路径规则会覆盖根应用规则。
+2. MCP 应用：`money.example.com/mcp`。更具体的路径规则会覆盖根应用规则。默认使用 Service Auth 策略；想让其他 AI 客户端只凭应用令牌接入，见第 3 节「只用应用令牌接入 MCP」。
 
 然后运行：
 
@@ -104,7 +104,7 @@ SMB 自 2.7.0 起不再内置 AI 分析，也不保存任何大模型密钥。�
 
 OpenClaw 需要支持 `transport: "streamable-http"`（2026.7 及以后的版本均可，本机当前为 2026.9.4）。`money-manager` 不会与已有的 `filesystem`、`memory-kg` 等 MCP 名称冲突。OpenClaw 的网关服务不继承代理环境变量，因此不要给它添加需要联网下载的 `npx -y` MCP 服务，否则启动超时会让网关崩溃。
 
-在 WSL 的 `~/.openclaw/.env` 中加入三项；不要把真实值写进项目文件：
+在 WSL 的 `~/.openclaw/.env` 中加入三项；不要把真实值写进项目文件。若已切换为只用应用令牌接入 MCP，SMB 不再检查后两项 Cloudflare 值，已有配置保留即可：
 
 ```dotenv
 MONEY_MANAGER_MCP_TOKEN=与应用 .env 中 MCP_API_TOKEN 相同
@@ -191,6 +191,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-startu
 - Cloudflare Tunnel（Windows 服务）：https://developers.cloudflare.com/tunnel/advanced/local-management/as-a-service/windows/
 - Cloudflare Access 路径规则：https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/
 - Cloudflare OTP：https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/
+- Cloudflare Access 策略操作（Allow、Bypass、Service Auth）：https://developers.cloudflare.com/cloudflare-one/access-controls/policies/
 - Cloudflare Service Token：https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
 - OpenClaw MCP：https://docs.openclaw.ai/cli/mcp
 - rclone Google Drive：https://rclone.org/drive/
