@@ -81,7 +81,7 @@ export function createMcpAuth(config: AppConfig) {
       if (!tokensEqual(token, config.mcpApiToken)) {
         throw new AppError("MCP 应用令牌无效", 401, "MCP_UNAUTHORIZED");
       }
-      if (config.authMode === "cloudflare") {
+      if (config.authMode === "cloudflare" && config.mcpRequireCloudflareAccess) {
         request.accessIdentity = await verifyAccessJwt(request, config, config.cloudflareMcpAudience);
       } else {
         request.accessIdentity = { sub: "local-mcp" };

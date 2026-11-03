@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { randomUUID } from "node:crypto";
+import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -1617,7 +1618,17 @@ export function attachMcpRoutes(
   reminder?: OpenClawReminderService
 ): void {
   const transports = new Map<string, StreamableHTTPServerTransport>();
-  const auth = createMcpAuth(config);
+  // Counts only rejected requests, so a wrong or guessed token is throttled per client IP
+  // while a working client is never slowed down.
+  const failureLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: config.nodeEnv === "test" ? 10_000 : 60,
+    skipSuccessfulRequests: true,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_request, response) => sendMcpJsonRpcError(response, 429, -32000, "请求失败次数过多，请稍后再试")
+  });
+  const auth = [failureLimiter, createMcpAuth(config)];
 
   app.post("/mcp", auth, async (request: Request, response: Response) => {
     try {

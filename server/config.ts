@@ -21,6 +21,7 @@ export interface AppConfig {
   cloudflareTeamDomain: string;
   cloudflareAudience: string;
   cloudflareMcpAudience: string;
+  mcpRequireCloudflareAccess: boolean;
   allowedEmail: string;
   mcpApiToken: string;
   backupLocalDir: string;
@@ -47,6 +48,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     cloudflareTeamDomain: process.env.CF_ACCESS_TEAM_DOMAIN ?? "",
     cloudflareAudience: process.env.CF_ACCESS_AUD ?? "",
     cloudflareMcpAudience: process.env.CF_ACCESS_MCP_AUD ?? process.env.CF_ACCESS_AUD ?? "",
+    mcpRequireCloudflareAccess: !/^(false|0)$/i.test((process.env.MCP_REQUIRE_CF_ACCESS ?? "").trim()),
     allowedEmail: (process.env.ALLOWED_EMAIL ?? "").trim().toLowerCase(),
     mcpApiToken: process.env.MCP_API_TOKEN ?? "",
     backupLocalDir: resolveProjectPath(process.env.BACKUP_LOCAL_DIR ?? "./backups/local"),
@@ -75,8 +77,11 @@ export function validateProductionConfig(config: AppConfig): void {
   if (config.authMode !== "cloudflare") {
     throw new Error("正式环境必须启用 Cloudflare Access 身份验证");
   }
-  if (!config.cloudflareTeamDomain || !config.cloudflareAudience || !config.cloudflareMcpAudience || !config.allowedEmail) {
+  if (!config.cloudflareTeamDomain || !config.cloudflareAudience || !config.allowedEmail) {
     throw new Error("正式环境缺少 Cloudflare Access 配置");
+  }
+  if (config.mcpRequireCloudflareAccess && !config.cloudflareMcpAudience) {
+    throw new Error("正式环境缺少 MCP 路径的 Cloudflare Access 配置");
   }
   if (config.mcpApiToken.length < 32) {
     throw new Error("正式环境 MCP_API_TOKEN 至少需要 32 个字符");

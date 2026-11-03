@@ -2,6 +2,18 @@
 
 All notable SMB changes are recorded here. The version in `package.json` is canonical.
 
+## 2.10.0 — 2026-11-03
+
+### MCP
+
+- `MCP_REQUIRE_CF_ACCESS=false` lets `/mcp` accept the `MCP_API_TOKEN` Bearer token alone, without a Cloudflare Access service token, so MCP clients that can only set an `Authorization` header can connect. The default is unchanged, and the web app and `/api/v1` still require the Cloudflare Access email login.
+- Rejected `/mcp` requests are rate-limited per client IP: more than 60 failures in 15 minutes return a JSON-RPC 429 error. Successful requests are never counted.
+
+### Upgrade notes
+
+- To switch to token-only MCP, add `MCP_REQUIRE_CF_ACCESS=false` to `.env`, restart SMB fully (检查并刷新 does not re-read `.env`), and only then change the Cloudflare `/mcp` Access application's policy to Bypass. Do not delete that application. See `docs/DEPLOYMENT.md`.
+- Production no longer requires `CF_ACCESS_MCP_AUD` when MCP is token-only.
+
 ## 2.9.1 — 2026-10-25
 
 ### Bills

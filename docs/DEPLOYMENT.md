@@ -81,6 +81,21 @@ MCP 路径应用设置：
 
 来源服务仍会验证 Cloudflare 签名 JWT，并额外验证独立的 `MCP_API_TOKEN`。两个 Access 应用的 Audience 不同，因此 `.env` 中分别保存 `CF_ACCESS_AUD` 与 `CF_ACCESS_MCP_AUD`。
 
+### 只用应用令牌接入 MCP（可选）
+
+Service Token 要求客户端额外发送两个 Cloudflare 请求头，很多 AI 客户端配置不了。想让其他 AI 接入时，可以让 `/mcp` 只验证 `MCP_API_TOKEN`：
+
+1. 在 `.env` 中加入 `MCP_REQUIRE_CF_ACCESS=false`，然后完整重启 SMB（关闭 SMB Service 窗口，重新打开 `打开 SMB.cmd`）。
+2. 在 Cloudflare Zero Trust → Access → Applications 中编辑 MCP 路径应用，把策略的 Action 改为 **Bypass**，Include 选 **Everyone**，并删除原来的 Service Auth 策略。
+3. 不要直接删除 MCP 路径应用：删除后 `/mcp` 会落到网页应用的邮箱登录规则下，所有 MCP 客户端都会连不上。
+
+先完成第 1 步再做第 2 步，切换过程中 OpenClaw 不会断开；OpenClaw 继续发送的 Cloudflare 请求头会被忽略。之后任何 AI 客户端只需配置：
+
+- 地址：`https://money.example.com/mcp`，传输方式 Streamable HTTP。
+- 请求头：`Authorization: Bearer <MCP_API_TOKEN>`。
+
+网页和 `/api/v1` 仍然只接受 Cloudflare Access 邮箱登录。`/mcp` 对同一 IP 15 分钟内超过 60 次失败的请求返回 429，成功的请求不计数。令牌拥有全部 MCP 工具权限（包括永久删除），只交给你信任的客户端；怀疑泄露时在 `.env` 中换一枚新令牌、重启 SMB，并同步更新 OpenClaw 的 `MONEY_MANAGER_MCP_TOKEN`。
+
 ## 4. 账本解读（交给 OpenClaw）
 
 SMB 自 2.7.0 起不再内置 AI 分析，也不保存任何大模型密钥。需要解读账本时，直接问接入的 OpenClaw：它通过只读 MCP 工具（`get_finance_summary`、`list_transactions`、`get_budget_summary`、`get_ledger_health` 以及事项汇总）读取程序算好的数字。旧 `.env` 中的 `DEEPSEEK_*` 会被忽略，可以删除。

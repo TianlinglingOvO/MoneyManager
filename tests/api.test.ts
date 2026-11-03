@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
+import { loadConfig, validateProductionConfig } from "../server/config";
 import { APP_VERSION } from "../shared/app-metadata";
 import type { TestContext } from "./helpers";
 import { createTestContext, expenseCategory, incomeCategory, transactionInput } from "./helpers";
@@ -338,6 +339,91 @@ describe("HTTP API", () => {
     } finally {
       securedContext.cleanup();
     }
+  });
+
+  it("Cloudflare 模式下 MCP 默认仍要求 Access 身份，可配置为只验证应用令牌", async () => {
+    const token = "b".repeat(40);
+    const initialize = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } } };
+    const cloudflare = {
+      authMode: "cloudflare" as const,
+      cloudflareTeamDomain: "example.cloudflareaccess.com",
+      cloudflareAudience: "test-audience",
+      cloudflareMcpAudience: "test-mcp-audience",
+      allowedEmail: "owner@example.com",
+      mcpApiToken: token
+    };
+    const strictContext = createTestContext({ ...cloudflare, mcpRequireCloudflareAccess: true });
+    try {
+      const app = createApp(strictContext.config, strictContext.database).app;
+      const response = await request(app).post("/mcp")
+        .set("Accept", "application/json, text/event-stream")
+        .set("Authorization", `Bearer ${token}`)
+        .send(initialize);
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe("UNAUTHORIZED");
+    } finally {
+      strictContext.cleanup();
+    }
+
+    const tokenOnlyContext = createTestContext({ ...cloudflare, mcpRequireCloudflareAccess: false });
+    try {
+      const app = createApp(tokenOnlyContext.config, tokenOnlyContext.database).app;
+      const wrongToken = await request(app).post("/mcp")
+        .set("Accept", "application/json, text/event-stream")
+        .set("Authorization", `Bearer ${"c".repeat(40)}`)
+        .send(initialize);
+      expect(wrongToken.status).toBe(401);
+      expect(wrongToken.body.error.code).toBe("MCP_UNAUTHORIZED");
+      const missingToken = await request(app).post("/mcp")
+        .set("Accept", "application/json, text/event-stream")
+        .send(initialize);
+      expect(missingToken.status).toBe(401);
+
+      const accepted = await request(app).post("/mcp")
+        .set("Accept", "application/json, text/event-stream")
+        .set("Authorization", `Bearer ${token}`)
+        .send(initialize);
+      expect(accepted.status).toBe(200);
+      expect(accepted.headers["mcp-session-id"]).toBeTruthy();
+      expect(accepted.body.result?.serverInfo?.version).toBe(APP_VERSION);
+      // The web API keeps requiring Cloudflare Access even when MCP is token-only.
+      await request(app).get("/api/v1/categories").set("Authorization", `Bearer ${token}`).expect(401);
+    } finally {
+      tokenOnlyContext.cleanup();
+    }
+  });
+
+  it("MCP_REQUIRE_CF_ACCESS 只在 false 或 0 时关闭，正式环境据此决定是否需要 MCP Audience", () => {
+    const original = process.env.MCP_REQUIRE_CF_ACCESS;
+    try {
+      delete process.env.MCP_REQUIRE_CF_ACCESS;
+      expect(loadConfig().mcpRequireCloudflareAccess).toBe(true);
+      for (const value of ["true", "1", "yes", ""]) {
+        process.env.MCP_REQUIRE_CF_ACCESS = value;
+        expect(loadConfig().mcpRequireCloudflareAccess).toBe(true);
+      }
+      for (const value of ["false", "0", " FALSE "]) {
+        process.env.MCP_REQUIRE_CF_ACCESS = value;
+        expect(loadConfig().mcpRequireCloudflareAccess).toBe(false);
+      }
+    } finally {
+      if (original === undefined) delete process.env.MCP_REQUIRE_CF_ACCESS;
+      else process.env.MCP_REQUIRE_CF_ACCESS = original;
+    }
+
+    const production = loadConfig({
+      nodeEnv: "production",
+      host: "127.0.0.1",
+      authMode: "cloudflare",
+      cloudflareTeamDomain: "example.cloudflareaccess.com",
+      cloudflareAudience: "test-audience",
+      cloudflareMcpAudience: "",
+      allowedEmail: "owner@example.com",
+      mcpApiToken: "d".repeat(40)
+    });
+    expect(() => validateProductionConfig({ ...production, mcpRequireCloudflareAccess: true })).toThrow("MCP 路径");
+    expect(() => validateProductionConfig({ ...production, mcpRequireCloudflareAccess: false })).not.toThrow();
+    expect(() => validateProductionConfig({ ...production, mcpRequireCloudflareAccess: false, mcpApiToken: "short" })).toThrow("MCP_API_TOKEN");
   });
 
   it("MCP 对错误请求返回 JSON-RPC 而不是通用 500", async () => {
